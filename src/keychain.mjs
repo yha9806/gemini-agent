@@ -31,10 +31,14 @@ export function redactSecret(message, secret) {
   return String(message).split(secret).join("[REDACTED]");
 }
 
-export async function getApiKeyFromKeychain({ account = currentAccount(), platform = process.platform } = {}) {
+export async function getApiKeyFromKeychain({
+  account = currentAccount(),
+  platform = process.platform,
+  runner = execFileAsync,
+} = {}) {
   if (platform !== "darwin") return null;
   try {
-    const { stdout } = await execFileAsync("security", buildFindArgs(account), { encoding: "utf8" });
+    const { stdout } = await runner("security", buildFindArgs(account), { encoding: "utf8" });
     const key = stdout.trim();
     return key || null;
   } catch {
@@ -50,13 +54,25 @@ export async function resolveApiKey(options = {}) {
   return { ok: false, source: null, key: null };
 }
 
-export async function saveApiKeyToKeychain(key, { account = currentAccount(), platform = process.platform } = {}) {
+export async function saveApiKeyToKeychain(
+  key,
+  { account = currentAccount(), platform = process.platform, runner = execFileAsync } = {},
+) {
   if (!key || !key.trim()) throw new Error("Gemini API key is empty.");
   if (platform !== "darwin") throw new Error("Keychain storage is only available on macOS.");
-  await execFileAsync("security", buildSaveArgs(account, key.trim()), { encoding: "utf8" });
+  const trimmedKey = key.trim();
+  try {
+    await runner("security", buildSaveArgs(account, trimmedKey), { encoding: "utf8" });
+  } catch (error) {
+    throw new Error(redactSecret(error.message, trimmedKey));
+  }
 }
 
-export async function deleteApiKeyFromKeychain({ account = currentAccount(), platform = process.platform } = {}) {
+export async function deleteApiKeyFromKeychain({
+  account = currentAccount(),
+  platform = process.platform,
+  runner = execFileAsync,
+} = {}) {
   if (platform !== "darwin") throw new Error("Keychain deletion is only available on macOS.");
-  await execFileAsync("security", buildDeleteArgs(account), { encoding: "utf8" });
+  await runner("security", buildDeleteArgs(account), { encoding: "utf8" });
 }
