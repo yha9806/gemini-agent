@@ -54,7 +54,14 @@ export async function generateReview({
   return normalizeReview(parseJsonObject(response.text || ""));
 }
 
-export async function generateText({ apiKey, prompt, model = getDefaultModel(), makeAi = makeGoogleGenAI, temperature = 0.2 }) {
+export async function generateText({
+  apiKey,
+  prompt,
+  env = process.env,
+  model = getDefaultModel(env),
+  makeAi = makeGoogleGenAI,
+  temperature = 0.2,
+}) {
   if (!apiKey) throw new Error("Gemini API key is missing.");
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
   let response;

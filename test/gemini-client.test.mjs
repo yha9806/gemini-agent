@@ -15,7 +15,10 @@ test("generates normalized review through fake client", async () => {
       models: {
         async generateContent(request) {
           assert.equal(request.model, "gemini-2.5-pro");
+          assert.equal(request.contents, "review this");
+          assert.equal(request.config.temperature, 0.2);
           assert.equal(request.config.responseMimeType, "application/json");
+          assert.ok(request.config.responseSchema);
           return {
             text: JSON.stringify({
               verdict: "pass",
@@ -32,6 +35,32 @@ test("generates normalized review through fake client", async () => {
   });
   assert.equal(review.verdict, "pass");
   assert.deepEqual(review.notes, ["ok"]);
+});
+
+test("generates trimmed text through fake client with injected default model", async () => {
+  let seenApiKey;
+  const text = await generateText({
+    apiKey: "fake-key",
+    prompt: "say hi",
+    env: { GEMINI_AGENT_MODEL: "gemini-2.5-flash" },
+    temperature: 0.7,
+    makeAi: (apiKey) => {
+      seenApiKey = apiKey;
+      return {
+        models: {
+          async generateContent(request) {
+            assert.equal(request.model, "gemini-2.5-flash");
+            assert.equal(request.contents, "say hi");
+            assert.deepEqual(request.config, { temperature: 0.7 });
+            return { text: "  hello from Gemini  \n" };
+          },
+        },
+      };
+    },
+  });
+
+  assert.equal(seenApiKey, "fake-key");
+  assert.equal(text, "hello from Gemini");
 });
 
 test("rejects missing API key and empty prompt", async () => {
