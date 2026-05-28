@@ -1,0 +1,23 @@
+{
+  "name": "gemini-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Global Gemini review gate for Codex",
+  "bin": {
+    "gemini-agent": "./bin/gemini-agent",
+    "gemini-agent-mcp": "./bin/gemini-agent-mcp"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:live": "node ./bin/gemini-agent ask \"Reply with exactly: gemini-agent-ok\""
+  },
+  "dependencies": {
+    "@google/genai": "2.6.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "4.4.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
