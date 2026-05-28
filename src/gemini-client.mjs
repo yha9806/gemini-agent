@@ -37,7 +37,6 @@ export async function generateJson({
   normalize,
   env = process.env,
   allowFakeResponse = false,
-  model = getDefaultModel(),
   makeAi = makeGoogleGenAI,
   temperature = 0.2,
 }) {
@@ -52,7 +51,7 @@ export async function generateJson({
   try {
     const ai = makeAi(apiKey);
     response = await ai.models.generateContent({
-      model,
+      model: getDefaultModel(),
       contents,
       config: {
         temperature,
@@ -72,7 +71,6 @@ export async function generateReview({
   prompt,
   env,
   allowFakeResponse,
-  model,
   makeAi,
   temperature,
 }) {
@@ -82,7 +80,6 @@ export async function generateReview({
     contents: prompt,
     env,
     allowFakeResponse,
-    model,
     makeAi,
     temperature,
     responseSchema: GeminiReviewSchema,
@@ -109,7 +106,6 @@ export async function generateArtifactReview(options) {
 export async function generateText({
   apiKey,
   prompt,
-  model = getDefaultModel(),
   makeAi = makeGoogleGenAI,
   temperature = 0.2,
 }) {
@@ -119,7 +115,7 @@ export async function generateText({
   try {
     const ai = makeAi(apiKey);
     response = await ai.models.generateContent({
-      model,
+      model: getDefaultModel(),
       contents: prompt,
       config: { temperature },
     });

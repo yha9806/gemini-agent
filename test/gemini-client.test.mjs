@@ -97,6 +97,38 @@ test("generateJson sends structured JSON request and normalizes response", async
   assert.deepEqual(result, { ok: "context_pack" });
 });
 
+test("structured and text generation ignore caller model overrides", async () => {
+  await generateJson({
+    apiKey: "fake-key",
+    prompt: "build context",
+    model: "gemini-2.5-flash",
+    responseSchema: GeminiContextPackSchema,
+    normalize: (value) => value,
+    makeAi: () => ({
+      models: {
+        async generateContent(request) {
+          assert.equal(request.model, "gemini-3.5-flash");
+          return { text: JSON.stringify({ kind: "context_pack" }) };
+        },
+      },
+    }),
+  });
+
+  await generateText({
+    apiKey: "fake-key",
+    prompt: "say hi",
+    model: "gemini-2.5-flash",
+    makeAi: () => ({
+      models: {
+        async generateContent(request) {
+          assert.equal(request.model, "gemini-3.5-flash");
+          return { text: "ok" };
+        },
+      },
+    }),
+  });
+});
+
 test("generateContextPack uses fake response only when explicitly allowed", async () => {
   const env = {
     GEMINI_AGENT_FAKE_RESPONSE: JSON.stringify({

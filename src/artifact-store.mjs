@@ -58,6 +58,7 @@ export async function writeJsonArtifact({
   now = new Date(),
 }) {
   const dir = artifactDirectory({ cwd, category });
+  await ensureArtifactGitignore(cwd);
   await mkdir(dir, { recursive: true });
 
   const body = `${JSON.stringify(artifact, null, 2)}\n`;
@@ -73,7 +74,6 @@ export async function writeJsonArtifact({
     `latest.json.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   );
 
-  await writeFile(timestampedPath, body);
   await writeFile(tmpPath, body);
   await rename(tmpPath, latestPath);
 

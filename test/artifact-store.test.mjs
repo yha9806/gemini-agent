@@ -28,6 +28,7 @@ test("writeJsonArtifact writes timestamped file and latest atomically", async ()
   const timestamped = JSON.parse(await readFile(result.timestampedPath, "utf8"));
   assert.deepEqual(latest, artifact);
   assert.deepEqual(timestamped, artifact);
+  assert.match(await readFile(join(dir, ".gitignore"), "utf8"), /\.gemini-agent\//);
 });
 
 test("writeJsonArtifact keeps same-timestamp artifacts distinct", async () => {

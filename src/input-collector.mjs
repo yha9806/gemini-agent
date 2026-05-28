@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { extname, isAbsolute, resolve } from "node:path";
-import { promisify } from "node:util";
+import { extname, isAbsolute, relative, resolve } from "node:path";
+import { promisify, TextDecoder } from "node:util";
 import { createPartFromBase64 } from "@google/genai";
 
 export const DEFAULT_TEXT_LIMIT_BYTES = 4 * 1024 * 1024;
@@ -16,6 +16,8 @@ const ARTIFACT_MIME_BY_EXTENSION = new Map([
   [".webp", "image/webp"],
   [".pdf", "application/pdf"],
 ]);
+
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 function hasPngMagic(buffer) {
   return buffer.subarray(0, 8).equals(
@@ -45,6 +47,44 @@ function labelledSection(source, text) {
   return `--- Source: ${source} ---\n${text.trim()}`;
 }
 
+function sectionSize(source, byteLength) {
+  return Buffer.byteLength(`--- Source: ${source} ---\n`, "utf8") + byteLength + 2;
+}
+
+function assertInsideCwd(resolvedCwd, resolvedFilePath) {
+  const relativePath = relative(resolvedCwd, resolvedFilePath);
+  if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    throw new Error("File path must stay within cwd.");
+  }
+}
+
+export function resolveCwdFilePath(filePath, { cwd = process.cwd() } = {}) {
+  const path = String(filePath ?? "");
+  if (!path || path.includes("\0")) {
+    throw new Error("File path must be a relative path within cwd.");
+  }
+  if (isAbsolute(path)) {
+    throw new Error("File path must be relative to cwd.");
+  }
+
+  const resolvedCwd = resolve(cwd);
+  const resolvedFilePath = resolve(resolvedCwd, path);
+  assertInsideCwd(resolvedCwd, resolvedFilePath);
+  return resolvedFilePath;
+}
+
+function decodeUtf8FileContent(buffer, source) {
+  if (buffer.includes(0)) {
+    throw new Error(`File appears to be binary: ${source}`);
+  }
+
+  try {
+    return utf8Decoder.decode(buffer);
+  } catch {
+    throw new Error(`File is not valid UTF-8 text: ${source}`);
+  }
+}
+
 export async function currentGitDiff({
   cwd = process.cwd(),
   runner = execFileAsync,
@@ -67,21 +107,30 @@ export async function collectTextInput({
 } = {}) {
   const sections = [];
   const sources = [];
+  let estimatedSizeBytes = 0;
 
   if (stdinText.trim()) {
     sections.push(labelledSection("stdin", stdinText));
     sources.push("stdin");
+    estimatedSizeBytes += sectionSize("stdin", Buffer.byteLength(stdinText, "utf8"));
+    if (estimatedSizeBytes > maxTextBytes) {
+      throw new Error(`Context input exceeds ${maxTextBytes} bytes.`);
+    }
   }
 
   for (const filePath of files) {
-    const resolvedFilePath = isAbsolute(filePath)
-      ? filePath
-      : resolve(cwd, filePath);
-    const content = await readFile(resolvedFilePath, "utf8");
+    const resolvedFilePath = resolveCwdFilePath(filePath, { cwd });
+    const { size } = await stat(resolvedFilePath);
+    if (size > maxTextBytes || estimatedSizeBytes + sectionSize(filePath, size) > maxTextBytes) {
+      throw new Error(`Context input exceeds ${maxTextBytes} bytes.`);
+    }
+
+    const content = decodeUtf8FileContent(await readFile(resolvedFilePath), filePath);
     if (!content.trim()) continue;
 
     sections.push(labelledSection(filePath, content));
     sources.push(filePath);
+    estimatedSizeBytes += sectionSize(filePath, Buffer.byteLength(content, "utf8"));
   }
 
   if (diff) {

@@ -126,6 +126,58 @@ test("mcp server exposes context pack tool and latest context resource", async (
   }
 });
 
+test("mcp context pack validates empty input before credentials", async () => {
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [new URL("../bin/gemini-agent-mcp", import.meta.url).pathname],
+    env: {
+      ...process.env,
+      GEMINI_API_KEY: "",
+    },
+  });
+  const client = new Client({ name: "gemini-agent-test", version: "0.1.0" });
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({
+      name: "gemini_context_pack",
+      arguments: { input: "   \n" },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Context input is empty/);
+    assert.doesNotMatch(result.content[0].text, /Gemini API key/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("mcp artifact review validates local artifact before credentials", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-mcp-"));
+  await writeFile(join(dir, "archive.zip"), "zip");
+
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [new URL("../bin/gemini-agent-mcp", import.meta.url).pathname],
+    cwd: dir,
+    env: {
+      ...process.env,
+      GEMINI_API_KEY: "",
+    },
+  });
+  const client = new Client({ name: "gemini-agent-test", version: "0.1.0" });
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({
+      name: "gemini_artifact_review",
+      arguments: { file: "archive.zip", cwd: dir },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Unsupported artifact type/);
+    assert.doesNotMatch(result.content[0].text, /Gemini API key/);
+  } finally {
+    await client.close();
+  }
+});
+
 test("mcp server exposes latest artifact review resource", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-mcp-"));
   await mkdir(join(dir, ".gemini-agent", "artifacts"), { recursive: true });

@@ -10,6 +10,7 @@ import {
   DEFAULT_TEXT_LIMIT_BYTES,
   detectArtifactMime,
   imagePartFromFile,
+  resolveCwdFilePath,
 } from "../src/input-collector.mjs";
 
 const pngBytes = Buffer.from([
@@ -23,7 +24,7 @@ test("collectTextInput combines stdin text and file content with source labels",
 
   const result = await collectTextInput({
     stdinText: "stdin context\n",
-    files: [filePath],
+    files: ["notes.txt"],
     cwd: dir,
   });
 
@@ -31,10 +32,10 @@ test("collectTextInput combines stdin text and file content with source labels",
   assert.match(
     result.input,
     new RegExp(
-      `--- Source: ${filePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} ---\\nfile context`,
+      "--- Source: notes\\.txt ---\\nfile context",
     ),
   );
-  assert.deepEqual(result.sources, ["stdin", filePath]);
+  assert.deepEqual(result.sources, ["stdin", "notes.txt"]);
   assert.deepEqual(result.omittedSources, []);
   assert.equal(result.sizeBytes, Buffer.byteLength(result.input, "utf8"));
 });
@@ -62,10 +63,65 @@ test("collectTextInput rejects empty input", async () => {
   );
 });
 
+test("resolveCwdFilePath rejects absolute paths and cwd escapes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-input-"));
+  await writeFile(join(dir, "note.md"), "safe\n");
+
+  assert.equal(resolveCwdFilePath("note.md", { cwd: dir }), join(dir, "note.md"));
+  assert.throws(
+    () => resolveCwdFilePath(join(dir, "note.md"), { cwd: dir }),
+    /File path must be relative to cwd/,
+  );
+  assert.throws(
+    () => resolveCwdFilePath("../outside.md", { cwd: dir }),
+    /File path must stay within cwd/,
+  );
+});
+
+test("collectTextInput rejects unsafe file paths before reading", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-input-"));
+  const outside = join(tmpdir(), "gemini-agent-outside.txt");
+  await writeFile(outside, "outside\n");
+
+  await assert.rejects(
+    () => collectTextInput({ cwd: dir, files: [outside] }),
+    /File path must be relative to cwd/,
+  );
+  await assert.rejects(
+    () => collectTextInput({ cwd: dir, files: ["../gemini-agent-outside.txt"] }),
+    /File path must stay within cwd/,
+  );
+});
+
 test("collectTextInput enforces byte cap", async () => {
   await assert.rejects(
     () => collectTextInput({ stdinText: "too large", maxTextBytes: 5 }),
     /Context input exceeds 5 bytes\./,
+  );
+});
+
+test("collectTextInput rejects oversized files before reading content", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-input-"));
+  await writeFile(join(dir, "large.txt"), "0123456789");
+
+  await assert.rejects(
+    () => collectTextInput({ cwd: dir, files: ["large.txt"], maxTextBytes: 5 }),
+    /Context input exceeds 5 bytes\./,
+  );
+});
+
+test("collectTextInput rejects binary and invalid utf8 file content", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-input-"));
+  await writeFile(join(dir, "binary.txt"), Buffer.from([0x66, 0x00, 0x6f]));
+  await writeFile(join(dir, "invalid.txt"), Buffer.from([0xc3, 0x28]));
+
+  await assert.rejects(
+    () => collectTextInput({ cwd: dir, files: ["binary.txt"] }),
+    /File appears to be binary: binary\.txt/,
+  );
+  await assert.rejects(
+    () => collectTextInput({ cwd: dir, files: ["invalid.txt"] }),
+    /File is not valid UTF-8 text: invalid\.txt/,
   );
 });
 

@@ -22,9 +22,9 @@ Global Gemini review gate for Codex.
 - Gate commands reject empty input before resolving credentials.
 - Fake responses require explicit `GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1`.
 - Project policy is discovered from `.gemini-agent-policy.json`.
-- `context-pack` creates compact structured summaries for Codex; it does not edit project/source files. With `--write-artifact`, it writes JSON under `.gemini-agent/context/`.
+- `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1.
-- Generated local artifacts live under `.gemini-agent/`, which is ignored by git.
+- Generated local artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - PDF, video, batch, explicit cache, and automatic routing are deferred.
 
 ## Verified Locally

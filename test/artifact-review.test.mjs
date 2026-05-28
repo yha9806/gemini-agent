@@ -38,7 +38,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   const review = await runArtifactReview({
     apiKey: "fake-key",
     cwd: dir,
-    file: imagePath,
+    file: "design.png",
     now: new Date("2026-05-28T12:00:00.000Z"),
     generate: async ({ apiKey, prompt, contents, allowFakeResponse }) => {
       seenApiKey = apiKey;
@@ -53,7 +53,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   assert.equal(seenApiKey, "fake-key");
   assert.equal(seenAllowFakeResponse, false);
   assert.match(seenPrompt, /artifact review/i);
-  assert.match(seenPrompt, new RegExp(imagePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(seenPrompt, /design\.png/);
   assert.deepEqual(seenContents[0], {
     inlineData: {
       data: pngBytes.toString("base64"),
@@ -63,7 +63,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   assert.deepEqual(seenContents[1], { text: seenPrompt });
   assert.equal(review.metadata.model, "gemini-3.5-flash");
   assert.equal(review.metadata.generated_at, "2026-05-28T12:00:00.000Z");
-  assert.deepEqual(review.metadata.sources, [imagePath]);
+  assert.deepEqual(review.metadata.sources, ["design.png"]);
   assert.deepEqual(review.metadata.omitted_sources, []);
 
   const latest = JSON.parse(await readFile(join(dir, ".gemini-agent/artifacts/latest.json"), "utf8"));
@@ -80,7 +80,7 @@ test("runArtifactReview rejects PDF with explicit unsupported runtime error", as
     () => runArtifactReview({
       apiKey: "fake-key",
       cwd: dir,
-      file: pdfPath,
+      file: "paper.pdf",
       generate: assert.fail,
     }),
     /PDF artifact review requires Files API support/,
@@ -88,10 +88,12 @@ test("runArtifactReview rejects PDF with explicit unsupported runtime error", as
 });
 
 test("runArtifactReview rejects missing image files before generate is called", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
   await assert.rejects(
     () => runArtifactReview({
       apiKey: "fake-key",
-      file: "/path/that/does/not/exist.png",
+      cwd: dir,
+      file: "missing.png",
       generate: assert.fail,
     }),
     /ENOENT/,
@@ -107,7 +109,7 @@ test("runArtifactReview rejects invalid generated review via normalizeArtifactRe
     () => runArtifactReview({
       apiKey: "fake-key",
       cwd: dir,
-      file: imagePath,
+      file: "design.png",
       generate: async () => ({ kind: "context_pack" }),
     }),
     /Invalid artifact review JSON/,
@@ -122,7 +124,7 @@ test("runArtifactReview maps architecture artifact kind to diagram", async () =>
   const review = await runArtifactReview({
     apiKey: "fake-key",
     cwd: dir,
-    file: imagePath,
+    file: "architecture.png",
     artifactKind: "architecture",
     generate: async () => ({
       ...fakeReview,
@@ -131,6 +133,32 @@ test("runArtifactReview maps architecture artifact kind to diagram", async () =>
   });
 
   assert.equal(review.artifact_type, "diagram");
+});
+
+test("runArtifactReview rejects absolute and cwd-escaping paths", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
+  const imagePath = join(dir, "design.png");
+  await writeFile(imagePath, pngBytes);
+
+  await assert.rejects(
+    () => runArtifactReview({
+      apiKey: "fake-key",
+      cwd: dir,
+      file: imagePath,
+      generate: assert.fail,
+    }),
+    /File path must be relative to cwd/,
+  );
+
+  await assert.rejects(
+    () => runArtifactReview({
+      apiKey: "fake-key",
+      cwd: dir,
+      file: "../design.png",
+      generate: assert.fail,
+    }),
+    /File path must stay within cwd/,
+  );
 });
 
 test("runArtifactReview requires file path", async () => {

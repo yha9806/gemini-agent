@@ -54,6 +54,7 @@ test("runContextPack builds prompt, calls Gemini, attaches metadata, and writes 
   const latest = JSON.parse(await readFile(join(dir, ".gemini-agent/context/latest.json"), "utf8"));
   assert.equal(latest.kind, "context_pack");
   assert.equal(latest.metadata.generated_at, "2026-05-28T12:00:00.000Z");
+  assert.match(await readFile(join(dir, ".gitignore"), "utf8"), /\.gemini-agent\//);
 });
 
 test("runContextPack rejects empty input before generate is called", async () => {
@@ -68,13 +69,39 @@ test("runContextPack rejects empty input before generate is called", async () =>
 });
 
 test("runContextPack rejects missing files before generate is called", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-context-"));
   await assert.rejects(
     () => runContextPack({
       apiKey: "fake-key",
-      files: ["/path/that/does/not/exist.md"],
+      cwd: dir,
+      files: ["missing.md"],
       generate: assert.fail,
     }),
     /ENOENT/,
+  );
+});
+
+test("runContextPack rejects unsafe file paths before generate is called", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-context-"));
+
+  await assert.rejects(
+    () => runContextPack({
+      apiKey: "fake-key",
+      cwd: dir,
+      files: [join(dir, "notes.md")],
+      generate: assert.fail,
+    }),
+    /File path must be relative to cwd/,
+  );
+
+  await assert.rejects(
+    () => runContextPack({
+      apiKey: "fake-key",
+      cwd: dir,
+      files: ["../notes.md"],
+      generate: assert.fail,
+    }),
+    /File path must stay within cwd/,
   );
 });
 

@@ -7,6 +7,12 @@ import { readLatestArtifact } from "./artifact-store.mjs";
 import { runContextPack } from "./context-pack.mjs";
 import { resolveApiKey } from "./keychain.mjs";
 import { generateReview } from "./gemini-client.mjs";
+import {
+  collectTextInput,
+  detectArtifactMime,
+  imagePartFromFile,
+  resolveCwdFilePath,
+} from "./input-collector.mjs";
 import { loadProjectPolicy, renderPolicy } from "./policies.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
@@ -94,6 +100,17 @@ async function runReviewTool(gate, input, cwd = process.cwd()) {
   return textContent(reviewToPrettyJson(review));
 }
 
+async function prevalidateArtifactInput(file, cwd = process.cwd()) {
+  const resolvedFile = resolveCwdFilePath(file, { cwd });
+  const mimeType = detectArtifactMime(file);
+
+  if (mimeType === "application/pdf") {
+    throw new Error("PDF artifact review requires Files API support.");
+  }
+
+  await imagePartFromFile(resolvedFile);
+}
+
 for (const [name, gate, description] of [
   ["gemini_plan_critique", "plan_critique", "Critique an implementation plan before code is written."],
   ["gemini_patch_precheck", "patch_precheck", "Review intended patch scope before edits."],
@@ -126,12 +143,14 @@ server.registerTool(
     },
   },
   async ({ input, cwd, write_artifact }) => {
+    const cwdValue = cwd || process.cwd();
+    const collected = await collectTextInput({ stdinText: input, cwd: cwdValue });
     const fakeAllowed = allowFakeResponse();
     const apiKey = await requireApiKey();
     const pack = await runContextPack({
       apiKey,
-      cwd: cwd || process.cwd(),
-      stdinText: input,
+      cwd: cwdValue,
+      collected,
       env: process.env,
       allowFakeResponse: fakeAllowed,
       writeArtifact: Boolean(write_artifact),
@@ -153,11 +172,13 @@ server.registerTool(
     },
   },
   async ({ file, kind, cwd, write_artifact }) => {
+    const cwdValue = cwd || process.cwd();
+    await prevalidateArtifactInput(file, cwdValue);
     const fakeAllowed = allowFakeResponse();
     const apiKey = await requireApiKey();
     const review = await runArtifactReview({
       apiKey,
-      cwd: cwd || process.cwd(),
+      cwd: cwdValue,
       file,
       artifactKind: kind || "image",
       env: process.env,

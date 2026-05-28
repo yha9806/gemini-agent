@@ -4,7 +4,12 @@ import { runArtifactReview } from "./artifact-review.mjs";
 import { runContextPack } from "./context-pack.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
-import { collectTextInput, detectArtifactMime, imagePartFromFile } from "./input-collector.mjs";
+import {
+  collectTextInput,
+  detectArtifactMime,
+  imagePartFromFile,
+  resolveCwdFilePath,
+} from "./input-collector.mjs";
 import { loadProjectPolicy } from "./policies.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
@@ -146,7 +151,8 @@ function parseArtifactArgs(args) {
   return { file, artifactKind, writeArtifact };
 }
 
-async function prevalidateArtifactFile(file) {
+async function prevalidateArtifactFile(file, cwd = process.cwd()) {
+  const resolvedFile = resolveCwdFilePath(file, { cwd });
   let mimeType;
   try {
     mimeType = detectArtifactMime(file);
@@ -161,7 +167,7 @@ async function prevalidateArtifactFile(file) {
     throw new Error("PDF artifact review requires Files API support.");
   }
 
-  await imagePartFromFile(file);
+  await imagePartFromFile(resolvedFile);
 }
 
 async function runAuth(args) {
@@ -225,7 +231,8 @@ async function runContextPackCommand(args) {
 
 async function runArtifactReviewCommand(args) {
   const { file, artifactKind, writeArtifact } = parseArtifactArgs(args);
-  await prevalidateArtifactFile(file);
+  const cwd = process.cwd();
+  await prevalidateArtifactFile(file, cwd);
   const fakeAllowed = allowFakeResponse(process.env);
   if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
     throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
@@ -234,7 +241,7 @@ async function runArtifactReviewCommand(args) {
   if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
   const review = await runArtifactReview({
     apiKey: key.key,
-    cwd: process.cwd(),
+    cwd,
     file,
     artifactKind,
     env: process.env,

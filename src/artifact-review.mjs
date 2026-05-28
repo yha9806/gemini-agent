@@ -1,7 +1,7 @@
 import { createPartFromText } from "@google/genai";
 import { writeJsonArtifact } from "./artifact-store.mjs";
 import { generateArtifactReview, getDefaultModel } from "./gemini-client.mjs";
-import { detectArtifactMime, imagePartFromFile } from "./input-collector.mjs";
+import { detectArtifactMime, imagePartFromFile, resolveCwdFilePath } from "./input-collector.mjs";
 import { loadProjectPolicy } from "./policies.mjs";
 import { buildArtifactReviewPrompt } from "./prompts.mjs";
 import { normalizeArtifactReview } from "./schemas.mjs";
@@ -29,6 +29,7 @@ export async function runArtifactReview({
 } = {}) {
   if (!file) throw new Error("--file requires a path.");
 
+  const resolvedFile = resolveCwdFilePath(file, { cwd });
   const mimeType = detectArtifactMime(file);
   const artifactType = artifactTypeFor({ artifactKind, mimeType });
 
@@ -36,7 +37,7 @@ export async function runArtifactReview({
     throw new Error("PDF artifact review requires Files API support.");
   }
 
-  const imagePart = await imagePartFromFile(file);
+  const imagePart = await imagePartFromFile(resolvedFile);
   const policy = await loadProjectPolicy(cwd);
   const prompt = buildArtifactReviewPrompt({
     artifactKind,
