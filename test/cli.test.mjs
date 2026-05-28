@@ -59,6 +59,23 @@ const fakeContextPack = JSON.stringify({
     omitted_sources: [],
   },
 });
+const fakeArtifactReview = JSON.stringify({
+  kind: "artifact_review",
+  artifact_type: "image",
+  summary: ["Dashboard screenshot"],
+  important_details: ["Primary action is visible"],
+  design_or_research_findings: ["Layout is readable"],
+  implementation_hints_for_codex: ["Use existing button styles"],
+  risks_or_ambiguities: [],
+  questions_for_user: [],
+  limitations: ["Single image only"],
+  metadata: {
+    model: "gemini-3.5-flash",
+    generated_at: "2026-05-28T00:00:00.000Z",
+    sources: [],
+    omitted_sources: [],
+  },
+});
 
 test("auth status reports env source without exposing key", async () => {
   const { stdout } = await execFileAsync(bin, ["auth", "status"], {
@@ -230,4 +247,81 @@ test("context-pack accepts direct text args and prints JSON", async () => {
   const parsed = JSON.parse(stdout);
   assert.equal(parsed.kind, "context_pack");
   assert.deepEqual(parsed.metadata.sources, ["stdin"]);
+});
+
+test("artifact-review accepts image file and prints JSON", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const imagePath = join(dir, "design.png");
+  await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+  const { stdout } = await execFileAsync(bin, ["artifact-review", "--file", imagePath, "--kind", "ui"], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeArtifactReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.kind, "artifact_review");
+  assert.equal(parsed.artifact_type, "design");
+  assert.deepEqual(parsed.summary, ["Dashboard screenshot"]);
+});
+
+test("artifact-review rejects unsupported artifact before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const archivePath = join(dir, "archive.zip");
+  await writeFile(archivePath, "zip");
+
+  await assert.rejects(
+    execFileAsync(bin, ["artifact-review", "--file", archivePath], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unsupported artifact file type/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("artifact-review rejects missing image file before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const imagePath = join(dir, "missing.png");
+
+  await assert.rejects(
+    execFileAsync(bin, ["artifact-review", "--file", imagePath], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /ENOENT/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("artifact-review rejects PDF before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const pdfPath = join(dir, "paper.pdf");
+  await writeFile(pdfPath, "%PDF-1.7\n");
+
+  await assert.rejects(
+    execFileAsync(bin, ["artifact-review", "--file", pdfPath], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /PDF artifact review requires Files API support/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
 });
