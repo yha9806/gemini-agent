@@ -30,6 +30,52 @@ test("writeJsonArtifact writes timestamped file and latest atomically", async ()
   assert.deepEqual(timestamped, artifact);
 });
 
+test("writeJsonArtifact keeps same-timestamp artifacts distinct", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-store-"));
+  const now = new Date("2026-05-28T12:00:00.000Z");
+  const first = { kind: "context_pack", value: 1 };
+  const second = { kind: "context_pack", value: 2 };
+
+  const firstResult = await writeJsonArtifact({
+    cwd: dir,
+    category: "context",
+    artifact: first,
+    now,
+  });
+  const secondResult = await writeJsonArtifact({
+    cwd: dir,
+    category: "context",
+    artifact: second,
+    now,
+  });
+
+  assert.notEqual(firstResult.timestampedPath, secondResult.timestampedPath);
+  assert.deepEqual(
+    JSON.parse(await readFile(firstResult.timestampedPath, "utf8")),
+    first,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(secondResult.timestampedPath, "utf8")),
+    second,
+  );
+});
+
+test("writeJsonArtifact rejects unsafe artifact categories", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-store-"));
+
+  for (const category of ["", "..", "context/foo", "context\\foo"]) {
+    await assert.rejects(
+      () => writeJsonArtifact({
+        cwd: dir,
+        category,
+        artifact: { kind: "context_pack" },
+      }),
+      /Artifact category must be a safe path segment/,
+      category,
+    );
+  }
+});
+
 test("readLatestArtifact returns null when latest artifact is missing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-store-"));
   const artifact = await readLatestArtifact({ cwd: dir, category: "context" });

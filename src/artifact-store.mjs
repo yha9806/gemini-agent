@@ -2,13 +2,34 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const ARTIFACT_ROOT = ".gemini-agent";
+const SAFE_CATEGORY = /^[a-z0-9-]+$/i;
 
 function stamp(now = new Date()) {
   return now.toISOString().replace(/:/g, "").replace(".", "");
 }
 
 export function artifactDirectory({ cwd = process.cwd(), category }) {
+  if (!SAFE_CATEGORY.test(category ?? "")) {
+    throw new Error("Artifact category must be a safe path segment.");
+  }
+
   return join(cwd, ARTIFACT_ROOT, category);
+}
+
+async function writeTimestampedArtifact({ dir, category, stampValue, body }) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const suffix = attempt === 0 ? "" : `-${attempt}`;
+    const timestampedPath = join(dir, `${stampValue}${suffix}-${category}.json`);
+
+    try {
+      await writeFile(timestampedPath, body, { flag: "wx" });
+      return timestampedPath;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+  }
+
+  throw new Error("Unable to create a unique timestamped artifact path.");
 }
 
 export async function ensureArtifactGitignore(cwd = process.cwd()) {
@@ -36,15 +57,16 @@ export async function writeJsonArtifact({
   artifact,
   now = new Date(),
 }) {
-  if (!category || !category.trim()) {
-    throw new Error("Artifact category is empty.");
-  }
-
   const dir = artifactDirectory({ cwd, category });
   await mkdir(dir, { recursive: true });
 
   const body = `${JSON.stringify(artifact, null, 2)}\n`;
-  const timestampedPath = join(dir, `${stamp(now)}-${category}.json`);
+  const timestampedPath = await writeTimestampedArtifact({
+    dir,
+    category,
+    stampValue: stamp(now),
+    body,
+  });
   const latestPath = join(dir, "latest.json");
   const tmpPath = join(
     dir,
