@@ -124,9 +124,11 @@ async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (command === "ask") {
+    const prompt = args.join(" ").trim();
+    if (!prompt) throw new Error("Prompt is empty.");
     const key = await resolveApiKey();
     if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
-    const text = await generateText({ apiKey: key.key, prompt: args.join(" ") });
+    const text = await generateText({ apiKey: key.key, prompt });
     output.write(`${text}\n`);
     return;
   }

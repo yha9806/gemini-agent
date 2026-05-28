@@ -111,3 +111,19 @@ test("auth set requires an interactive TTY", async () => {
     },
   );
 });
+
+test("ask rejects empty prompts before auth lookup", async () => {
+  for (const args of [["ask"], ["ask", "   "]]) {
+    await assert.rejects(
+      execFileAsync(bin, args, {
+        env: { PATH: process.env.PATH },
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Prompt is empty\./);
+        assert.doesNotMatch(error.stderr, /Gemini API key/);
+        return true;
+      },
+    );
+  }
+});
