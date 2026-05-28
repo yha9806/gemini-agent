@@ -13,6 +13,10 @@ const GATE_COMMANDS = new Map([
   ["research-brief", "research_brief"],
 ]);
 
+function allowFakeResponse(env = process.env) {
+  return env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE === "1";
+}
+
 function printUsage() {
   output.write([
     "Usage:",
@@ -79,6 +83,7 @@ async function runAuth(args) {
     return;
   }
   if (sub === "set") {
+    if (!input.isTTY) throw new Error("auth set requires an interactive TTY.");
     const key = await readSecret("Gemini API key: ");
     await saveApiKeyToKeychain(key);
     output.write("Saved GEMINI_API_KEY to macOS Keychain.\n");
@@ -95,11 +100,16 @@ async function runAuth(args) {
 async function runGate(command, args) {
   const gate = GATE_COMMANDS.get(command);
   const inputText = await readGateInput(args);
+  if (!inputText || !inputText.trim()) throw new Error("Gate input is empty.");
+  const fakeAllowed = allowFakeResponse(process.env);
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
   const key = await resolveApiKey();
   if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
   const policy = await loadProjectPolicy(process.cwd());
   const prompt = buildGatePrompt({ gate, input: inputText, policy });
-  const review = await generateReview({ apiKey: key.key, prompt, allowFakeResponse: true, env: process.env });
+  const review = await generateReview({ apiKey: key.key, prompt, allowFakeResponse: fakeAllowed, env: process.env });
   output.write(reviewToPrettyJson(review));
 }
 
