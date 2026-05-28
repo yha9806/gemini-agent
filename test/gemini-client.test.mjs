@@ -45,6 +45,33 @@ test("generates normalized review through fake client", async () => {
   assert.deepEqual(review.notes, ["ok"]);
 });
 
+test("generateReview ignores caller-provided contents and sends prompt", async () => {
+  const review = await generateReview({
+    apiKey: "fake-key",
+    prompt: "review prompt",
+    contents: [{ text: "caller override" }],
+    makeAi: () => ({
+      models: {
+        async generateContent(request) {
+          assert.equal(request.contents, "review prompt");
+          return {
+            text: JSON.stringify({
+              verdict: "pass",
+              top_risks: [],
+              missing_tests: [],
+              unsafe_claims: [],
+              suggested_changes: [],
+              notes: [],
+            }),
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(review.verdict, "pass");
+});
+
 test("generateJson sends structured JSON request and normalizes response", async () => {
   const result = await generateJson({
     apiKey: "fake-key",

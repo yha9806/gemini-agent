@@ -67,9 +67,24 @@ export async function generateJson({
   return normalize(parseJsonObject(response.text || ""));
 }
 
-export async function generateReview(options) {
+export async function generateReview({
+  apiKey,
+  prompt,
+  env,
+  allowFakeResponse,
+  model,
+  makeAi,
+  temperature,
+}) {
   return generateJson({
-    ...options,
+    apiKey,
+    prompt,
+    contents: prompt,
+    env,
+    allowFakeResponse,
+    model,
+    makeAi,
+    temperature,
     responseSchema: GeminiReviewSchema,
     normalize: normalizeReview,
   });
