@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   collectTextInput,
   currentGitDiff,
+  DEFAULT_IMAGE_LIMIT_BYTES,
+  DEFAULT_TEXT_LIMIT_BYTES,
   detectArtifactMime,
   imagePartFromFile,
 } from "../src/input-collector.mjs";
@@ -51,6 +53,27 @@ test("collectTextInput enforces byte cap", async () => {
   );
 });
 
+test("collectTextInput includes labelled git diff from injected runner", async () => {
+  const calls = [];
+  const stdout = "diff --git a/src/app.mjs b/src/app.mjs\n+changed\n";
+
+  const result = await collectTextInput({
+    diff: true,
+    cwd: "/repo",
+    runner: async (...args) => {
+      calls.push(args);
+      return { stdout };
+    },
+  });
+
+  assert.match(result.input, /--- Source: git diff ---\ndiff --git/);
+  assert.match(result.input, /\+changed\n$/);
+  assert.deepEqual(result.sources, ["git diff"]);
+  assert.deepEqual(calls, [
+    ["git", ["diff", "--no-ext-diff"], { cwd: "/repo" }],
+  ]);
+});
+
 test("currentGitDiff uses injected runner and returns stdout", async () => {
   const calls = [];
   const stdout = "diff --git a/file b/file\n";
@@ -68,8 +91,14 @@ test("currentGitDiff uses injected runner and returns stdout", async () => {
   ]);
 });
 
+test("exports default text and image byte limits", () => {
+  assert.equal(DEFAULT_TEXT_LIMIT_BYTES, 4 * 1024 * 1024);
+  assert.equal(DEFAULT_IMAGE_LIMIT_BYTES, 20 * 1024 * 1024);
+});
+
 test("detectArtifactMime accepts design.PNG, photo.jpeg, mock.webp, paper.pdf", () => {
   assert.equal(detectArtifactMime("design.PNG"), "image/png");
+  assert.equal(detectArtifactMime("photo.jpg"), "image/jpeg");
   assert.equal(detectArtifactMime("photo.jpeg"), "image/jpeg");
   assert.equal(detectArtifactMime("mock.webp"), "image/webp");
   assert.equal(detectArtifactMime("paper.pdf"), "application/pdf");
