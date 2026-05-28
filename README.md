@@ -14,6 +14,7 @@ Global Gemini review gate for Codex.
 ## Safety
 
 - Credentials are read from `GEMINI_API_KEY` or macOS Keychain service `GEMINI_API_KEY`.
+- Runtime Gemini calls use `gemini-3.5-flash`.
 - `auth status` reports only availability and source; it never prints the key.
 - Gate commands reject empty input before resolving credentials.
 - Fake responses require explicit `GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1`.

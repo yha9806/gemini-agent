@@ -3,8 +3,8 @@ import test from "node:test";
 import { generateReview, generateText, getDefaultModel } from "../src/gemini-client.mjs";
 
 test("uses stable default model", () => {
-  assert.equal(getDefaultModel({}), "gemini-2.5-pro");
-  assert.equal(getDefaultModel({ GEMINI_AGENT_MODEL: "gemini-2.5-flash" }), "gemini-2.5-flash");
+  assert.equal(getDefaultModel({}), "gemini-3.5-flash");
+  assert.equal(getDefaultModel({ GEMINI_AGENT_MODEL: "gemini-2.5-flash" }), "gemini-3.5-flash");
 });
 
 test("generates normalized review through fake client", async () => {
@@ -14,7 +14,7 @@ test("generates normalized review through fake client", async () => {
     makeAi: () => ({
       models: {
         async generateContent(request) {
-          assert.equal(request.model, "gemini-2.5-pro");
+          assert.equal(request.model, "gemini-3.5-flash");
           assert.equal(request.contents, "review this");
           assert.equal(request.config.temperature, 0.2);
           assert.equal(request.config.responseMimeType, "application/json");
@@ -37,19 +37,18 @@ test("generates normalized review through fake client", async () => {
   assert.deepEqual(review.notes, ["ok"]);
 });
 
-test("generates trimmed text through fake client with injected default model", async () => {
+test("generates trimmed text through fake client with default 3.5 Flash model", async () => {
   let seenApiKey;
   const text = await generateText({
     apiKey: "fake-key",
     prompt: "say hi",
-    env: { GEMINI_AGENT_MODEL: "gemini-2.5-flash" },
     temperature: 0.7,
     makeAi: (apiKey) => {
       seenApiKey = apiKey;
       return {
         models: {
           async generateContent(request) {
-            assert.equal(request.model, "gemini-2.5-flash");
+            assert.equal(request.model, "gemini-3.5-flash");
             assert.equal(request.contents, "say hi");
             assert.deepEqual(request.config, { temperature: 0.7 });
             return { text: "  hello from Gemini  \n" };

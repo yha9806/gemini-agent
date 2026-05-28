@@ -1,8 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
 import { GeminiReviewSchema, normalizeReview, parseJsonObject } from "./schemas.mjs";
 
-export function getDefaultModel(env = process.env) {
-  return env.GEMINI_AGENT_MODEL || "gemini-2.5-pro";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+
+export function getDefaultModel() {
+  return DEFAULT_GEMINI_MODEL;
 }
 
 export function makeGoogleGenAI(apiKey) {
@@ -24,7 +26,7 @@ export async function generateReview({
   prompt,
   env = process.env,
   allowFakeResponse = false,
-  model = getDefaultModel(env),
+  model = getDefaultModel(),
   makeAi = makeGoogleGenAI,
   temperature = 0.2,
 }) {
@@ -57,8 +59,7 @@ export async function generateReview({
 export async function generateText({
   apiKey,
   prompt,
-  env = process.env,
-  model = getDefaultModel(env),
+  model = getDefaultModel(),
   makeAi = makeGoogleGenAI,
   temperature = 0.2,
 }) {
