@@ -39,6 +39,22 @@ test("collectTextInput combines stdin text and file content with source labels",
   assert.equal(result.sizeBytes, Buffer.byteLength(result.input, "utf8"));
 });
 
+test("collectTextInput reads relative file paths from cwd", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-input-"));
+  await writeFile(join(dir, "note.md"), "cwd relative context\n");
+
+  const result = await collectTextInput({
+    cwd: dir,
+    files: ["note.md"],
+  });
+
+  assert.match(
+    result.input,
+    /--- Source: note\.md ---\ncwd relative context\n$/,
+  );
+  assert.deepEqual(result.sources, ["note.md"]);
+});
+
 test("collectTextInput rejects empty input", async () => {
   await assert.rejects(
     () => collectTextInput({ stdinText: "", files: [] }),
@@ -69,9 +85,11 @@ test("collectTextInput includes labelled git diff from injected runner", async (
   assert.match(result.input, /--- Source: git diff ---\ndiff --git/);
   assert.match(result.input, /\+changed\n$/);
   assert.deepEqual(result.sources, ["git diff"]);
-  assert.deepEqual(calls, [
-    ["git", ["diff", "--no-ext-diff"], { cwd: "/repo" }],
-  ]);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].slice(0, 2), ["git", ["diff", "--no-ext-diff"]]);
+  assert.equal(calls[0][2].cwd, "/repo");
+  assert.equal(calls[0][2].encoding, "utf8");
+  assert.ok(calls[0][2].maxBuffer >= DEFAULT_TEXT_LIMIT_BYTES);
 });
 
 test("currentGitDiff uses injected runner and returns stdout", async () => {
@@ -86,9 +104,26 @@ test("currentGitDiff uses injected runner and returns stdout", async () => {
   });
 
   assert.equal(result, stdout);
-  assert.deepEqual(calls, [
-    ["git", ["diff", "--no-ext-diff"], { cwd: "/repo" }],
-  ]);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].slice(0, 2), ["git", ["diff", "--no-ext-diff"]]);
+  assert.equal(calls[0][2].cwd, "/repo");
+  assert.equal(calls[0][2].encoding, "utf8");
+  assert.ok(calls[0][2].maxBuffer >= DEFAULT_TEXT_LIMIT_BYTES);
+});
+
+test("currentGitDiff gives git diff a buffer at least as large as the text cap", async () => {
+  const calls = [];
+
+  await currentGitDiff({
+    cwd: "/repo",
+    runner: async (...args) => {
+      calls.push(args);
+      return { stdout: "" };
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0][2].maxBuffer >= DEFAULT_TEXT_LIMIT_BYTES);
 });
 
 test("exports default text and image byte limits", () => {

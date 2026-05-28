@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { extname } from "node:path";
+import { extname, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createPartFromBase64 } from "@google/genai";
 
@@ -49,7 +49,11 @@ export async function currentGitDiff({
   cwd = process.cwd(),
   runner = execFileAsync,
 } = {}) {
-  const { stdout } = await runner("git", ["diff", "--no-ext-diff"], { cwd });
+  const { stdout } = await runner("git", ["diff", "--no-ext-diff"], {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: DEFAULT_TEXT_LIMIT_BYTES + 64 * 1024,
+  });
   return stdout;
 }
 
@@ -70,7 +74,10 @@ export async function collectTextInput({
   }
 
   for (const filePath of files) {
-    const content = await readFile(filePath, "utf8");
+    const resolvedFilePath = isAbsolute(filePath)
+      ? filePath
+      : resolve(cwd, filePath);
+    const content = await readFile(resolvedFilePath, "utf8");
     if (!content.trim()) continue;
 
     sections.push(labelledSection(filePath, content));
