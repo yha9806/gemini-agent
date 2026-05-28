@@ -1,5 +1,13 @@
 import { GoogleGenAI } from "@google/genai";
-import { GeminiReviewSchema, normalizeReview, parseJsonObject } from "./schemas.mjs";
+import {
+  GeminiArtifactReviewSchema,
+  GeminiContextPackSchema,
+  GeminiReviewSchema,
+  normalizeArtifactReview,
+  normalizeContextPack,
+  normalizeReview,
+  parseJsonObject,
+} from "./schemas.mjs";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
 
@@ -21,9 +29,12 @@ function requestError(error, apiKey) {
   return new Error(`Gemini API request failed: ${redactApiKey(message, apiKey)}`);
 }
 
-export async function generateReview({
+export async function generateJson({
   apiKey,
   prompt,
+  contents = prompt,
+  responseSchema,
+  normalize,
   env = process.env,
   allowFakeResponse = false,
   model = getDefaultModel(),
@@ -34,7 +45,7 @@ export async function generateReview({
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
 
   if (allowFakeResponse && env.GEMINI_AGENT_FAKE_RESPONSE) {
-    return normalizeReview(parseJsonObject(env.GEMINI_AGENT_FAKE_RESPONSE));
+    return normalize(parseJsonObject(env.GEMINI_AGENT_FAKE_RESPONSE));
   }
 
   let response;
@@ -42,18 +53,42 @@ export async function generateReview({
     const ai = makeAi(apiKey);
     response = await ai.models.generateContent({
       model,
-      contents: prompt,
+      contents,
       config: {
         temperature,
         responseMimeType: "application/json",
-        responseSchema: GeminiReviewSchema,
+        responseSchema,
       },
     });
   } catch (error) {
     throw requestError(error, apiKey);
   }
 
-  return normalizeReview(parseJsonObject(response.text || ""));
+  return normalize(parseJsonObject(response.text || ""));
+}
+
+export async function generateReview(options) {
+  return generateJson({
+    ...options,
+    responseSchema: GeminiReviewSchema,
+    normalize: normalizeReview,
+  });
+}
+
+export async function generateContextPack(options) {
+  return generateJson({
+    ...options,
+    responseSchema: GeminiContextPackSchema,
+    normalize: normalizeContextPack,
+  });
+}
+
+export async function generateArtifactReview(options) {
+  return generateJson({
+    ...options,
+    responseSchema: GeminiArtifactReviewSchema,
+    normalize: normalizeArtifactReview,
+  });
 }
 
 export async function generateText({
