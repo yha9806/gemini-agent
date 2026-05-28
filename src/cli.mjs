@@ -1,10 +1,18 @@
 import { readFile } from "node:fs/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { runArtifactReview } from "./artifact-review.mjs";
+import { runContextPack } from "./context-pack.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
+import {
+  collectTextInput,
+  detectArtifactMime,
+  imagePartFromFile,
+  resolveCwdFilePath,
+} from "./input-collector.mjs";
 import { loadProjectPolicy } from "./policies.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
-import { reviewToPrettyJson } from "./schemas.mjs";
+import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 
 const GATE_COMMANDS = new Map([
   ["plan-critique", "plan_critique"],
@@ -12,6 +20,8 @@ const GATE_COMMANDS = new Map([
   ["diff-review", "diff_review"],
   ["research-brief", "research_brief"],
 ]);
+
+const ARTIFACT_KINDS = new Set(["image", "ui", "design", "architecture", "research"]);
 
 function allowFakeResponse(env = process.env) {
   return env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE === "1";
@@ -24,6 +34,8 @@ function printUsage() {
     "  gemini-agent auth set",
     "  gemini-agent auth delete",
     "  gemini-agent ask <prompt>",
+    "  gemini-agent context-pack [--stdin] [--file <path> ...] [--diff] [--write-artifact] [text]",
+    "  gemini-agent artifact-review --file <path> [--kind image|ui|design|architecture|research] [--write-artifact]",
     "  gemini-agent plan-critique (--file <path> | --stdin | <text>)",
     "  gemini-agent patch-precheck (--file <path> | --stdin | <text>)",
     "  gemini-agent diff-review (--file <path> | --stdin | <text>)",
@@ -75,6 +87,89 @@ async function readGateInput(args) {
   return args.join(" ").trim();
 }
 
+async function parseCommonInputArgs(args) {
+  const files = [];
+  const textArgs = [];
+  let readFromStdin = false;
+  let diff = false;
+  let writeArtifact = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--stdin") {
+      readFromStdin = true;
+    } else if (arg === "--file") {
+      const path = args[index + 1];
+      if (!path) throw new Error("--file requires a path.");
+      files.push(path);
+      index += 1;
+    } else if (arg === "--diff") {
+      diff = true;
+    } else if (arg === "--write-artifact") {
+      writeArtifact = true;
+    } else {
+      textArgs.push(arg);
+    }
+  }
+
+  const stdinText = [
+    readFromStdin ? await readStdin() : "",
+    textArgs.join(" "),
+  ].filter(Boolean).join("\n");
+
+  return { stdinText, files, diff, writeArtifact };
+}
+
+function parseArtifactArgs(args) {
+  let file = "";
+  let artifactKind = "image";
+  let writeArtifact = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--file") {
+      const path = args[index + 1];
+      if (!path || path.startsWith("--")) throw new Error("--file requires a path.");
+      file = path;
+      index += 1;
+    } else if (arg === "--kind") {
+      const kind = args[index + 1];
+      if (!kind || kind.startsWith("--")) throw new Error("--kind requires one of: image, ui, design, architecture, research.");
+      if (!ARTIFACT_KINDS.has(kind)) {
+        throw new Error("--kind requires one of: image, ui, design, architecture, research.");
+      }
+      artifactKind = kind;
+      index += 1;
+    } else if (arg === "--write-artifact") {
+      writeArtifact = true;
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  if (!file) throw new Error("--file requires a path.");
+  return { file, artifactKind, writeArtifact };
+}
+
+async function prevalidateArtifactFile(file, cwd = process.cwd()) {
+  const resolvedFile = resolveCwdFilePath(file, { cwd });
+  let mimeType;
+  try {
+    mimeType = detectArtifactMime(file);
+  } catch (error) {
+    if (error.message === "Unsupported artifact type.") {
+      throw new Error("Unsupported artifact file type.");
+    }
+    throw error;
+  }
+
+  if (mimeType === "application/pdf") {
+    throw new Error("PDF artifact review requires Files API support.");
+  }
+
+  await imagePartFromFile(resolvedFile);
+}
+
 async function runAuth(args) {
   const sub = args[0];
   if (sub === "status") {
@@ -113,6 +208,49 @@ async function runGate(command, args) {
   output.write(reviewToPrettyJson(review));
 }
 
+async function runContextPackCommand(args) {
+  const { stdinText, files, diff, writeArtifact } = await parseCommonInputArgs(args);
+  const cwd = process.cwd();
+  const collected = await collectTextInput({ stdinText, files, diff, cwd });
+  const fakeAllowed = allowFakeResponse(process.env);
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  const key = await resolveApiKey();
+  if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+  const pack = await runContextPack({
+    apiKey: key.key,
+    cwd,
+    collected,
+    env: process.env,
+    allowFakeResponse: fakeAllowed,
+    writeArtifact,
+  });
+  output.write(contextPackToPrettyJson(pack));
+}
+
+async function runArtifactReviewCommand(args) {
+  const { file, artifactKind, writeArtifact } = parseArtifactArgs(args);
+  const cwd = process.cwd();
+  await prevalidateArtifactFile(file, cwd);
+  const fakeAllowed = allowFakeResponse(process.env);
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  const key = await resolveApiKey();
+  if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+  const review = await runArtifactReview({
+    apiKey: key.key,
+    cwd,
+    file,
+    artifactKind,
+    env: process.env,
+    allowFakeResponse: fakeAllowed,
+    writeArtifact,
+  });
+  output.write(artifactReviewToPrettyJson(review));
+}
+
 async function main(argv = process.argv.slice(2)) {
   const [command, ...args] = argv;
   if (!command || command === "--help" || command === "-h") {
@@ -130,6 +268,14 @@ async function main(argv = process.argv.slice(2)) {
     if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
     const text = await generateText({ apiKey: key.key, prompt });
     output.write(`${text}\n`);
+    return;
+  }
+  if (command === "context-pack") {
+    await runContextPackCommand(args);
+    return;
+  }
+  if (command === "artifact-review") {
+    await runArtifactReviewCommand(args);
     return;
   }
   if (GATE_COMMANDS.has(command)) {

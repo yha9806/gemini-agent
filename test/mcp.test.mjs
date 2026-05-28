@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -10,6 +13,41 @@ const fakeReview = JSON.stringify({
   unsafe_claims: [],
   suggested_changes: [],
   notes: ["mcp fake ok"],
+});
+
+const fakeContextPack = JSON.stringify({
+  kind: "context_pack",
+  source_summary: ["mcp context ok"],
+  project_facts: ["MCP can package context"],
+  relevant_files: [{ path: "stdin", why_relevant: "provided input" }],
+  open_questions: [],
+  risks: [],
+  recommended_codex_actions: ["continue with implementation"],
+  limitations: ["selected input only"],
+  metadata: {
+    model: "gemini-3.5-flash",
+    generated_at: "2026-05-28T00:00:00.000Z",
+    sources: [],
+    omitted_sources: [],
+  },
+});
+
+const fakeArtifactReview = JSON.stringify({
+  kind: "artifact_review",
+  artifact_type: "image",
+  summary: ["mcp artifact ok"],
+  important_details: ["Artifact is readable"],
+  design_or_research_findings: ["Layout is clear"],
+  implementation_hints_for_codex: ["Keep existing styles"],
+  risks_or_ambiguities: [],
+  questions_for_user: [],
+  limitations: ["Single image only"],
+  metadata: {
+    model: "gemini-3.5-flash",
+    generated_at: "2026-05-28T00:00:00.000Z",
+    sources: [],
+    omitted_sources: [],
+  },
 });
 
 test("mcp server exposes auth and diff review tools", async () => {
@@ -39,6 +77,135 @@ test("mcp server exposes auth and diff review tools", async () => {
     const parsed = JSON.parse(text);
     assert.equal(parsed.verdict, "pass");
     assert.deepEqual(parsed.notes, ["mcp fake ok"]);
+  } finally {
+    await client.close();
+  }
+});
+
+test("mcp server exposes context pack tool and latest context resource", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-mcp-"));
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), `${fakeContextPack}\n`);
+
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [new URL("../bin/gemini-agent-mcp", import.meta.url).pathname],
+    cwd: dir,
+    env: {
+      ...process.env,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeContextPack,
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+    },
+  });
+  const client = new Client({ name: "gemini-agent-test", version: "0.1.0" });
+  await client.connect(transport);
+  try {
+    const tools = await client.listTools();
+    const names = tools.tools.map((tool) => tool.name);
+    assert.ok(names.includes("gemini_context_pack"));
+
+    const result = await client.callTool({
+      name: "gemini_context_pack",
+      arguments: { input: "notes", cwd: dir },
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.equal(parsed.kind, "context_pack");
+    assert.deepEqual(parsed.source_summary, ["mcp context ok"]);
+
+    const resources = await client.listResources();
+    const resourceUris = resources.resources.map((resource) => resource.uri);
+    assert.ok(resourceUris.includes("gemini-agent://context/latest"));
+    assert.ok(resourceUris.includes("gemini-agent://policy/current"));
+    assert.ok(resourceUris.includes("gemini-agent://reviews/latest"));
+
+    const resource = await client.readResource({ uri: "gemini-agent://context/latest" });
+    assert.match(resource.contents[0].text, /mcp context ok/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("mcp context pack validates empty input before credentials", async () => {
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [new URL("../bin/gemini-agent-mcp", import.meta.url).pathname],
+    env: {
+      ...process.env,
+      GEMINI_API_KEY: "",
+    },
+  });
+  const client = new Client({ name: "gemini-agent-test", version: "0.1.0" });
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({
+      name: "gemini_context_pack",
+      arguments: { input: "   \n" },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Context input is empty/);
+    assert.doesNotMatch(result.content[0].text, /Gemini API key/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("mcp artifact review validates local artifact before credentials", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-mcp-"));
+  await writeFile(join(dir, "archive.zip"), "zip");
+
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [new URL("../bin/gemini-agent-mcp", import.meta.url).pathname],
+    cwd: dir,
+    env: {
+      ...process.env,
+      GEMINI_API_KEY: "",
+    },
+  });
+  const client = new Client({ name: "gemini-agent-test", version: "0.1.0" });
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({
+      name: "gemini_artifact_review",
+      arguments: { file: "archive.zip", cwd: dir },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Unsupported artifact type/);
+    assert.doesNotMatch(result.content[0].text, /Gemini API key/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("mcp server exposes latest artifact review resource", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-mcp-"));
+  await mkdir(join(dir, ".gemini-agent", "artifacts"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "artifacts", "latest.json"), `${fakeArtifactReview}\n`);
+
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [new URL("../bin/gemini-agent-mcp", import.meta.url).pathname],
+    cwd: dir,
+    env: {
+      ...process.env,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeArtifactReview,
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+    },
+  });
+  const client = new Client({ name: "gemini-agent-test", version: "0.1.0" });
+  await client.connect(transport);
+  try {
+    const tools = await client.listTools();
+    const names = tools.tools.map((tool) => tool.name);
+    assert.ok(names.includes("gemini_artifact_review"));
+
+    const resources = await client.listResources();
+    assert.ok(resources.resources.some((resource) => resource.uri === "gemini-agent://artifact-reviews/latest"));
+
+    const resource = await client.readResource({ uri: "gemini-agent://artifact-reviews/latest" });
+    assert.match(resource.contents[0].text, /mcp artifact ok/);
   } finally {
     await client.close();
   }

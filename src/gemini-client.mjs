@@ -1,8 +1,18 @@
 import { GoogleGenAI } from "@google/genai";
-import { GeminiReviewSchema, normalizeReview, parseJsonObject } from "./schemas.mjs";
+import {
+  GeminiArtifactReviewSchema,
+  GeminiContextPackSchema,
+  GeminiReviewSchema,
+  normalizeArtifactReview,
+  normalizeContextPack,
+  normalizeReview,
+  parseJsonObject,
+} from "./schemas.mjs";
 
-export function getDefaultModel(env = process.env) {
-  return env.GEMINI_AGENT_MODEL || "gemini-2.5-pro";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+
+export function getDefaultModel() {
+  return DEFAULT_GEMINI_MODEL;
 }
 
 export function makeGoogleGenAI(apiKey) {
@@ -19,12 +29,14 @@ function requestError(error, apiKey) {
   return new Error(`Gemini API request failed: ${redactApiKey(message, apiKey)}`);
 }
 
-export async function generateReview({
+export async function generateJson({
   apiKey,
   prompt,
+  contents = prompt,
+  responseSchema,
+  normalize,
   env = process.env,
   allowFakeResponse = false,
-  model = getDefaultModel(env),
   makeAi = makeGoogleGenAI,
   temperature = 0.2,
 }) {
@@ -32,36 +44,78 @@ export async function generateReview({
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
 
   if (allowFakeResponse && env.GEMINI_AGENT_FAKE_RESPONSE) {
-    return normalizeReview(parseJsonObject(env.GEMINI_AGENT_FAKE_RESPONSE));
+    return normalize(parseJsonObject(env.GEMINI_AGENT_FAKE_RESPONSE));
   }
 
   let response;
   try {
     const ai = makeAi(apiKey);
     response = await ai.models.generateContent({
-      model,
-      contents: prompt,
+      model: getDefaultModel(),
+      contents,
       config: {
         temperature,
         responseMimeType: "application/json",
-        responseSchema: GeminiReviewSchema,
+        responseSchema,
       },
     });
   } catch (error) {
     throw requestError(error, apiKey);
   }
 
-  return normalizeReview(parseJsonObject(response.text || ""));
+  return normalize(parseJsonObject(response.text || ""));
 }
 
-export async function generateText({ apiKey, prompt, model = getDefaultModel(), makeAi = makeGoogleGenAI, temperature = 0.2 }) {
+export async function generateReview({
+  apiKey,
+  prompt,
+  env,
+  allowFakeResponse,
+  makeAi,
+  temperature,
+}) {
+  return generateJson({
+    apiKey,
+    prompt,
+    contents: prompt,
+    env,
+    allowFakeResponse,
+    makeAi,
+    temperature,
+    responseSchema: GeminiReviewSchema,
+    normalize: normalizeReview,
+  });
+}
+
+export async function generateContextPack(options) {
+  return generateJson({
+    ...options,
+    responseSchema: GeminiContextPackSchema,
+    normalize: normalizeContextPack,
+  });
+}
+
+export async function generateArtifactReview(options) {
+  return generateJson({
+    ...options,
+    responseSchema: GeminiArtifactReviewSchema,
+    normalize: normalizeArtifactReview,
+  });
+}
+
+export async function generateText({
+  apiKey,
+  prompt,
+  makeAi = makeGoogleGenAI,
+  temperature = 0.2,
+}) {
   if (!apiKey) throw new Error("Gemini API key is missing.");
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
   let response;
   try {
     const ai = makeAi(apiKey);
     response = await ai.models.generateContent({
-      model,
+      model: getDefaultModel(),
       contents: prompt,
       config: { temperature },
     });
