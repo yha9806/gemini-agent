@@ -1,10 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { runContextPack } from "./context-pack.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
+import { collectTextInput } from "./input-collector.mjs";
 import { loadProjectPolicy } from "./policies.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
-import { reviewToPrettyJson } from "./schemas.mjs";
+import { contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 
 const GATE_COMMANDS = new Map([
   ["plan-critique", "plan_critique"],
@@ -24,6 +26,7 @@ function printUsage() {
     "  gemini-agent auth set",
     "  gemini-agent auth delete",
     "  gemini-agent ask <prompt>",
+    "  gemini-agent context-pack [--stdin] [--file <path> ...] [--diff] [--write-artifact] [text]",
     "  gemini-agent plan-critique (--file <path> | --stdin | <text>)",
     "  gemini-agent patch-precheck (--file <path> | --stdin | <text>)",
     "  gemini-agent diff-review (--file <path> | --stdin | <text>)",
@@ -75,6 +78,39 @@ async function readGateInput(args) {
   return args.join(" ").trim();
 }
 
+async function parseCommonInputArgs(args) {
+  const files = [];
+  const textArgs = [];
+  let readFromStdin = false;
+  let diff = false;
+  let writeArtifact = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--stdin") {
+      readFromStdin = true;
+    } else if (arg === "--file") {
+      const path = args[index + 1];
+      if (!path) throw new Error("--file requires a path.");
+      files.push(path);
+      index += 1;
+    } else if (arg === "--diff") {
+      diff = true;
+    } else if (arg === "--write-artifact") {
+      writeArtifact = true;
+    } else {
+      textArgs.push(arg);
+    }
+  }
+
+  const stdinText = [
+    readFromStdin ? await readStdin() : "",
+    textArgs.join(" "),
+  ].filter(Boolean).join("\n");
+
+  return { stdinText, files, diff, writeArtifact };
+}
+
 async function runAuth(args) {
   const sub = args[0];
   if (sub === "status") {
@@ -113,6 +149,27 @@ async function runGate(command, args) {
   output.write(reviewToPrettyJson(review));
 }
 
+async function runContextPackCommand(args) {
+  const { stdinText, files, diff, writeArtifact } = await parseCommonInputArgs(args);
+  const cwd = process.cwd();
+  const collected = await collectTextInput({ stdinText, files, diff, cwd });
+  const fakeAllowed = allowFakeResponse(process.env);
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  const key = await resolveApiKey();
+  if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+  const pack = await runContextPack({
+    apiKey: key.key,
+    cwd,
+    collected,
+    env: process.env,
+    allowFakeResponse: fakeAllowed,
+    writeArtifact,
+  });
+  output.write(contextPackToPrettyJson(pack));
+}
+
 async function main(argv = process.argv.slice(2)) {
   const [command, ...args] = argv;
   if (!command || command === "--help" || command === "-h") {
@@ -130,6 +187,10 @@ async function main(argv = process.argv.slice(2)) {
     if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
     const text = await generateText({ apiKey: key.key, prompt });
     output.write(`${text}\n`);
+    return;
+  }
+  if (command === "context-pack") {
+    await runContextPackCommand(args);
     return;
   }
   if (GATE_COMMANDS.has(command)) {
