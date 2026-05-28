@@ -2,11 +2,14 @@ import { fstatSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { runArtifactReview } from "./artifact-review.mjs";
+import { readLatestArtifact } from "./artifact-store.mjs";
+import { runContextPack } from "./context-pack.mjs";
 import { resolveApiKey } from "./keychain.mjs";
 import { generateReview } from "./gemini-client.mjs";
-import { loadProjectPolicy } from "./policies.mjs";
+import { loadProjectPolicy, renderPolicy } from "./policies.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
-import { reviewToPrettyJson } from "./schemas.mjs";
+import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 
 if (fstatSync(0).isCharacterDevice()) {
   console.error("gemini-agent MCP server requires an MCP stdio client; standalone mode is not implemented.");
@@ -20,6 +23,47 @@ const server = new McpServer({
 
 function textContent(value) {
   return { content: [{ type: "text", text: value }] };
+}
+
+function allowFakeResponse(env = process.env) {
+  const allowed = env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE === "1";
+  if (env.GEMINI_AGENT_FAKE_RESPONSE && !allowed) {
+    throw new Error("Fake Gemini responses require GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  return allowed;
+}
+
+async function requireApiKey() {
+  const key = await resolveApiKey();
+  if (!key.ok) throw new Error("Gemini API key is not configured.");
+  return key.key;
+}
+
+function jsonResource(uri, value) {
+  return {
+    contents: [{
+      uri,
+      mimeType: "application/json",
+      text: `${JSON.stringify(value, null, 2)}\n`,
+    }],
+  };
+}
+
+function textResource(uri, text) {
+  return {
+    contents: [{
+      uri,
+      mimeType: "text/plain",
+      text: `${text.replace(/\s*$/, "")}\n`,
+    }],
+  };
+}
+
+function missingResource(category) {
+  return {
+    kind: "missing",
+    message: `No latest ${category} artifact found.`,
+  };
 }
 
 server.registerTool(
@@ -37,17 +81,14 @@ server.registerTool(
 
 async function runReviewTool(gate, input, cwd = process.cwd()) {
   if (!input || !input.trim()) throw new Error("Gate input is empty.");
-  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && process.env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE !== "1") {
-    throw new Error("Fake Gemini responses require GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
-  }
-  const key = await resolveApiKey();
-  if (!key.ok) throw new Error("Gemini API key is not configured.");
+  const fakeAllowed = allowFakeResponse();
+  const apiKey = await requireApiKey();
   const policy = await loadProjectPolicy(cwd);
   const prompt = buildGatePrompt({ gate, input, policy });
   const review = await generateReview({
-    apiKey: key.key,
+    apiKey,
     prompt,
-    allowFakeResponse: process.env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE === "1",
+    allowFakeResponse: fakeAllowed,
     env: process.env,
   });
   return textContent(reviewToPrettyJson(review));
@@ -72,6 +113,116 @@ for (const [name, gate, description] of [
     async ({ input, cwd }) => runReviewTool(gate, input, cwd),
   );
 }
+
+server.registerTool(
+  "gemini_context_pack",
+  {
+    title: "Gemini Context Pack",
+    description: "Compress selected context into a structured pack for Codex.",
+    inputSchema: {
+      input: z.string().min(1),
+      cwd: z.string().optional(),
+      write_artifact: z.boolean().optional(),
+    },
+  },
+  async ({ input, cwd, write_artifact }) => {
+    const fakeAllowed = allowFakeResponse();
+    const apiKey = await requireApiKey();
+    const pack = await runContextPack({
+      apiKey,
+      cwd: cwd || process.cwd(),
+      stdinText: input,
+      env: process.env,
+      allowFakeResponse: fakeAllowed,
+      writeArtifact: Boolean(write_artifact),
+    });
+    return textContent(contextPackToPrettyJson(pack));
+  },
+);
+
+server.registerTool(
+  "gemini_artifact_review",
+  {
+    title: "Gemini Artifact Review",
+    description: "Analyze an artifact and return a compact structured review.",
+    inputSchema: {
+      file: z.string().min(1),
+      kind: z.string().optional(),
+      cwd: z.string().optional(),
+      write_artifact: z.boolean().optional(),
+    },
+  },
+  async ({ file, kind, cwd, write_artifact }) => {
+    const fakeAllowed = allowFakeResponse();
+    const apiKey = await requireApiKey();
+    const review = await runArtifactReview({
+      apiKey,
+      cwd: cwd || process.cwd(),
+      file,
+      artifactKind: kind || "image",
+      env: process.env,
+      allowFakeResponse: fakeAllowed,
+      writeArtifact: Boolean(write_artifact),
+    });
+    return textContent(artifactReviewToPrettyJson(review));
+  },
+);
+
+server.registerResource(
+  "gemini_context_latest",
+  "gemini-agent://context/latest",
+  {
+    title: "Latest Gemini Context Pack",
+    description: "Latest local context pack generated by gemini-agent.",
+    mimeType: "application/json",
+  },
+  async (uri) => {
+    const artifact = await readLatestArtifact({ cwd: process.cwd(), category: "context" });
+    return jsonResource(uri.href, artifact || missingResource("context"));
+  },
+);
+
+server.registerResource(
+  "gemini_artifact_review_latest",
+  "gemini-agent://artifact-reviews/latest",
+  {
+    title: "Latest Gemini Artifact Review",
+    description: "Latest local artifact review generated by gemini-agent.",
+    mimeType: "application/json",
+  },
+  async (uri) => {
+    const artifact = await readLatestArtifact({ cwd: process.cwd(), category: "artifacts" });
+    return jsonResource(uri.href, artifact || missingResource("artifact review"));
+  },
+);
+
+server.registerResource(
+  "gemini_policy_current",
+  "gemini-agent://policy/current",
+  {
+    title: "Current Gemini Agent Policy",
+    description: "Current rendered local gemini-agent policy.",
+    mimeType: "text/plain",
+  },
+  async (uri) => {
+    const policy = await loadProjectPolicy(process.cwd());
+    return textResource(uri.href, renderPolicy(policy));
+  },
+);
+
+server.registerResource(
+  "gemini_review_latest",
+  "gemini-agent://reviews/latest",
+  {
+    title: "Latest Gemini Review",
+    description: "Latest local review generated by gemini-agent.",
+    mimeType: "application/json",
+  },
+  async (uri) => {
+    const artifact = await readLatestArtifact({ cwd: process.cwd(), category: "reviews" });
+    return jsonResource(uri.href, artifact || missingResource("review"));
+  },
+);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
