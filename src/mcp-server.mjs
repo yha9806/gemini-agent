@@ -37,6 +37,9 @@ server.registerTool(
 
 async function runReviewTool(gate, input, cwd = process.cwd()) {
   if (!input || !input.trim()) throw new Error("Gate input is empty.");
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && process.env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE !== "1") {
+    throw new Error("Fake Gemini responses require GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
   const key = await resolveApiKey();
   if (!key.ok) throw new Error("Gemini API key is not configured.");
   const policy = await loadProjectPolicy(cwd);
