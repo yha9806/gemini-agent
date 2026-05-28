@@ -27,11 +27,13 @@ export async function loadProjectPolicy(startCwd = process.cwd()) {
 
 export function renderPolicy(policy) {
   if (!policy) return "No project policy file was found.";
-  const rules = (Array.isArray(policy.rules) ? policy.rules : []).map((rule) => `- ${rule}`).join("\n");
-  const sensitive = (Array.isArray(policy.sensitive_data) ? policy.sensitive_data : []).map((item) => `- ${item}`).join("\n");
+  const project = String(policy.project || "unknown");
+  const defaultContentMode = String(policy.default_content_mode || "diffs_and_summaries_only");
+  const rules = (Array.isArray(policy.rules) ? policy.rules : []).map((rule) => `- ${String(rule)}`).join("\n");
+  const sensitive = (Array.isArray(policy.sensitive_data) ? policy.sensitive_data : []).map((item) => `- ${String(item)}`).join("\n");
   return [
-    `Project: ${policy.project}`,
-    `Default content mode: ${policy.default_content_mode}`,
+    `Project: ${project}`,
+    `Default content mode: ${defaultContentMode}`,
     "Rules:",
     rules || "- No explicit rules",
     "Sensitive data:",
