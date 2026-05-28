@@ -141,6 +141,20 @@ test("builds artifact review prompt with artifact kind and policy", () => {
 
   assert.match(prompt, /artifact review/i);
   assert.match(prompt, /ui/);
+  assert.match(prompt, /"artifact_type": "design"/);
+  assert.doesNotMatch(prompt, /"artifact_type": "ui"/);
   assert.match(prompt, /design\.png/);
   assert.match(prompt, /implementation_hints_for_codex/);
+});
+
+test("falls back unknown artifact review kinds to schema-safe image type", () => {
+  const prompt = buildArtifactReviewPrompt({
+    artifactKind: "wireframe",
+    sources: [],
+    policy: null,
+  });
+
+  assert.match(prompt, /wireframe/);
+  assert.match(prompt, /"artifact_type": "image"/);
+  assert.doesNotMatch(prompt, /"artifact_type": "wireframe"/);
 });

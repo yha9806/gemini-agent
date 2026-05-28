@@ -14,6 +14,21 @@ function renderSources(sources) {
   return normalized.map((source) => `- ${source}`).join("\n");
 }
 
+function normalizeArtifactKind(artifactKind) {
+  const kind = String(artifactKind ?? "").trim().toLowerCase();
+  const artifactTypes = {
+    ui: "design",
+    architecture: "diagram",
+    image: "image",
+    design: "design",
+    diagram: "diagram",
+    research: "research",
+    pdf: "pdf",
+  };
+
+  return artifactTypes[kind] ?? "image";
+}
+
 export function buildGatePrompt({ gate, input, policy = null }) {
   const instruction = GATE_INSTRUCTIONS[gate];
   if (!instruction) throw new Error(`Unknown gate: ${gate}`);
@@ -85,9 +100,12 @@ export function buildContextPackPrompt({ input, sources = [], policy = null }) {
 }
 
 export function buildArtifactReviewPrompt({ artifactKind = "image", sources = [], policy = null }) {
+  const artifactType = normalizeArtifactKind(artifactKind);
+
   return [
     "You are Gemini acting as an artifact review coprocessor for Codex.",
     `Artifact kind: ${artifactKind}`,
+    `Use artifact_type exactly: ${artifactType}`,
     "",
     "Analyze the attached or referenced artifact and produce a structured artifact review. Focus on details Codex can use for implementation, design, research, or follow-up questions.",
     "",
@@ -100,7 +118,7 @@ export function buildArtifactReviewPrompt({ artifactKind = "image", sources = []
     "Return only JSON with this exact shape:",
     JSON.stringify({
       kind: "artifact_review",
-      artifact_type: "image | pdf | design | diagram | research",
+      artifact_type: artifactType,
       summary: ["string"],
       important_details: ["string"],
       design_or_research_findings: ["string"],
