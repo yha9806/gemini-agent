@@ -106,12 +106,61 @@ test("normalizes receiver metrics response", () => {
       model: "gemini-3.5-flash",
       status: "success",
     },
+    status_counts: {
+      success: 10,
+      error: 2,
+    },
     clock_skew_warnings: 1,
   });
   assert.equal(metrics.ok, true);
   assert.equal(metrics.received_events, 12);
   assert.equal(metrics.latest_event.command, "ask");
+  assert.deepEqual(metrics.status_counts, { success: 10, error: 2 });
   assert.equal(metrics.clock_skew_warnings, 1);
+});
+
+test("requires receiver metrics status counts", () => {
+  assert.throws(
+    () => normalizeTelemetryReceiverMetrics({
+      ok: true,
+      received_events: 12,
+      received_batches: 3,
+      last_received_at: "2026-05-29T09:00:06.000Z",
+      last_batch_id: "batch_test",
+      latest_event: null,
+      clock_skew_warnings: 1,
+    }),
+    /status_counts/,
+  );
+});
+
+test("validates receiver metrics status counts", () => {
+  assert.throws(
+    () => normalizeTelemetryReceiverMetrics({
+      ok: true,
+      received_events: 12,
+      received_batches: 3,
+      last_received_at: null,
+      last_batch_id: null,
+      latest_event: null,
+      status_counts: { success: 10.5, error: 0 },
+      clock_skew_warnings: 1,
+    }),
+    /status_counts[\s\S]*success/,
+  );
+  assert.throws(
+    () => normalizeTelemetryReceiverMetrics({
+      ok: true,
+      received_events: 12,
+      received_batches: 3,
+      last_received_at: null,
+      last_batch_id: null,
+      latest_event: null,
+      status_counts: { success: 10, error: -1 },
+      clock_skew_warnings: 1,
+    }),
+    /status_counts[\s\S]*error/,
+  );
 });
 
 test("truncates text by byte limit without splitting utf8 characters", () => {

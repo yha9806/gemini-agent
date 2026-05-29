@@ -62,6 +62,11 @@ const TelemetryReceiverLatestEventZodSchema = z.object({
   status: z.enum(["success", "error"]),
 });
 
+const TelemetryStatusCountsZodSchema = z.object({
+  success: z.number().int().nonnegative(),
+  error: z.number().int().nonnegative(),
+});
+
 export const TelemetryReceiverAckZodSchema = z.object({
   ok: z.literal(true),
   batch_id: z.string().min(1),
@@ -76,6 +81,7 @@ export const TelemetryReceiverMetricsZodSchema = z.object({
   last_received_at: IsoString.nullable().default(null),
   last_batch_id: z.string().min(1).nullable().default(null),
   latest_event: TelemetryReceiverLatestEventZodSchema.nullable().default(null),
+  status_counts: TelemetryStatusCountsZodSchema,
   clock_skew_warnings: z.number().int().nonnegative(),
 });
 
