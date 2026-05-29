@@ -10,8 +10,8 @@ import {
   truncateTelemetryText,
 } from "../src/telemetry-schemas.mjs";
 
-test("normalizes raw telemetry config", () => {
-  const config = normalizeTelemetryConfig({
+function validTelemetryConfig(overrides = {}) {
+  return {
     enabled: true,
     level: "raw",
     endpoint: "http://127.0.0.1:8787/ingest",
@@ -21,7 +21,68 @@ test("normalizes raw telemetry config", () => {
     max_queue_bytes: 4096,
     created_at: "2026-05-29T09:00:00.000Z",
     updated_at: "2026-05-29T09:00:00.000Z",
-  });
+    ...overrides,
+  };
+}
+
+function validTelemetryEvent(overrides = {}) {
+  return {
+    schema_version: 1,
+    event_id: "evt_test",
+    trace_id: "trace_test",
+    deployment_id: "dep_test",
+    project_id: "gemini-agent",
+    source: "cli",
+    command: "ask",
+    model: "gemini-3.5-flash",
+    prompt: "hello",
+    response: "world",
+    status: "success",
+    error_type: null,
+    latency_ms: 1,
+    created_at: "2026-05-29T09:00:00.000Z",
+    payload: { prompt_truncated: false, response_truncated: false, multimodal: [] },
+    ...overrides,
+  };
+}
+
+function validTelemetryBatch(overrides = {}) {
+  return {
+    schema_version: 1,
+    batch_id: "batch_test",
+    deployment_id: "dep_test",
+    scheduled_for: "2026-05-29T09:00:00.000Z",
+    sent_at: "2026-05-29T09:00:01.000Z",
+    events: [validTelemetryEvent()],
+    ...overrides,
+  };
+}
+
+function validTelemetryMetrics(overrides = {}) {
+  return {
+    ok: true,
+    received_events: 12,
+    received_batches: 3,
+    last_received_at: "2026-05-29T09:00:06.000Z",
+    last_batch_id: "batch_test",
+    latest_event: {
+      received_at: "2026-05-29T09:00:06.000Z",
+      batch_id: "batch_test",
+      command: "ask",
+      model: "gemini-3.5-flash",
+      status: "success",
+    },
+    status_counts: {
+      success: 10,
+      error: 2,
+    },
+    clock_skew_warnings: 1,
+    ...overrides,
+  };
+}
+
+test("normalizes raw telemetry config", () => {
+  const config = normalizeTelemetryConfig(validTelemetryConfig());
   assert.equal(config.level, "raw");
   assert.equal(config.endpoint, "http://127.0.0.1:8787/ingest");
 });
@@ -53,30 +114,7 @@ test("normalizes event and masks credential-shaped raw text", () => {
 });
 
 test("normalizes batch", () => {
-  const batch = normalizeTelemetryBatch({
-    schema_version: 1,
-    batch_id: "batch_test",
-    deployment_id: "dep_test",
-    scheduled_for: "2026-05-29T09:00:00.000Z",
-    sent_at: "2026-05-29T09:00:01.000Z",
-    events: [{
-      schema_version: 1,
-      event_id: "evt_test",
-      trace_id: "trace_test",
-      deployment_id: "dep_test",
-      project_id: "gemini-agent",
-      source: "cli",
-      command: "ask",
-      model: "gemini-3.5-flash",
-      prompt: "hello",
-      response: "world",
-      status: "success",
-      error_type: null,
-      latency_ms: 1,
-      created_at: "2026-05-29T09:00:00.000Z",
-      payload: { prompt_truncated: false, response_truncated: false, multimodal: [] },
-    }],
-  });
+  const batch = normalizeTelemetryBatch(validTelemetryBatch());
   assert.equal(batch.events.length, 1);
 });
 
@@ -93,25 +131,7 @@ test("normalizes receiver ingest ack", () => {
 });
 
 test("normalizes receiver metrics response", () => {
-  const metrics = normalizeTelemetryReceiverMetrics({
-    ok: true,
-    received_events: 12,
-    received_batches: 3,
-    last_received_at: "2026-05-29T09:00:06.000Z",
-    last_batch_id: "batch_test",
-    latest_event: {
-      received_at: "2026-05-29T09:00:06.000Z",
-      batch_id: "batch_test",
-      command: "ask",
-      model: "gemini-3.5-flash",
-      status: "success",
-    },
-    status_counts: {
-      success: 10,
-      error: 2,
-    },
-    clock_skew_warnings: 1,
-  });
+  const metrics = normalizeTelemetryReceiverMetrics(validTelemetryMetrics());
   assert.equal(metrics.ok, true);
   assert.equal(metrics.received_events, 12);
   assert.equal(metrics.latest_event.command, "ask");
@@ -163,6 +183,43 @@ test("validates receiver metrics status counts", () => {
   );
 });
 
+test("rejects unknown telemetry contract fields", () => {
+  assert.throws(() => normalizeTelemetryConfig(validTelemetryConfig({ extra: true })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryEvent(validTelemetryEvent({ extra: true })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryEvent(validTelemetryEvent({
+    payload: { prompt_truncated: false, response_truncated: false, multimodal: [], extra: true },
+  })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryEvent(validTelemetryEvent({
+    payload: {
+      prompt_truncated: false,
+      response_truncated: false,
+      multimodal: [{ mime_type: "image/png", extra: true }],
+    },
+  })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryBatch(validTelemetryBatch({ extra: true })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryReceiverAck({
+    ok: true,
+    batch_id: "batch_test",
+    received_count: 1,
+    received_at: "2026-05-29T09:00:02.000Z",
+    extra: true,
+  }), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryReceiverMetrics(validTelemetryMetrics({ extra: true })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryReceiverMetrics(validTelemetryMetrics({
+    latest_event: {
+      received_at: "2026-05-29T09:00:06.000Z",
+      batch_id: "batch_test",
+      command: "ask",
+      model: "gemini-3.5-flash",
+      status: "success",
+      extra: true,
+    },
+  })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryReceiverMetrics(validTelemetryMetrics({
+    status_counts: { success: 10, error: 2, extra: true },
+  })), /unrecognized/i);
+});
+
 test("truncates text by byte limit without splitting utf8 characters", () => {
   const ascii = truncateTelemetryText("abcdef", 3);
   assert.equal(ascii.text, "abc");
@@ -176,8 +233,22 @@ test("truncates text by byte limit without splitting utf8 characters", () => {
   assert.doesNotThrow(() => truncateTelemetryText(malformed, 1));
 });
 
+test("rejects invalid telemetry truncation byte limits", () => {
+  assert.throws(() => truncateTelemetryText("abcdef", -1), RangeError);
+  assert.throws(() => truncateTelemetryText("abcdef", 1.5), RangeError);
+  assert.throws(() => truncateTelemetryText("abcdef", Number.NaN), RangeError);
+});
+
 test("masks documented credential patterns", () => {
   assert.equal(maskCredentialText("Authorization: Bearer secret-token"), "Authorization: [MASKED]");
   assert.equal(maskCredentialText("X_API_KEY=secret-token"), "X_API_KEY=[MASKED]");
   assert.equal(maskCredentialText('{"token":"secret-token"}'), '{"token":"[MASKED]"}');
+});
+
+test("masks standalone bearer tokens without crossing lines", () => {
+  assert.equal(maskCredentialText('curl -H "Bearer secret-token"'), 'curl -H "Bearer [MASKED]"');
+  assert.equal(
+    maskCredentialText("Authorization: Bearer secret-token\nX-Debug: Bearer debug-token\nNote: Bearer dev"),
+    "Authorization: [MASKED]\nX-Debug: Bearer [MASKED]\nNote: Bearer dev",
+  );
 });

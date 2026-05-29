@@ -6,7 +6,7 @@ export const DEFAULT_MAX_QUEUE_BYTES = 50 * 1024 * 1024;
 
 const IsoString = z.string().datetime({ offset: true });
 
-export const TelemetryConfigZodSchema = z.object({
+export const TelemetryConfigZodSchema = z.strictObject({
   enabled: z.boolean(),
   level: z.literal("raw"),
   endpoint: z.string().url(),
@@ -18,7 +18,20 @@ export const TelemetryConfigZodSchema = z.object({
   updated_at: IsoString,
 });
 
-export const TelemetryEventZodSchema = z.object({
+const TelemetryMultimodalItemZodSchema = z.strictObject({
+  mime_type: z.string().optional(),
+  byte_size: z.number().int().nonnegative().optional(),
+  basename: z.string().optional(),
+  sha256: z.string().optional(),
+});
+
+const TelemetryPayloadZodSchema = z.strictObject({
+  prompt_truncated: z.boolean().default(false),
+  response_truncated: z.boolean().default(false),
+  multimodal: z.array(TelemetryMultimodalItemZodSchema).default([]),
+});
+
+export const TelemetryEventZodSchema = z.strictObject({
   schema_version: z.literal(TELEMETRY_SCHEMA_VERSION),
   event_id: z.string().min(1),
   trace_id: z.string().min(1),
@@ -33,19 +46,10 @@ export const TelemetryEventZodSchema = z.object({
   error_type: z.string().nullable().default(null),
   latency_ms: z.number().int().nonnegative(),
   created_at: IsoString,
-  payload: z.object({
-    prompt_truncated: z.boolean().default(false),
-    response_truncated: z.boolean().default(false),
-    multimodal: z.array(z.object({
-      mime_type: z.string().optional(),
-      byte_size: z.number().int().nonnegative().optional(),
-      basename: z.string().optional(),
-      sha256: z.string().optional(),
-    })).default([]),
-  }).default({ prompt_truncated: false, response_truncated: false, multimodal: [] }),
+  payload: TelemetryPayloadZodSchema.default({ prompt_truncated: false, response_truncated: false, multimodal: [] }),
 });
 
-export const TelemetryBatchZodSchema = z.object({
+export const TelemetryBatchZodSchema = z.strictObject({
   schema_version: z.literal(TELEMETRY_SCHEMA_VERSION),
   batch_id: z.string().min(1),
   deployment_id: z.string().min(1),
@@ -54,7 +58,7 @@ export const TelemetryBatchZodSchema = z.object({
   events: z.array(TelemetryEventZodSchema).min(1),
 });
 
-const TelemetryReceiverLatestEventZodSchema = z.object({
+const TelemetryReceiverLatestEventZodSchema = z.strictObject({
   received_at: IsoString,
   batch_id: z.string().min(1),
   command: z.string().min(1),
@@ -62,19 +66,19 @@ const TelemetryReceiverLatestEventZodSchema = z.object({
   status: z.enum(["success", "error"]),
 });
 
-const TelemetryStatusCountsZodSchema = z.object({
+const TelemetryStatusCountsZodSchema = z.strictObject({
   success: z.number().int().nonnegative(),
   error: z.number().int().nonnegative(),
 });
 
-export const TelemetryReceiverAckZodSchema = z.object({
+export const TelemetryReceiverAckZodSchema = z.strictObject({
   ok: z.literal(true),
   batch_id: z.string().min(1),
   received_count: z.number().int().nonnegative(),
   received_at: IsoString,
 });
 
-export const TelemetryReceiverMetricsZodSchema = z.object({
+export const TelemetryReceiverMetricsZodSchema = z.strictObject({
   ok: z.literal(true),
   received_events: z.number().int().nonnegative(),
   received_batches: z.number().int().nonnegative(),
@@ -90,6 +94,11 @@ const MASK_PATTERNS = [
     name: "authorization-header",
     pattern: /Authorization:\s*(?:Bearer|Basic)\s+[^\r\n]+/gi,
     replacement: "Authorization: [MASKED]",
+  },
+  {
+    name: "standalone-bearer-token",
+    pattern: /(\bBearer\s+)[A-Za-z0-9._~-]{6,}={0,2}/gi,
+    replacement: "$1[MASKED]",
   },
   {
     name: "env-secret-assignment",
@@ -121,6 +130,9 @@ export function maskCredentialText(value) {
 }
 
 export function truncateTelemetryText(value, maxBytes = DEFAULT_MAX_EVENT_BYTES) {
+  if (!Number.isInteger(maxBytes) || maxBytes < 0) {
+    throw new RangeError("maxBytes must be a nonnegative integer.");
+  }
   const text = `${value ?? ""}`;
   const buffer = Buffer.from(text, "utf8");
   if (buffer.length <= maxBytes) return { text, truncated: false };
