@@ -3,8 +3,11 @@ import { z } from "zod";
 export const TELEMETRY_SCHEMA_VERSION = 1;
 export const DEFAULT_MAX_EVENT_BYTES = 1024 * 1024;
 export const DEFAULT_MAX_QUEUE_BYTES = 50 * 1024 * 1024;
+export const CREDENTIAL_MASK_VERSION = 1;
 
-const IsoString = z.string().datetime({ offset: true });
+const IsoString = z.string()
+  .datetime({ offset: true })
+  .regex(/Z$/, "Expected UTC ISO timestamp ending in Z.");
 
 export const TelemetryConfigZodSchema = z.strictObject({
   enabled: z.boolean(),
@@ -97,7 +100,7 @@ const MASK_PATTERNS = [
   },
   {
     name: "standalone-bearer-token",
-    pattern: /(\bBearer\s+)[A-Za-z0-9._~-]{6,}={0,2}/gi,
+    pattern: /(\bBearer[^\S\r\n]+)[A-Za-z0-9._~+/-]{6,}={0,}/gi,
     replacement: "$1[MASKED]",
   },
   {
@@ -118,7 +121,12 @@ const MASK_PATTERNS = [
 ];
 
 export function credentialMaskPatterns() {
-  return MASK_PATTERNS.map(({ name, pattern }) => ({ name, pattern: pattern.source }));
+  return MASK_PATTERNS.map(({ name, pattern }) => ({
+    masking_version: CREDENTIAL_MASK_VERSION,
+    name,
+    pattern: pattern.source,
+    flags: pattern.flags,
+  }));
 }
 
 export function maskCredentialText(value) {

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CREDENTIAL_MASK_VERSION,
+  credentialMaskPatterns,
   maskCredentialText,
   normalizeTelemetryBatch,
   normalizeTelemetryConfig,
@@ -220,6 +222,27 @@ test("rejects unknown telemetry contract fields", () => {
   })), /unrecognized/i);
 });
 
+test("rejects non-UTC telemetry timestamps", () => {
+  const offset = "2026-05-29T09:00:00+01:00";
+  assert.throws(() => normalizeTelemetryConfig(validTelemetryConfig({ created_at: offset })), /UTC|Z/);
+  assert.throws(() => normalizeTelemetryConfig(validTelemetryConfig({ updated_at: offset })), /UTC|Z/);
+  assert.throws(() => normalizeTelemetryEvent(validTelemetryEvent({ created_at: offset })), /UTC|Z/);
+  assert.throws(() => normalizeTelemetryBatch(validTelemetryBatch({ scheduled_for: offset })), /UTC|Z/);
+  assert.throws(() => normalizeTelemetryBatch(validTelemetryBatch({ sent_at: offset })), /UTC|Z/);
+  assert.throws(() => normalizeTelemetryReceiverAck({
+    ok: true,
+    batch_id: "batch_test",
+    received_count: 1,
+    received_at: offset,
+  }), /UTC|Z/);
+  assert.throws(() => normalizeTelemetryReceiverMetrics(validTelemetryMetrics({
+    last_received_at: offset,
+  })), /UTC|Z/);
+  assert.throws(() => normalizeTelemetryReceiverMetrics(validTelemetryMetrics({
+    latest_event: { ...validTelemetryMetrics().latest_event, received_at: offset },
+  })), /UTC|Z/);
+});
+
 test("truncates text by byte limit without splitting utf8 characters", () => {
   const ascii = truncateTelemetryText("abcdef", 3);
   assert.equal(ascii.text, "abc");
@@ -247,8 +270,18 @@ test("masks documented credential patterns", () => {
 
 test("masks standalone bearer tokens without crossing lines", () => {
   assert.equal(maskCredentialText('curl -H "Bearer secret-token"'), 'curl -H "Bearer [MASKED]"');
+  assert.equal(maskCredentialText("curl -H 'Bearer abcdef+ghijk/lmnop=='"), "curl -H 'Bearer [MASKED]'");
+  assert.equal(maskCredentialText("Bearer\nsecret-token"), "Bearer\nsecret-token");
   assert.equal(
     maskCredentialText("Authorization: Bearer secret-token\nX-Debug: Bearer debug-token\nNote: Bearer dev"),
     "Authorization: [MASKED]\nX-Debug: Bearer [MASKED]\nNote: Bearer dev",
   );
+});
+
+test("exposes credential mask pattern audit metadata", () => {
+  const patterns = credentialMaskPatterns();
+  assert.equal(typeof CREDENTIAL_MASK_VERSION, "number");
+  assert.ok(patterns.length > 0);
+  assert.ok(patterns.every((entry) => entry.masking_version === CREDENTIAL_MASK_VERSION));
+  assert.ok(patterns.every((entry) => typeof entry.flags === "string"));
 });
