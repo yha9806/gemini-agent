@@ -44,6 +44,15 @@ function isLoopbackHostname(hostname) {
     || normalized === "[::1]";
 }
 
+function assertTokenEnvName(tokenEnv) {
+  if (typeof tokenEnv !== "string" || tokenEnv.length === 0) {
+    throw new Error("Telemetry token env name must be a non-empty string.");
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) {
+    throw new Error("Telemetry token env name must be a valid environment variable name.");
+  }
+}
+
 export function validateTelemetryEndpoint(endpoint) {
   const url = new URL(endpoint);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -69,11 +78,15 @@ export function assertRawConfirmation(confirmed) {
 }
 
 export function resolveTelemetryToken({ tokenEnv, env = process.env }) {
-  const value = env[tokenEnv];
-  if (value === undefined) {
+  assertTokenEnvName(tokenEnv);
+  if (!Object.hasOwn(env, tokenEnv)) {
     throw new Error(`Telemetry token env ${tokenEnv} is not set.`);
   }
-  if (!String(value).trim()) {
+  const value = env[tokenEnv];
+  if (typeof value !== "string") {
+    throw new Error(`Telemetry token env ${tokenEnv} must be a string.`);
+  }
+  if (!value.trim()) {
     throw new Error(`Telemetry token env ${tokenEnv} is empty.`);
   }
   return value;
@@ -121,10 +134,10 @@ export async function saveTelemetryConfig({
 
   const config = normalizeTelemetryConfig(configInput);
   const configToWrite = { ...config };
-  if (!Object.hasOwn(configInput, "max_event_bytes")) {
+  if (previousRaw && !Object.hasOwn(previousRaw.value, "max_event_bytes")) {
     delete configToWrite.max_event_bytes;
   }
-  if (!Object.hasOwn(configInput, "max_queue_bytes")) {
+  if (previousRaw && !Object.hasOwn(previousRaw.value, "max_queue_bytes")) {
     delete configToWrite.max_queue_bytes;
   }
   await writeFile(path, `${JSON.stringify(configToWrite, null, 2)}\n`, { mode: 0o600 });

@@ -55,6 +55,11 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
   const configText = await readFile(configPath, "utf8");
   assert.match(configText, /"level": "raw"/);
   assert.match(configText, /127\.0\.0\.1/);
+  const savedFirstConfig = JSON.parse(configText);
+  assert.equal(savedFirstConfig.max_event_bytes, DEFAULT_MAX_EVENT_BYTES);
+  assert.equal(savedFirstConfig.max_queue_bytes, DEFAULT_MAX_QUEUE_BYTES);
+  assert.equal(Object.hasOwn(savedFirstConfig, "max_event_bytes"), true);
+  assert.equal(Object.hasOwn(savedFirstConfig, "max_queue_bytes"), true);
   assert.equal(modeBits(await stat(join(dir, ".gemini-agent/telemetry"))), 0o700);
   assert.equal(modeBits(await stat(configPath)), 0o600);
 
@@ -154,6 +159,14 @@ test("rawTelemetryWarning and assertRawConfirmation are explicit about raw conte
 test("resolveTelemetryToken rejects missing and empty token env values", () => {
   assert.equal(resolveTelemetryToken({ tokenEnv: "TOKEN", env: { TOKEN: "abc" } }), "abc");
   assert.throws(
+    () => resolveTelemetryToken({ tokenEnv: "TOKEN", env: Object.create({ TOKEN: "inherited" }) }),
+    /Telemetry token env TOKEN is not set/,
+  );
+  assert.throws(
+    () => resolveTelemetryToken({ tokenEnv: "TOKEN", env: { TOKEN: 123 } }),
+    /Telemetry token env TOKEN must be a string/,
+  );
+  assert.throws(
     () => resolveTelemetryToken({ tokenEnv: "TOKEN", env: { TOKEN: "" } }),
     /Telemetry token env TOKEN is empty/,
   );
@@ -164,6 +177,14 @@ test("resolveTelemetryToken rejects missing and empty token env values", () => {
   assert.throws(
     () => resolveTelemetryToken({ tokenEnv: "TOKEN", env: {} }),
     /Telemetry token env TOKEN is not set/,
+  );
+  assert.throws(
+    () => resolveTelemetryToken({ tokenEnv: "", env: { TOKEN: "abc" } }),
+    /Telemetry token env name must be a non-empty string/,
+  );
+  assert.throws(
+    () => resolveTelemetryToken({ tokenEnv: "BAD-NAME", env: { "BAD-NAME": "abc" } }),
+    /Telemetry token env name must be a valid environment variable name/,
   );
 });
 
