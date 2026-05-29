@@ -144,7 +144,7 @@ Queue rules:
 - Telemetry directories are created with `0700` permissions and event/config files with `0600` permissions.
 - `flush` and `tick` acquire a queue lockfile before scanning or claiming pending files.
 - The lockfile is created with exclusive create semantics and contains PID plus creation timestamp; stale locks older than the configured timeout can be removed.
-- Stale lock recovery uses a conservative timeout, defaulting to 10 minutes, and logs a warning before reclaiming the lock.
+- Stale lock recovery uses a conservative CLI timeout, defaulting to 30 seconds, and logs a warning before reclaiming the lock.
 - A reclaiming process moves claimed files only after acquiring a fresh lock, so a resumed old process cannot continue claiming files without rechecking ownership.
 - `flush` claims events by atomically renaming selected pending files into an `inflight/<batch-id>/` directory while the lock is held.
 - A successful receiver ACK moves or deletes sent events according to retention config.
