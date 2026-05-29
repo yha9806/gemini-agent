@@ -411,7 +411,7 @@ export async function withTelemetryQueueLock({
   if (typeof fn !== "function") {
     throw new TypeError("withTelemetryQueueLock requires a callback.");
   }
-  assertNonnegativeInteger(staleMs, "staleMs");
+  assertPositiveInteger(staleMs, "staleMs");
   assertNonnegativeInteger(retries, "retries");
   assertNonnegativeInteger(retryDelayMs, "retryDelayMs");
 
@@ -656,28 +656,30 @@ export async function pruneSentTelemetry({
     assertNonnegativeInteger(maxSentBytes, "maxSentBytes");
   }
 
-  const dirs = await ensureQueueDirs(cwd);
-  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const cutoff = today - (keepDays * DAY_MS);
-  let dayDirs = await sentDayDirs(dirs.sent);
-  let removed = 0;
+  return withTelemetryQueueLock({ cwd }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const cutoff = today - (keepDays * DAY_MS);
+    let dayDirs = await sentDayDirs(dirs.sent);
+    let removed = 0;
 
-  for (const dayDir of dayDirs) {
-    if (dayDir.dayMs >= cutoff) continue;
-    await rm(dayDir.path, { recursive: true, force: true });
-    removed += dayDir.count;
-  }
+    for (const dayDir of dayDirs) {
+      if (dayDir.dayMs >= cutoff) continue;
+      await rm(dayDir.path, { recursive: true, force: true });
+      removed += dayDir.count;
+    }
 
-  dayDirs = (await sentDayDirs(dirs.sent)).sort((left, right) => (
-    left.dayMs - right.dayMs || left.name.localeCompare(right.name)
-  ));
-  let sentBytes = dayDirs.reduce((sum, dayDir) => sum + dayDir.bytes, 0);
-  for (const dayDir of dayDirs) {
-    if (sentBytes <= maxSentBytes) break;
-    await rm(dayDir.path, { recursive: true, force: true });
-    sentBytes -= dayDir.bytes;
-    removed += dayDir.count;
-  }
+    dayDirs = (await sentDayDirs(dirs.sent)).sort((left, right) => (
+      left.dayMs - right.dayMs || left.name.localeCompare(right.name)
+    ));
+    let sentBytes = dayDirs.reduce((sum, dayDir) => sum + dayDir.bytes, 0);
+    for (const dayDir of dayDirs) {
+      if (sentBytes <= maxSentBytes) break;
+      await rm(dayDir.path, { recursive: true, force: true });
+      sentBytes -= dayDir.bytes;
+      removed += dayDir.count;
+    }
 
-  return removed;
+    return removed;
+  });
 }

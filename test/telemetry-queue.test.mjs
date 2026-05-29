@@ -112,9 +112,13 @@ async function waitUntil(predicate) {
   const deadline = Date.now() + 1000;
   while (Date.now() < deadline) {
     if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await sleep(5);
   }
   assert.fail("timed out waiting for condition");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function waitForChild(child) {
@@ -302,6 +306,19 @@ test("lock prevents concurrent flush claims", async () => {
   releaseLock();
   await holder;
   assert.equal(await pathExists(dirs.lock), false);
+});
+
+test("lock rejects zero staleMs before mutating lock state", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+
+  await assert.rejects(
+    () => withTelemetryQueueLock({ cwd, staleMs: 0 }, async () => {
+      assert.fail("lock callback should not run");
+    }),
+    /staleMs.*positive integer/,
+  );
+  assert.equal(await pathExists(dirs.queue), false);
 });
 
 test("stale lock can be reclaimed", async () => {
@@ -503,4 +520,47 @@ test("pruneSentTelemetry removes old sent files", async () => {
   assert.equal(removed, 1);
   assert.equal(await pathExists(join(dirs.sent, "2026-05-20")), false);
   assert.equal((await regularFileNames(join(dirs.sent, "2026-05-28"))).length, 1);
+});
+
+test("pruneSentTelemetry waits for the queue lock before mutating sent files", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  const oldDay = new Date("2026-05-20T12:00:00.000Z");
+  const pruneNow = new Date("2026-05-29T12:00:00.000Z");
+  const oldSentDir = join(dirs.sent, "2026-05-20");
+
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(0), maxQueueBytes: LARGE_QUEUE_LIMIT });
+  const batch = await claimTelemetryBatch({ cwd, batchSize: 1, now: oldDay });
+  await completeTelemetryBatch({ cwd, batchId: batch.batchId, now: oldDay });
+  assert.equal(await pathExists(oldSentDir), true);
+
+  let releaseLock;
+  let enteredLock = false;
+  const holder = withTelemetryQueueLock({ cwd, staleMs: 10_000, retries: 0 }, async () => {
+    enteredLock = true;
+    await new Promise((resolve) => {
+      releaseLock = resolve;
+    });
+  });
+  await waitUntil(async () => enteredLock && await pathExists(dirs.lock));
+
+  let pruneSettled = false;
+  const prune = pruneSentTelemetry({
+    cwd,
+    now: pruneNow,
+    keepDays: 7,
+    maxSentBytes: LARGE_QUEUE_LIMIT,
+  }).then((removed) => {
+    pruneSettled = true;
+    return removed;
+  });
+
+  await sleep(75);
+  assert.equal(pruneSettled, false);
+  assert.equal(await pathExists(oldSentDir), true);
+
+  releaseLock();
+  await holder;
+  assert.equal(await prune, 1);
+  assert.equal(await pathExists(oldSentDir), false);
 });
