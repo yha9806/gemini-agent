@@ -14,10 +14,21 @@ import {
   normalizeTelemetryReceiverMetrics,
 } from "./telemetry-schemas.mjs";
 
+const VALIDATION_FLUSH_BATCH_SIZE = Number.MAX_SAFE_INTEGER;
+
 function assertPositiveInteger(value, name) {
   if (!Number.isInteger(value) || value <= 0) {
     throw new RangeError(`${name} must be a positive integer.`);
   }
+}
+
+function validationBatchRecorded({ flush, metrics }) {
+  if (!flush.batch_id || !flush.ack) return false;
+  if (flush.ack.batch_id !== flush.batch_id) return false;
+  if (flush.ack.received_count !== flush.sent_count) return false;
+  if (metrics.last_batch_id !== flush.batch_id) return false;
+  if (metrics.latest_event && metrics.latest_event.batch_id !== flush.batch_id) return false;
+  return true;
 }
 
 async function parseJsonResponse(response, label) {
@@ -200,10 +211,17 @@ export async function runTelemetryValidation({
     },
   });
 
-  const flush = await flushTelemetryQueue({ cwd, endpoint, token, fetchImpl, now });
+  const flush = await flushTelemetryQueue({
+    cwd,
+    endpoint,
+    token,
+    fetchImpl,
+    now,
+    batchSize: VALIDATION_FLUSH_BATCH_SIZE,
+  });
   const metrics = await receiverMetrics({ endpoint, token, fetchImpl });
   return {
-    ok: metrics.received_events >= flush.sent_count,
+    ok: validationBatchRecorded({ flush, metrics }),
     flush,
     metrics,
   };
