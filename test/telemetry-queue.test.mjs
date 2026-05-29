@@ -10,6 +10,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -114,6 +115,30 @@ async function waitUntil(predicate) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.fail("timed out waiting for condition");
+}
+
+function waitForChild(child) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, 10_000);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
 }
 
 test("loadTelemetryState returns defaults and append writes one secure pending event", async () => {
@@ -298,30 +323,110 @@ test("stale lock can be reclaimed", async () => {
   assert.equal(await pathExists(dirs.lock), false);
 });
 
-test("stale lock reclaim preserves exclusivity under contention", async () => {
+test("stale lock reclaim preserves exclusivity across child processes", async () => {
   const cwd = await temporaryWorkspace();
   const dirs = telemetryQueueDirs(cwd);
+  const probeDir = join(cwd, "probe");
+  const readyDir = join(probeDir, "ready");
+  const overlapDir = join(probeDir, "overlap");
+  const activePath = join(probeDir, "active");
+  const startPath = join(probeDir, "start");
   await mkdir(dirs.queue, { recursive: true, mode: 0o700 });
   await chmod(dirs.queue, 0o700);
-  await writeFile(dirs.lock, `${JSON.stringify({ token: "stale-token" })}\n`, { mode: 0o600 });
+  await mkdir(readyDir, { recursive: true, mode: 0o700 });
+  await chmod(readyDir, 0o700);
+  await mkdir(overlapDir, { recursive: true, mode: 0o700 });
+  await chmod(overlapDir, 0o700);
+  await writeFile(
+    dirs.lock,
+    `${JSON.stringify({ token: "stale-token", padding: "x".repeat(5 * 1024 * 1024) })}\n`,
+    { mode: 0o600 },
+  );
   await chmod(dirs.lock, 0o600);
   const old = new Date(Date.now() - 60_000);
   await utimes(dirs.lock, old, old);
 
-  let activeLocks = 0;
-  let maxActiveLocks = 0;
-  const contenders = Array.from({ length: 20 }, (_, index) => (
-    withTelemetryQueueLock({ cwd, staleMs: 1000, retries: 200, retryDelayMs: 1 }, async () => {
-      activeLocks += 1;
-      maxActiveLocks = Math.max(maxActiveLocks, activeLocks);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      activeLocks -= 1;
-      return index;
-    })
-  ));
+  const childScript = `
+    import { access, mkdir, open, unlink, writeFile } from "node:fs/promises";
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    async function exists(path) {
+      try {
+        await access(path);
+        return true;
+      } catch (error) {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      }
+    }
+    const {
+      PROBE_ACTIVE_PATH,
+      PROBE_CWD,
+      PROBE_INDEX,
+      PROBE_MODULE_URL,
+      PROBE_OVERLAP_DIR,
+      PROBE_READY_DIR,
+      PROBE_START_PATH,
+    } = process.env;
+    const { withTelemetryQueueLock: lock } = await import(PROBE_MODULE_URL);
+    await mkdir(PROBE_READY_DIR, { recursive: true, mode: 0o700 });
+    await mkdir(PROBE_OVERLAP_DIR, { recursive: true, mode: 0o700 });
+    await writeFile(\`\${PROBE_READY_DIR}/\${PROBE_INDEX}\`, "ready\\n", { mode: 0o600 });
+    while (!await exists(PROBE_START_PATH)) {
+      await sleep(1);
+    }
+    await lock({ cwd: PROBE_CWD, staleMs: 1000, retries: 2000, retryDelayMs: 1 }, async () => {
+      let handle;
+      try {
+        handle = await open(PROBE_ACTIVE_PATH, "wx", 0o600);
+      } catch (error) {
+        if (error.code === "EEXIST") {
+          await writeFile(\`\${PROBE_OVERLAP_DIR}/\${PROBE_INDEX}\`, "overlap\\n", { mode: 0o600 });
+          return;
+        }
+        throw error;
+      }
+      try {
+        await handle.writeFile(\`\${PROBE_INDEX}\\n\`);
+        await sleep(20);
+      } finally {
+        await handle.close();
+        try {
+          await unlink(PROBE_ACTIVE_PATH);
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      }
+    });
+  `;
+  const moduleUrl = new URL("../src/telemetry-queue.mjs", import.meta.url).href;
+  const childCount = 40;
+  const children = Array.from({ length: childCount }, (_, index) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", childScript], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PROBE_ACTIVE_PATH: activePath,
+        PROBE_CWD: cwd,
+        PROBE_INDEX: `${index}`,
+        PROBE_MODULE_URL: moduleUrl,
+        PROBE_OVERLAP_DIR: overlapDir,
+        PROBE_READY_DIR: readyDir,
+        PROBE_START_PATH: startPath,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { child, result: waitForChild(child) };
+  });
 
-  assert.equal(new Set(await Promise.all(contenders)).size, contenders.length);
-  assert.equal(maxActiveLocks, 1);
+  await waitUntil(async () => (await regularFileNames(readyDir)).length === childCount);
+  await writeFile(startPath, "start\n", { mode: 0o600 });
+
+  const results = await Promise.all(children.map(({ result }) => result));
+  for (const result of results) {
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.equal(result.signal, null, result.stderr || result.stdout);
+  }
+  assert.deepEqual(await regularFileNames(overlapDir), []);
   assert.equal(await pathExists(dirs.lock), false);
 });
 

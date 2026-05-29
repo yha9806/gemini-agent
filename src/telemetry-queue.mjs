@@ -22,9 +22,12 @@ const TELEMETRY_ROOT = ".gemini-agent/telemetry";
 const QUEUE_DIR = "queue";
 const STATE_FILE = "state.json";
 const LOCK_FILE = "lock";
+const LOCK_GUARD_FILE = "lock.guard";
 const SECURE_DIR_MODE = 0o700;
 const SECURE_FILE_MODE = 0o600;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const LOCK_GUARD_RETRIES = 500;
+const LOCK_GUARD_RETRY_DELAY_MS = 2;
 
 const DEFAULT_STATE = Object.freeze({
   dropped_old_count: 0,
@@ -256,6 +259,73 @@ async function readLockToken(path) {
   return (await readLockIdentity(path))?.token ?? null;
 }
 
+function lockGuardPath(dirs) {
+  return join(dirs.queue, LOCK_GUARD_FILE);
+}
+
+async function tryAcquireGuard(dirs, token) {
+  const handle = await open(
+    lockGuardPath(dirs),
+    fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
+    SECURE_FILE_MODE,
+  );
+  try {
+    await handle.writeFile(`${JSON.stringify({
+      token,
+      pid: process.pid,
+      created_at: new Date().toISOString(),
+    })}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
+  await chmod(lockGuardPath(dirs), SECURE_FILE_MODE);
+}
+
+async function releaseGuard(dirs, token) {
+  let currentToken;
+  try {
+    currentToken = await readLockToken(lockGuardPath(dirs));
+  } catch {
+    return;
+  }
+  if (currentToken !== token) return;
+  try {
+    await unlink(lockGuardPath(dirs));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
+async function withLockUnlinkGuard(dirs, fn) {
+  const token = randomUUID();
+  let lastError;
+  let acquired = false;
+
+  for (let attempt = 0; attempt <= LOCK_GUARD_RETRIES; attempt += 1) {
+    try {
+      await tryAcquireGuard(dirs, token);
+      acquired = true;
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      lastError = error;
+      if (attempt < LOCK_GUARD_RETRIES) await sleep(LOCK_GUARD_RETRY_DELAY_MS);
+    }
+  }
+
+  if (acquired) {
+    try {
+      return await fn();
+    } finally {
+      await releaseGuard(dirs, token);
+    }
+  }
+
+  const error = new Error(`Telemetry queue lock guard could not be acquired: ${lockGuardPath(dirs)}`);
+  error.cause = lastError;
+  throw error;
+}
+
 async function tryAcquireLock(dirs, token) {
   const lock = {
     token,
@@ -276,29 +346,35 @@ async function maybeReclaimStaleLock(dirs, staleMs) {
   if (!staleIdentity) return false;
 
   if (Date.now() - staleIdentity.mtimeMs < staleMs) return false;
-  if (!sameLockIdentity(staleIdentity, await readLockIdentity(dirs.lock))) return false;
-  try {
-    await unlink(dirs.lock);
-    return true;
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    return true;
-  }
+  return withLockUnlinkGuard(dirs, async () => {
+    const currentIdentity = await readLockIdentity(dirs.lock);
+    if (!sameLockIdentity(staleIdentity, currentIdentity)) return false;
+    if (Date.now() - currentIdentity.mtimeMs < staleMs) return false;
+    try {
+      await unlink(dirs.lock);
+      return true;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return true;
+    }
+  });
 }
 
 async function releaseLock(dirs, token) {
-  let currentToken;
-  try {
-    currentToken = await readLockToken(dirs.lock);
-  } catch {
-    return;
-  }
-  if (currentToken !== token) return;
-  try {
-    await unlink(dirs.lock);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
+  await withLockUnlinkGuard(dirs, async () => {
+    let currentToken;
+    try {
+      currentToken = await readLockToken(dirs.lock);
+    } catch {
+      return;
+    }
+    if (currentToken !== token) return;
+    try {
+      await unlink(dirs.lock);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  });
 }
 
 export async function loadTelemetryState({ cwd = process.cwd() } = {}) {
