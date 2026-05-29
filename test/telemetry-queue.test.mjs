@@ -26,6 +26,14 @@ import {
 
 const TELEMETRY_ROOT = ".gemini-agent/telemetry";
 const LARGE_QUEUE_LIMIT = 10 * 1024 * 1024;
+const DEFAULT_STATE = {
+  dropped_old_count: 0,
+  dropped_memory_count: 0,
+  queue_bytes: 0,
+  sent_success_count: 0,
+  sent_failure_count: 0,
+  last_sent_at: null,
+};
 
 async function temporaryWorkspace() {
   return mkdtemp(join(tmpdir(), "gemini-agent-telemetry-queue-"));
@@ -121,9 +129,7 @@ test("loadTelemetryState returns defaults and append writes one secure pending e
   assert.equal(dirs.lock, join(dirs.queue, "lock"));
   assert.equal(dirs.state, join(dirs.queue, "state.json"));
 
-  const defaultState = await loadTelemetryState({ cwd });
-  assert.equal(defaultState.queue_bytes, 0);
-  assert.equal(defaultState.dropped_old_count, 0);
+  assert.deepEqual(await loadTelemetryState({ cwd }), DEFAULT_STATE);
 
   await appendTelemetryEvent({
     cwd,
@@ -150,7 +156,35 @@ test("loadTelemetryState returns defaults and append writes one secure pending e
   const state = await loadTelemetryState({ cwd });
   assert.equal(state.queue_bytes, (await stat(pendingFiles[0])).size);
   assert.equal(state.dropped_old_count, 0);
+  assert.equal(state.dropped_memory_count, 0);
+  assert.equal(state.sent_success_count, 0);
+  assert.equal(state.sent_failure_count, 0);
+  assert.equal(state.last_sent_at, null);
   assert.equal(modeBits(await stat(dirs.state)), 0o600);
+});
+
+test("append preserves existing non-queue state counters", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(0), maxQueueBytes: LARGE_QUEUE_LIMIT });
+  await writeFile(dirs.state, `${JSON.stringify({
+    dropped_old_count: 1,
+    dropped_memory_count: 2,
+    queue_bytes: 0,
+    sent_success_count: 3,
+    sent_failure_count: 4,
+    last_sent_at: "2026-05-29T11:00:00.000Z",
+  })}\n`);
+
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1), maxQueueBytes: LARGE_QUEUE_LIMIT });
+
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.dropped_old_count, 1);
+  assert.equal(state.dropped_memory_count, 2);
+  assert.equal(state.sent_success_count, 3);
+  assert.equal(state.sent_failure_count, 4);
+  assert.equal(state.last_sent_at, "2026-05-29T11:00:00.000Z");
+  assert.equal(state.queue_bytes, await sumFileBytes(await regularFilePaths(dirs.pending)));
 });
 
 test("claim, complete, and fail move queue files safely", async () => {
@@ -190,6 +224,32 @@ test("claim, complete, and fail move queue files safely", async () => {
   await failTelemetryBatch({ cwd, batchId: failedBatch.batchId });
   assert.equal(await pathExists(failedBatch.batchDir), false);
   assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000002"]);
+});
+
+test("complete and fail update send state counters", async () => {
+  const cwd = await temporaryWorkspace();
+  const completedAt = new Date("2026-05-29T12:00:00.000Z");
+
+  for (const index of [0, 1, 2]) {
+    await appendTelemetryEvent({ cwd, event: telemetryEvent(index), maxQueueBytes: LARGE_QUEUE_LIMIT });
+  }
+
+  const successfulBatch = await claimTelemetryBatch({ cwd, batchSize: 2, now: completedAt });
+  await completeTelemetryBatch({ cwd, batchId: successfulBatch.batchId, now: completedAt });
+
+  const afterSuccess = await loadTelemetryState({ cwd });
+  assert.equal(afterSuccess.sent_success_count, 2);
+  assert.equal(afterSuccess.sent_failure_count, 0);
+  assert.equal(afterSuccess.last_sent_at, completedAt.toISOString());
+
+  const failedBatch = await claimTelemetryBatch({ cwd, batchSize: 1, now: completedAt });
+  await failTelemetryBatch({ cwd, batchId: failedBatch.batchId });
+
+  const afterFailure = await loadTelemetryState({ cwd });
+  assert.equal(afterFailure.sent_success_count, 2);
+  assert.equal(afterFailure.sent_failure_count, 1);
+  assert.equal(afterFailure.last_sent_at, completedAt.toISOString());
+  assert.equal(afterFailure.queue_bytes, await sumFileBytes(await regularFilePaths(telemetryQueueDirs(cwd).pending)));
 });
 
 test("lock prevents concurrent flush claims", async () => {
@@ -235,6 +295,33 @@ test("stale lock can be reclaimed", async () => {
   });
 
   assert.equal(result, "reclaimed");
+  assert.equal(await pathExists(dirs.lock), false);
+});
+
+test("stale lock reclaim preserves exclusivity under contention", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  await mkdir(dirs.queue, { recursive: true, mode: 0o700 });
+  await chmod(dirs.queue, 0o700);
+  await writeFile(dirs.lock, `${JSON.stringify({ token: "stale-token" })}\n`, { mode: 0o600 });
+  await chmod(dirs.lock, 0o600);
+  const old = new Date(Date.now() - 60_000);
+  await utimes(dirs.lock, old, old);
+
+  let activeLocks = 0;
+  let maxActiveLocks = 0;
+  const contenders = Array.from({ length: 20 }, (_, index) => (
+    withTelemetryQueueLock({ cwd, staleMs: 1000, retries: 200, retryDelayMs: 1 }, async () => {
+      activeLocks += 1;
+      maxActiveLocks = Math.max(maxActiveLocks, activeLocks);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      activeLocks -= 1;
+      return index;
+    })
+  ));
+
+  assert.equal(new Set(await Promise.all(contenders)).size, contenders.length);
+  assert.equal(maxActiveLocks, 1);
   assert.equal(await pathExists(dirs.lock), false);
 });
 

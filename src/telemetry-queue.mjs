@@ -27,8 +27,12 @@ const SECURE_FILE_MODE = 0o600;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const DEFAULT_STATE = Object.freeze({
-  queue_bytes: 0,
   dropped_old_count: 0,
+  dropped_memory_count: 0,
+  queue_bytes: 0,
+  sent_success_count: 0,
+  sent_failure_count: 0,
+  last_sent_at: null,
 });
 
 function sleep(ms) {
@@ -55,13 +59,29 @@ function normalizeState(value) {
   if (value == null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Telemetry queue state must be an object.");
   }
-  const queueBytes = value.queue_bytes ?? DEFAULT_STATE.queue_bytes;
   const droppedOldCount = value.dropped_old_count ?? DEFAULT_STATE.dropped_old_count;
-  assertNonnegativeInteger(queueBytes, "queue_bytes");
+  const droppedMemoryCount = value.dropped_memory_count ?? DEFAULT_STATE.dropped_memory_count;
+  const queueBytes = value.queue_bytes ?? DEFAULT_STATE.queue_bytes;
+  const sentSuccessCount = value.sent_success_count ?? DEFAULT_STATE.sent_success_count;
+  const sentFailureCount = value.sent_failure_count ?? DEFAULT_STATE.sent_failure_count;
+  const lastSentAt = value.last_sent_at ?? DEFAULT_STATE.last_sent_at;
+
   assertNonnegativeInteger(droppedOldCount, "dropped_old_count");
+  assertNonnegativeInteger(droppedMemoryCount, "dropped_memory_count");
+  assertNonnegativeInteger(queueBytes, "queue_bytes");
+  assertNonnegativeInteger(sentSuccessCount, "sent_success_count");
+  assertNonnegativeInteger(sentFailureCount, "sent_failure_count");
+  if (lastSentAt !== null && typeof lastSentAt !== "string") {
+    throw new Error("last_sent_at must be null or an ISO timestamp string.");
+  }
+
   return {
-    queue_bytes: queueBytes,
     dropped_old_count: droppedOldCount,
+    dropped_memory_count: droppedMemoryCount,
+    queue_bytes: queueBytes,
+    sent_success_count: sentSuccessCount,
+    sent_failure_count: sentFailureCount,
+    last_sent_at: lastSentAt,
   };
 }
 
@@ -189,10 +209,51 @@ async function pendingQueueBytes(cwd) {
   return sumFileSizes(await regularFiles(dirs.pending));
 }
 
+function parseLockToken(raw) {
+  try {
+    const lock = JSON.parse(raw);
+    if (!lock || typeof lock !== "object" || typeof lock.token !== "string") return null;
+    return lock.token;
+  } catch {
+    return null;
+  }
+}
+
+function sameLockIdentity(left, right) {
+  return left !== null
+    && right !== null
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs
+    && left.raw === right.raw;
+}
+
+async function readLockIdentity(path) {
+  let lockStat;
+  let raw;
+  try {
+    raw = await readFile(path, "utf8");
+    lockStat = await stat(path);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+
+  return {
+    token: parseLockToken(raw),
+    raw,
+    dev: lockStat.dev,
+    ino: lockStat.ino,
+    size: lockStat.size,
+    mtimeMs: lockStat.mtimeMs,
+    ctimeMs: lockStat.ctimeMs,
+  };
+}
+
 async function readLockToken(path) {
-  const lock = await readJsonFile(path, "Telemetry queue lock");
-  if (!lock || typeof lock !== "object" || typeof lock.token !== "string") return null;
-  return lock.token;
+  return (await readLockIdentity(path))?.token ?? null;
 }
 
 async function tryAcquireLock(dirs, token) {
@@ -211,15 +272,11 @@ async function tryAcquireLock(dirs, token) {
 }
 
 async function maybeReclaimStaleLock(dirs, staleMs) {
-  let lockStat;
-  try {
-    lockStat = await stat(dirs.lock);
-  } catch (error) {
-    if (error.code === "ENOENT") return false;
-    throw error;
-  }
+  const staleIdentity = await readLockIdentity(dirs.lock);
+  if (!staleIdentity) return false;
 
-  if (Date.now() - lockStat.mtimeMs < staleMs) return false;
+  if (Date.now() - staleIdentity.mtimeMs < staleMs) return false;
+  if (!sameLockIdentity(staleIdentity, await readLockIdentity(dirs.lock))) return false;
   try {
     await unlink(dirs.lock);
     return true;
@@ -423,6 +480,13 @@ export async function completeTelemetryBatch({
       moved += 1;
     }
     await rm(batchDir, { recursive: true, force: true });
+
+    const state = await loadStateFromPath(dirs.state);
+    await saveState(cwd, {
+      ...state,
+      sent_success_count: state.sent_success_count + moved,
+      last_sent_at: now.toISOString(),
+    });
     return moved;
   });
 }
@@ -452,6 +516,7 @@ export async function failTelemetryBatch({
     await saveState(cwd, {
       ...state,
       queue_bytes: await pendingQueueBytes(cwd),
+      sent_failure_count: state.sent_failure_count + moved,
     });
     return moved;
   });
