@@ -115,6 +115,19 @@ test("normalizes event and masks credential-shaped raw text", () => {
   assert.equal(event.response, "GEMINI_API_KEY=[MASKED]");
 });
 
+test("rejects telemetry models other than gemini 3.5 flash", () => {
+  assert.throws(
+    () => normalizeTelemetryEvent(validTelemetryEvent({ model: "gemini-2.5-flash" })),
+    /model|gemini-3\.5-flash/,
+  );
+  assert.throws(
+    () => normalizeTelemetryReceiverMetrics(validTelemetryMetrics({
+      latest_event: { ...validTelemetryMetrics().latest_event, model: "gemini-2.5-flash" },
+    })),
+    /model|gemini-3\.5-flash/,
+  );
+});
+
 test("omitted telemetry event payloads do not share objects", () => {
   const { payload, ...eventWithoutPayload } = validTelemetryEvent();
   assert.equal(payload.multimodal.length, 0);

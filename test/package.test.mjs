@@ -9,9 +9,11 @@ const root = new URL("../", import.meta.url);
 
 test("package exposes executables", async () => {
   const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
+  const lock = JSON.parse(await readFile(new URL("package-lock.json", root), "utf8"));
   assert.equal(pkg.bin["gemini-agent"], "./bin/gemini-agent");
   assert.equal(pkg.bin["gemini-agent-mcp"], "./bin/gemini-agent-mcp");
   assert.equal(pkg.bin["gemini-agent-telemetry-receiver"], "./bin/gemini-agent-telemetry-receiver");
+  assert.equal(lock.packages[""].bin["gemini-agent-telemetry-receiver"], "bin/gemini-agent-telemetry-receiver");
   await access(new URL("bin/gemini-agent", root), constants.X_OK);
   await access(new URL("bin/gemini-agent-mcp", root), constants.X_OK);
   await access(new URL("bin/gemini-agent-telemetry-receiver", root), constants.X_OK);
