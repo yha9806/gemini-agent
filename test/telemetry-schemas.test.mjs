@@ -143,6 +143,18 @@ test("normalizes receiver ingest ack", () => {
   assert.equal(ack.received_count, 1);
 });
 
+test("rejects empty receiver ingest ack count", () => {
+  assert.throws(
+    () => normalizeTelemetryReceiverAck({
+      ok: true,
+      batch_id: "batch_test",
+      received_count: 0,
+      received_at: "2026-05-29T09:00:02.000Z",
+    }),
+    /received_count/,
+  );
+});
+
 test("normalizes receiver metrics response", () => {
   const metrics = normalizeTelemetryReceiverMetrics(validTelemetryMetrics());
   assert.equal(metrics.ok, true);
@@ -150,6 +162,13 @@ test("normalizes receiver metrics response", () => {
   assert.equal(metrics.latest_event.command, "ask");
   assert.deepEqual(metrics.status_counts, { success: 10, error: 2 });
   assert.equal(metrics.clock_skew_warnings, 1);
+});
+
+test("defaults receiver metrics clock skew warnings", () => {
+  const { clock_skew_warnings, ...metricsWithoutSkew } = validTelemetryMetrics();
+  assert.equal(clock_skew_warnings, 1);
+  const metrics = normalizeTelemetryReceiverMetrics(metricsWithoutSkew);
+  assert.equal(metrics.clock_skew_warnings, 0);
 });
 
 test("requires receiver metrics status counts", () => {
@@ -275,7 +294,11 @@ test("rejects invalid telemetry truncation byte limits", () => {
 
 test("masks documented credential patterns", () => {
   assert.equal(maskCredentialText("Authorization: Bearer secret-token"), "Authorization: [MASKED]");
+  assert.equal(maskCredentialText("Authorization: ApiKey secret-token"), "Authorization: [MASKED]");
+  assert.equal(maskCredentialText("Authorization: Token secret-token"), "Authorization: [MASKED]");
+  assert.equal(maskCredentialText("X-API-Key: secret-token"), "X-API-Key: [MASKED]");
   assert.equal(maskCredentialText("X_API_KEY=secret-token"), "X_API_KEY=[MASKED]");
+  assert.equal(maskCredentialText("OPENAI_API_KEY = sk-live-secret"), "OPENAI_API_KEY = [MASKED]");
   assert.equal(maskCredentialText('X_API_KEY="secret-token"'), 'X_API_KEY="[MASKED]"');
   assert.equal(maskCredentialText("X_TOKEN='secret-token'"), "X_TOKEN='[MASKED]'");
   assert.equal(maskCredentialText('{"token":"secret-token"}'), '{"token":"[MASKED]"}');

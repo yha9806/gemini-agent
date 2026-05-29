@@ -81,7 +81,7 @@ const TelemetryStatusCountsZodSchema = z.strictObject({
 export const TelemetryReceiverAckZodSchema = z.strictObject({
   ok: z.literal(true),
   batch_id: z.string().min(1),
-  received_count: z.number().int().nonnegative(),
+  received_count: z.number().int().positive(),
   received_at: IsoString,
 });
 
@@ -93,14 +93,19 @@ export const TelemetryReceiverMetricsZodSchema = z.strictObject({
   last_batch_id: z.string().min(1).nullable().default(null),
   latest_event: TelemetryReceiverLatestEventZodSchema.nullable().default(null),
   status_counts: TelemetryStatusCountsZodSchema,
-  clock_skew_warnings: z.number().int().nonnegative(),
+  clock_skew_warnings: z.number().int().nonnegative().default(0),
 });
 
 const MASK_PATTERNS = [
   {
     name: "authorization-header",
-    pattern: /Authorization:\s*(?:Bearer|Basic)\s+[^\r\n]+/gi,
+    pattern: /Authorization:[^\S\r\n]*[^\r\n]+/gi,
     replacement: "Authorization: [MASKED]",
+  },
+  {
+    name: "api-key-header",
+    pattern: /(X-API-Key:[^\S\r\n]*)[^\r\n]+/gi,
+    replacement: "$1[MASKED]",
   },
   {
     name: "standalone-bearer-token",
@@ -109,8 +114,10 @@ const MASK_PATTERNS = [
   },
   {
     name: "env-secret-assignment",
-    pattern: /([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD))=(?:(["'])([^\r\n]*?)\2|([^\s"'`]+))/g,
-    replacement: (match, name, quote) => quote ? `${name}=${quote}[MASKED]${quote}` : `${name}=[MASKED]`,
+    pattern: /([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD))([^\S\r\n]*=[^\S\r\n]*)(?:(["'])([^\r\n]*?)\3|([^\s"'`]+))/g,
+    replacement: (match, name, separator, quote) => (
+      quote ? `${name}${separator}${quote}[MASKED]${quote}` : `${name}${separator}[MASKED]`
+    ),
   },
   {
     name: "json-secret-field",
