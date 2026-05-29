@@ -296,7 +296,26 @@ async function releaseGuard(dirs, token) {
   }
 }
 
-async function withLockUnlinkGuard(dirs, fn) {
+async function maybeReclaimStaleGuard(dirs, staleMs) {
+  const guardPath = lockGuardPath(dirs);
+  const staleIdentity = await readLockIdentity(guardPath);
+  if (!staleIdentity) return false;
+
+  if (Date.now() - staleIdentity.mtimeMs < staleMs) return false;
+  const currentIdentity = await readLockIdentity(guardPath);
+  if (!sameLockIdentity(staleIdentity, currentIdentity)) return false;
+  if (Date.now() - currentIdentity.mtimeMs < staleMs) return false;
+
+  try {
+    await unlink(guardPath);
+    return true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return true;
+  }
+}
+
+async function withLockUnlinkGuard(dirs, staleMs, fn) {
   const token = randomUUID();
   let lastError;
   let acquired = false;
@@ -309,6 +328,7 @@ async function withLockUnlinkGuard(dirs, fn) {
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       lastError = error;
+      if (await maybeReclaimStaleGuard(dirs, staleMs)) continue;
       if (attempt < LOCK_GUARD_RETRIES) await sleep(LOCK_GUARD_RETRY_DELAY_MS);
     }
   }
@@ -346,7 +366,7 @@ async function maybeReclaimStaleLock(dirs, staleMs) {
   if (!staleIdentity) return false;
 
   if (Date.now() - staleIdentity.mtimeMs < staleMs) return false;
-  return withLockUnlinkGuard(dirs, async () => {
+  return withLockUnlinkGuard(dirs, staleMs, async () => {
     const currentIdentity = await readLockIdentity(dirs.lock);
     if (!sameLockIdentity(staleIdentity, currentIdentity)) return false;
     if (Date.now() - currentIdentity.mtimeMs < staleMs) return false;
@@ -360,8 +380,8 @@ async function maybeReclaimStaleLock(dirs, staleMs) {
   });
 }
 
-async function releaseLock(dirs, token) {
-  await withLockUnlinkGuard(dirs, async () => {
+async function releaseLock(dirs, token, staleMs) {
+  await withLockUnlinkGuard(dirs, staleMs, async () => {
     let currentToken;
     try {
       currentToken = await readLockToken(dirs.lock);
@@ -420,7 +440,7 @@ export async function withTelemetryQueueLock({
     try {
       return await fn();
     } finally {
-      await releaseLock(dirs, token);
+      await releaseLock(dirs, token, staleMs);
     }
   }
 

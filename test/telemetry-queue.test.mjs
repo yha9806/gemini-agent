@@ -323,6 +323,31 @@ test("stale lock can be reclaimed", async () => {
   assert.equal(await pathExists(dirs.lock), false);
 });
 
+test("stale lock guard can be reclaimed", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  const guardPath = join(dirs.queue, "lock.guard");
+  await mkdir(dirs.queue, { recursive: true, mode: 0o700 });
+  await chmod(dirs.queue, 0o700);
+  await writeFile(dirs.lock, `${JSON.stringify({ token: "stale-lock-token" })}\n`, { mode: 0o600 });
+  await chmod(dirs.lock, 0o600);
+  await writeFile(guardPath, `${JSON.stringify({ token: "stale-guard-token" })}\n`, { mode: 0o600 });
+  await chmod(guardPath, 0o600);
+  const old = new Date(Date.now() - 60_000);
+  await utimes(dirs.lock, old, old);
+  await utimes(guardPath, old, old);
+
+  const result = await withTelemetryQueueLock({ cwd, staleMs: 1, retries: 0 }, async () => {
+    assert.equal(await pathExists(dirs.lock), true);
+    assert.equal(await pathExists(guardPath), false);
+    return "acquired";
+  });
+
+  assert.equal(result, "acquired");
+  assert.equal(await pathExists(dirs.lock), false);
+  assert.equal(await pathExists(guardPath), false);
+});
+
 test("stale lock reclaim preserves exclusivity across child processes", async () => {
   const cwd = await temporaryWorkspace();
   const dirs = telemetryQueueDirs(cwd);
