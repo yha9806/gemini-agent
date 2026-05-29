@@ -159,6 +159,31 @@ test("flushTelemetryQueue returns zero without sending when queue is empty", asy
   assert.equal(called, false);
 });
 
+test("flushTelemetryQueue rejects missing token before claiming queued events", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(9) });
+  let called = false;
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      fetchImpl: async () => {
+        called = true;
+        throw new Error("fetch should not be called");
+      },
+      now: NOW,
+    }),
+    /Telemetry token must be a non-empty string\./,
+  );
+
+  assert.equal(called, false);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000009"]);
+  assert.deepEqual(await regularFileNames(telemetryQueueDirs(cwd).inflight), []);
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_failure_count, 0);
+});
+
 test("flushTelemetryQueue preserves pending queue on receiver failure", async () => {
   const cwd = await temporaryWorkspace();
   await appendTelemetryEvent({ cwd, event: telemetryEvent(3) });
@@ -209,6 +234,24 @@ test("receiverMetrics fetches metrics endpoint and validates strict metrics shap
   assert.equal(metrics.received_batches, 3);
   assert.deepEqual(metrics.status_counts, { success: 10, error: 2 });
   assert.equal(metrics.clock_skew_warnings, 0);
+});
+
+test("receiverMetrics rejects empty token before fetching", async () => {
+  let called = false;
+
+  await assert.rejects(
+    () => receiverMetrics({
+      endpoint: ENDPOINT,
+      token: " ",
+      fetchImpl: async () => {
+        called = true;
+        throw new Error("fetch should not be called");
+      },
+    }),
+    /Telemetry token must be a non-empty string\./,
+  );
+
+  assert.equal(called, false);
 });
 
 test("runTelemetryValidation creates, flushes, and confirms validation event", async () => {
@@ -273,6 +316,113 @@ test("runTelemetryValidation creates, flushes, and confirms validation event", a
     "http://127.0.0.1:8787/metrics",
   ]);
   assert.deepEqual(await readPendingEvents(cwd), []);
+});
+
+test("runTelemetryValidation rejects missing token before askGemini or queue append", async () => {
+  const cwd = await temporaryWorkspace();
+  let called = false;
+
+  await assert.rejects(
+    () => runTelemetryValidation({
+      cwd,
+      endpoint: ENDPOINT,
+      token: "",
+      askGemini: async () => {
+        called = true;
+        return "telemetry-ok";
+      },
+      fetchImpl: async () => {
+        throw new Error("fetch should not be called");
+      },
+      now: NOW,
+    }),
+    /Telemetry token must be a non-empty string\./,
+  );
+
+  assert.equal(called, false);
+  assert.deepEqual(await readPendingEvents(cwd), []);
+});
+
+test("runTelemetryValidation rejects invalid endpoint before askGemini or queue append", async () => {
+  const cwd = await temporaryWorkspace();
+  let called = false;
+
+  await assert.rejects(
+    () => runTelemetryValidation({
+      cwd,
+      endpoint: "ftp://example.test/ingest",
+      token: TOKEN,
+      askGemini: async () => {
+        called = true;
+        return "telemetry-ok";
+      },
+      fetchImpl: async () => {
+        throw new Error("fetch should not be called");
+      },
+      now: NOW,
+    }),
+    /Telemetry endpoint must use HTTP or HTTPS\./,
+  );
+
+  assert.equal(called, false);
+  assert.deepEqual(await readPendingEvents(cwd), []);
+});
+
+test("runTelemetryValidation returns false for inconsistent validation metrics", async () => {
+  const cases = [
+    ["missing received events", { received_events: 0 }],
+    ["missing received batches", { received_batches: 0 }],
+    ["missing latest event", { latest_event: null }],
+    ["wrong latest batch", { latest_event: { batch_id: "batch_other" } }],
+    ["wrong latest command", { latest_event: { command: "ask" } }],
+    ["wrong latest status", { latest_event: { status: "error" } }],
+  ];
+
+  for (const [name, metricsOverrides] of cases) {
+    const cwd = await temporaryWorkspace();
+    let validationBatchId;
+    const result = await runTelemetryValidation({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      prompt: `validation prompt ${name}`,
+      askGemini: async () => "telemetry-ok",
+      fetchImpl: async (url, options) => {
+        if (options.method === "POST") {
+          const body = JSON.parse(options.body);
+          validationBatchId = body.batch_id;
+          return new Response(JSON.stringify({
+            ok: true,
+            batch_id: body.batch_id,
+            received_count: body.events.length,
+            received_at: "2026-05-29T10:00:01.000Z",
+          }), { status: 200 });
+        }
+
+        const baseLatestEvent = {
+          received_at: "2026-05-29T10:00:01.000Z",
+          batch_id: validationBatchId,
+          command: "telemetry validate",
+          model: "gemini-3.5-flash",
+          status: "success",
+        };
+        const latestOverride = metricsOverrides.latest_event;
+        const latest_event = latestOverride === null
+          ? null
+          : { ...baseLatestEvent, ...(latestOverride ?? {}) };
+        return new Response(JSON.stringify(metricsResponse({
+          received_events: 1,
+          received_batches: 1,
+          last_batch_id: validationBatchId,
+          ...metricsOverrides,
+          latest_event,
+        })), { status: 200 });
+      },
+      now: NOW,
+    });
+
+    assert.equal(result.ok, false, name);
+  }
 });
 
 test("runTelemetryValidation includes validation event despite default-sized backlog", async () => {

@@ -22,12 +22,24 @@ function assertPositiveInteger(value, name) {
   }
 }
 
+function assertTelemetryToken(token) {
+  if (typeof token !== "string" || !token.trim()) {
+    throw new Error("Telemetry token must be a non-empty string.");
+  }
+}
+
 function validationBatchRecorded({ flush, metrics }) {
-  if (!flush.batch_id || !flush.ack) return false;
-  if (flush.ack.batch_id !== flush.batch_id) return false;
+  const ackedBatchId = flush.ack?.batch_id;
+  if (!ackedBatchId || ackedBatchId !== flush.batch_id) return false;
   if (flush.ack.received_count !== flush.sent_count) return false;
-  if (metrics.last_batch_id !== flush.batch_id) return false;
-  if (metrics.latest_event && metrics.latest_event.batch_id !== flush.batch_id) return false;
+  if (metrics.received_events < flush.sent_count) return false;
+  if (metrics.received_batches <= 0) return false;
+  if (metrics.last_batch_id !== ackedBatchId) return false;
+  if (!metrics.latest_event) return false;
+  if (metrics.latest_event.batch_id !== ackedBatchId) return false;
+  if (metrics.latest_event.command !== "telemetry validate") return false;
+  if (metrics.latest_event.model !== getDefaultModel()) return false;
+  if (metrics.latest_event.status !== "success") return false;
   return true;
 }
 
@@ -95,6 +107,7 @@ export async function flushTelemetryQueue({
   batchSize = 100,
 } = {}) {
   const url = validateTelemetryEndpoint(endpoint);
+  assertTelemetryToken(token);
   const claimed = await claimTelemetryBatch({ cwd, batchSize, now });
   if (claimed.events.length === 0) {
     return { ok: true, sent_count: 0 };
@@ -152,6 +165,7 @@ export async function receiverMetrics({
   timeoutMs = 5000,
 } = {}) {
   const ingestUrl = validateTelemetryEndpoint(endpoint);
+  assertTelemetryToken(token);
   const metricsUrl = metricsUrlFromEndpoint(ingestUrl);
 
   const response = await withTimeout(timeoutMs, (signal) => fetchImpl(metricsUrl.href, {
@@ -178,6 +192,9 @@ export async function runTelemetryValidation({
   fetchImpl = fetch,
   now = new Date(),
 } = {}) {
+  validateTelemetryEndpoint(endpoint);
+  assertTelemetryToken(token);
+
   if (typeof askGemini !== "function") {
     throw new TypeError("runTelemetryValidation requires askGemini.");
   }
