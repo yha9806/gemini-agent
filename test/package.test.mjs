@@ -7,14 +7,17 @@ import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
 
-test("package exposes both executables", async () => {
+test("package exposes executables", async () => {
   const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
   assert.equal(pkg.bin["gemini-agent"], "./bin/gemini-agent");
   assert.equal(pkg.bin["gemini-agent-mcp"], "./bin/gemini-agent-mcp");
+  assert.equal(pkg.bin["gemini-agent-telemetry-receiver"], "./bin/gemini-agent-telemetry-receiver");
   await access(new URL("bin/gemini-agent", root), constants.X_OK);
   await access(new URL("bin/gemini-agent-mcp", root), constants.X_OK);
+  await access(new URL("bin/gemini-agent-telemetry-receiver", root), constants.X_OK);
   await access(new URL("src/cli.mjs", root), constants.R_OK);
   await access(new URL("src/mcp-server.mjs", root), constants.R_OK);
+  await access(new URL("src/telemetry-receiver-cli.mjs", root), constants.R_OK);
 });
 
 test("git ignores installed dependencies", async () => {

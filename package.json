@@ -6,7 +6,8 @@
   "description": "Global Gemini review gate for Codex",
   "bin": {
     "gemini-agent": "./bin/gemini-agent",
-    "gemini-agent-mcp": "./bin/gemini-agent-mcp"
+    "gemini-agent-mcp": "./bin/gemini-agent-mcp",
+    "gemini-agent-telemetry-receiver": "./bin/gemini-agent-telemetry-receiver"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",

@@ -1,0 +1,120 @@
+import { z } from "zod";
+
+export const TELEMETRY_SCHEMA_VERSION = 1;
+export const DEFAULT_MAX_EVENT_BYTES = 1024 * 1024;
+export const DEFAULT_MAX_QUEUE_BYTES = 50 * 1024 * 1024;
+
+const IsoString = z.string().datetime({ offset: true });
+
+export const TelemetryConfigZodSchema = z.object({
+  enabled: z.boolean(),
+  level: z.literal("raw"),
+  endpoint: z.string().url(),
+  token_env: z.string().min(1),
+  schedule: z.string().default("daily@09:00"),
+  max_event_bytes: z.number().int().positive().default(DEFAULT_MAX_EVENT_BYTES),
+  max_queue_bytes: z.number().int().positive().default(DEFAULT_MAX_QUEUE_BYTES),
+  created_at: IsoString,
+  updated_at: IsoString,
+});
+
+export const TelemetryEventZodSchema = z.object({
+  schema_version: z.literal(TELEMETRY_SCHEMA_VERSION),
+  event_id: z.string().min(1),
+  trace_id: z.string().min(1),
+  deployment_id: z.string().min(1),
+  project_id: z.string().min(1),
+  source: z.enum(["cli", "mcp", "validate"]),
+  command: z.string().min(1),
+  model: z.literal("gemini-3.5-flash"),
+  prompt: z.string(),
+  response: z.string(),
+  status: z.enum(["success", "error"]),
+  error_type: z.string().nullable().default(null),
+  latency_ms: z.number().int().nonnegative(),
+  created_at: IsoString,
+  payload: z.object({
+    prompt_truncated: z.boolean().default(false),
+    response_truncated: z.boolean().default(false),
+    multimodal: z.array(z.object({
+      mime_type: z.string().optional(),
+      byte_size: z.number().int().nonnegative().optional(),
+      basename: z.string().optional(),
+      sha256: z.string().optional(),
+    })).default([]),
+  }).default({ prompt_truncated: false, response_truncated: false, multimodal: [] }),
+});
+
+export const TelemetryBatchZodSchema = z.object({
+  schema_version: z.literal(TELEMETRY_SCHEMA_VERSION),
+  batch_id: z.string().min(1),
+  deployment_id: z.string().min(1),
+  scheduled_for: IsoString,
+  sent_at: IsoString,
+  events: z.array(TelemetryEventZodSchema).min(1),
+});
+
+const MASK_PATTERNS = [
+  {
+    name: "authorization-header",
+    pattern: /Authorization:\s*(?:Bearer|Basic)\s+[^\r\n]+/gi,
+    replacement: "Authorization: [MASKED]",
+  },
+  {
+    name: "env-secret-assignment",
+    pattern: /([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD))=([^\s"'`]+)/g,
+    replacement: "$1=[MASKED]",
+  },
+  {
+    name: "json-secret-field",
+    pattern: /"((?:api_?key|token|secret|password))"\s*:\s*"[^"]*"/gi,
+    replacement: "\"$1\":\"[MASKED]\"",
+  },
+  {
+    name: "gemini-api-key",
+    pattern: /AIzaSy[A-Za-z0-9_-]{20,}/g,
+    replacement: "[MASKED]",
+  },
+];
+
+export function credentialMaskPatterns() {
+  return MASK_PATTERNS.map(({ name, pattern }) => ({ name, pattern: pattern.source }));
+}
+
+export function maskCredentialText(value) {
+  let text = `${value ?? ""}`;
+  for (const { pattern, replacement } of MASK_PATTERNS) {
+    text = text.replace(pattern, replacement);
+  }
+  return text;
+}
+
+export function truncateTelemetryText(value, maxBytes = DEFAULT_MAX_EVENT_BYTES) {
+  const text = `${value ?? ""}`;
+  const buffer = Buffer.from(text, "utf8");
+  if (buffer.length <= maxBytes) return { text, truncated: false };
+  let end = maxBytes;
+  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end -= 1;
+  return { text: buffer.subarray(0, end).toString("utf8"), truncated: true };
+}
+
+export function normalizeTelemetryConfig(value) {
+  return TelemetryConfigZodSchema.parse(value);
+}
+
+export function normalizeTelemetryEvent(value) {
+  const parsed = TelemetryEventZodSchema.parse(value);
+  return {
+    ...parsed,
+    prompt: maskCredentialText(parsed.prompt),
+    response: maskCredentialText(parsed.response),
+  };
+}
+
+export function normalizeTelemetryBatch(value) {
+  const parsed = TelemetryBatchZodSchema.parse(value);
+  return {
+    ...parsed,
+    events: parsed.events.map((event) => normalizeTelemetryEvent(event)),
+  };
+}
