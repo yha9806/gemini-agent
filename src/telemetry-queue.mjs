@@ -1,0 +1,522 @@
+import {
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  DEFAULT_MAX_QUEUE_BYTES,
+  normalizeTelemetryEvent,
+} from "./telemetry-schemas.mjs";
+
+const TELEMETRY_ROOT = ".gemini-agent/telemetry";
+const QUEUE_DIR = "queue";
+const STATE_FILE = "state.json";
+const LOCK_FILE = "lock";
+const SECURE_DIR_MODE = 0o700;
+const SECURE_FILE_MODE = 0o600;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const DEFAULT_STATE = Object.freeze({
+  queue_bytes: 0,
+  dropped_old_count: 0,
+});
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function utcDay(value) {
+  return value.toISOString().slice(0, 10);
+}
+
+function assertNonnegativeInteger(value, name) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new RangeError(`${name} must be a nonnegative integer.`);
+  }
+}
+
+function assertPositiveInteger(value, name) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive integer.`);
+  }
+}
+
+function normalizeState(value) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Telemetry queue state must be an object.");
+  }
+  const queueBytes = value.queue_bytes ?? DEFAULT_STATE.queue_bytes;
+  const droppedOldCount = value.dropped_old_count ?? DEFAULT_STATE.dropped_old_count;
+  assertNonnegativeInteger(queueBytes, "queue_bytes");
+  assertNonnegativeInteger(droppedOldCount, "dropped_old_count");
+  return {
+    queue_bytes: queueBytes,
+    dropped_old_count: droppedOldCount,
+  };
+}
+
+function assertSafeBatchId(batchId) {
+  if (typeof batchId !== "string" || !/^batch_[A-Za-z0-9_.-]+$/.test(batchId)) {
+    throw new Error("Telemetry batch id is invalid.");
+  }
+}
+
+function queueFileName(prefix) {
+  const millis = `${Date.now()}`.padStart(13, "0");
+  const monotonic = `${process.hrtime.bigint()}`.padStart(20, "0");
+  return `${prefix}_${millis}_${monotonic}_${randomUUID()}.json`;
+}
+
+export function telemetryQueueDirs(cwd = process.cwd()) {
+  const root = join(cwd, TELEMETRY_ROOT);
+  const queue = join(root, QUEUE_DIR);
+  return {
+    root,
+    queue,
+    pending: join(queue, "pending"),
+    inflight: join(queue, "inflight"),
+    sent: join(queue, "sent"),
+    tmp: join(queue, "tmp"),
+    lock: join(queue, LOCK_FILE),
+    state: join(queue, STATE_FILE),
+  };
+}
+
+async function secureMkdir(path) {
+  await mkdir(path, { recursive: true, mode: SECURE_DIR_MODE });
+  await chmod(path, SECURE_DIR_MODE);
+}
+
+async function ensureQueueDirs(cwd) {
+  const dirs = telemetryQueueDirs(cwd);
+  for (const dir of [dirs.root, dirs.queue, dirs.pending, dirs.inflight, dirs.sent, dirs.tmp]) {
+    await secureMkdir(dir);
+  }
+  return dirs;
+}
+
+async function fileExists(path) {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function regularFiles(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const path = join(dir, entry.name);
+    const itemStat = await stat(path);
+    files.push({
+      name: entry.name,
+      path,
+      size: itemStat.size,
+      mtimeMs: itemStat.mtimeMs,
+    });
+  }
+  return files.sort((left, right) => (
+    left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name)
+  ));
+}
+
+async function sumFileSizes(files) {
+  return files.reduce((sum, file) => sum + file.size, 0);
+}
+
+async function readJsonFile(path, label) {
+  let raw;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`${label} is not valid JSON: ${path}`);
+    }
+    throw error;
+  }
+}
+
+async function writeSecureJsonFile(cwd, path, value) {
+  const dirs = await ensureQueueDirs(cwd);
+  const tmpPath = join(dirs.tmp, `${queueFileName("tmp")}.tmp`);
+  await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, { mode: SECURE_FILE_MODE });
+  await chmod(tmpPath, SECURE_FILE_MODE);
+  await rename(tmpPath, path);
+  await chmod(path, SECURE_FILE_MODE);
+}
+
+async function loadStateFromPath(path) {
+  const state = await readJsonFile(path, "Telemetry queue state");
+  if (!state) return { ...DEFAULT_STATE };
+  return normalizeState(state);
+}
+
+async function saveState(cwd, state) {
+  const dirs = telemetryQueueDirs(cwd);
+  await writeSecureJsonFile(cwd, dirs.state, normalizeState(state));
+}
+
+async function pendingQueueBytes(cwd) {
+  const dirs = telemetryQueueDirs(cwd);
+  return sumFileSizes(await regularFiles(dirs.pending));
+}
+
+async function readLockToken(path) {
+  const lock = await readJsonFile(path, "Telemetry queue lock");
+  if (!lock || typeof lock !== "object" || typeof lock.token !== "string") return null;
+  return lock.token;
+}
+
+async function tryAcquireLock(dirs, token) {
+  const lock = {
+    token,
+    pid: process.pid,
+    created_at: new Date().toISOString(),
+  };
+  const handle = await open(dirs.lock, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, SECURE_FILE_MODE);
+  try {
+    await handle.writeFile(`${JSON.stringify(lock)}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
+  await chmod(dirs.lock, SECURE_FILE_MODE);
+}
+
+async function maybeReclaimStaleLock(dirs, staleMs) {
+  let lockStat;
+  try {
+    lockStat = await stat(dirs.lock);
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+
+  if (Date.now() - lockStat.mtimeMs < staleMs) return false;
+  try {
+    await unlink(dirs.lock);
+    return true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return true;
+  }
+}
+
+async function releaseLock(dirs, token) {
+  let currentToken;
+  try {
+    currentToken = await readLockToken(dirs.lock);
+  } catch {
+    return;
+  }
+  if (currentToken !== token) return;
+  try {
+    await unlink(dirs.lock);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
+export async function loadTelemetryState({ cwd = process.cwd() } = {}) {
+  const dirs = telemetryQueueDirs(cwd);
+  return loadStateFromPath(dirs.state);
+}
+
+export async function withTelemetryQueueLock({
+  cwd = process.cwd(),
+  staleMs = 30_000,
+  retries = 20,
+  retryDelayMs = 25,
+} = {}, fn) {
+  if (typeof fn !== "function") {
+    throw new TypeError("withTelemetryQueueLock requires a callback.");
+  }
+  assertNonnegativeInteger(staleMs, "staleMs");
+  assertNonnegativeInteger(retries, "retries");
+  assertNonnegativeInteger(retryDelayMs, "retryDelayMs");
+
+  const dirs = await ensureQueueDirs(cwd);
+  const token = randomUUID();
+  let lastError;
+  let attempts = 0;
+  let acquired = false;
+
+  while (attempts <= retries) {
+    try {
+      await tryAcquireLock(dirs, token);
+      acquired = true;
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      lastError = error;
+      if (await maybeReclaimStaleLock(dirs, staleMs)) continue;
+      if (attempts === retries) break;
+      attempts += 1;
+      await sleep(retryDelayMs);
+    }
+  }
+
+  if (acquired) {
+    try {
+      return await fn();
+    } finally {
+      await releaseLock(dirs, token);
+    }
+  }
+
+  const message = `Telemetry queue lock could not be acquired: ${dirs.lock}`;
+  const error = new Error(message);
+  error.cause = lastError;
+  throw error;
+}
+
+async function enforceQueueLimit(cwd, state, maxQueueBytes) {
+  const dirs = telemetryQueueDirs(cwd);
+  const pendingFiles = await regularFiles(dirs.pending);
+  let queueBytes = await sumFileSizes(pendingFiles);
+  let dropped = 0;
+
+  for (const file of pendingFiles) {
+    if (queueBytes <= maxQueueBytes) break;
+    try {
+      await unlink(file.path);
+      queueBytes -= file.size;
+      dropped += 1;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+
+  return {
+    ...state,
+    queue_bytes: queueBytes,
+    dropped_old_count: state.dropped_old_count + dropped,
+  };
+}
+
+export async function appendTelemetryEvent({
+  cwd = process.cwd(),
+  event,
+  maxQueueBytes = DEFAULT_MAX_QUEUE_BYTES,
+} = {}) {
+  assertPositiveInteger(maxQueueBytes, "maxQueueBytes");
+  const normalizedEvent = normalizeTelemetryEvent(event);
+
+  return withTelemetryQueueLock({ cwd }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const state = await loadStateFromPath(dirs.state);
+    const fileName = queueFileName("event");
+    const tmpPath = join(dirs.tmp, `${fileName}.tmp`);
+    const pendingPath = join(dirs.pending, fileName);
+
+    await writeFile(tmpPath, `${JSON.stringify(normalizedEvent)}\n`, { mode: SECURE_FILE_MODE });
+    await chmod(tmpPath, SECURE_FILE_MODE);
+    await rename(tmpPath, pendingPath);
+    await chmod(pendingPath, SECURE_FILE_MODE);
+
+    const nextState = await enforceQueueLimit(cwd, state, maxQueueBytes);
+    await saveState(cwd, nextState);
+    return normalizedEvent;
+  });
+}
+
+export async function claimTelemetryBatch({
+  cwd = process.cwd(),
+  batchSize,
+  now = new Date(),
+} = {}) {
+  assertPositiveInteger(batchSize, "batchSize");
+
+  return withTelemetryQueueLock({ cwd }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const pendingFiles = (await regularFiles(dirs.pending)).slice(0, batchSize);
+    if (pendingFiles.length === 0) {
+      return { batchId: null, batchDir: null, events: [] };
+    }
+
+    const batchId = `batch_${utcDay(now).replaceAll("-", "")}_${Date.now()}_${randomUUID()}`;
+    const batchDir = join(dirs.inflight, batchId);
+    await secureMkdir(batchDir);
+
+    const movedFiles = [];
+    try {
+      for (const file of pendingFiles) {
+        const destination = join(batchDir, file.name);
+        await rename(file.path, destination);
+        await chmod(destination, SECURE_FILE_MODE);
+        movedFiles.push({ ...file, path: destination });
+      }
+    } catch (error) {
+      for (const file of movedFiles.reverse()) {
+        try {
+          await rename(file.path, join(dirs.pending, file.name));
+        } catch {
+          // Keep the original error. A later fail/retry can recover any moved files.
+        }
+      }
+      throw error;
+    }
+
+    const events = [];
+    for (const file of movedFiles) {
+      events.push(normalizeTelemetryEvent(await readJsonFile(file.path, "Telemetry queue event")));
+    }
+
+    const state = await loadStateFromPath(dirs.state);
+    await saveState(cwd, {
+      ...state,
+      queue_bytes: await pendingQueueBytes(cwd),
+    });
+
+    return { batchId, batchDir, events };
+  });
+}
+
+export async function completeTelemetryBatch({
+  cwd = process.cwd(),
+  batchId,
+  now = new Date(),
+} = {}) {
+  assertSafeBatchId(batchId);
+
+  return withTelemetryQueueLock({ cwd }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const batchDir = join(dirs.inflight, batchId);
+    if (!await fileExists(batchDir)) return 0;
+
+    const sentDayDir = join(dirs.sent, utcDay(now));
+    await secureMkdir(sentDayDir);
+    const files = await regularFiles(batchDir);
+    let moved = 0;
+
+    for (const file of files) {
+      const destination = join(sentDayDir, file.name);
+      await rename(file.path, destination);
+      await chmod(destination, SECURE_FILE_MODE);
+      moved += 1;
+    }
+    await rm(batchDir, { recursive: true, force: true });
+    return moved;
+  });
+}
+
+export async function failTelemetryBatch({
+  cwd = process.cwd(),
+  batchId,
+} = {}) {
+  assertSafeBatchId(batchId);
+
+  return withTelemetryQueueLock({ cwd }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const batchDir = join(dirs.inflight, batchId);
+    if (!await fileExists(batchDir)) return 0;
+
+    const files = await regularFiles(batchDir);
+    let moved = 0;
+    for (const file of files) {
+      const destination = join(dirs.pending, file.name);
+      await rename(file.path, destination);
+      await chmod(destination, SECURE_FILE_MODE);
+      moved += 1;
+    }
+    await rm(batchDir, { recursive: true, force: true });
+
+    const state = await loadStateFromPath(dirs.state);
+    await saveState(cwd, {
+      ...state,
+      queue_bytes: await pendingQueueBytes(cwd),
+    });
+    return moved;
+  });
+}
+
+async function sentDayDirs(sentDir) {
+  let entries;
+  try {
+    entries = await readdir(sentDir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+
+  const dirs = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(entry.name)) continue;
+    const path = join(sentDir, entry.name);
+    const dayMs = Date.parse(`${entry.name}T00:00:00.000Z`);
+    if (Number.isNaN(dayMs)) continue;
+    const files = await regularFiles(path);
+    dirs.push({
+      name: entry.name,
+      path,
+      dayMs,
+      bytes: await sumFileSizes(files),
+      count: files.length,
+    });
+  }
+  return dirs.sort((left, right) => left.dayMs - right.dayMs || left.name.localeCompare(right.name));
+}
+
+export async function pruneSentTelemetry({
+  cwd = process.cwd(),
+  now = new Date(),
+  keepDays,
+  maxSentBytes = Number.POSITIVE_INFINITY,
+} = {}) {
+  assertNonnegativeInteger(keepDays, "keepDays");
+  if (maxSentBytes !== Number.POSITIVE_INFINITY) {
+    assertNonnegativeInteger(maxSentBytes, "maxSentBytes");
+  }
+
+  const dirs = await ensureQueueDirs(cwd);
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const cutoff = today - (keepDays * DAY_MS);
+  let dayDirs = await sentDayDirs(dirs.sent);
+  let removed = 0;
+
+  for (const dayDir of dayDirs) {
+    if (dayDir.dayMs >= cutoff) continue;
+    await rm(dayDir.path, { recursive: true, force: true });
+    removed += dayDir.count;
+  }
+
+  dayDirs = (await sentDayDirs(dirs.sent)).sort((left, right) => (
+    left.dayMs - right.dayMs || left.name.localeCompare(right.name)
+  ));
+  let sentBytes = dayDirs.reduce((sum, dayDir) => sum + dayDir.bytes, 0);
+  for (const dayDir of dayDirs) {
+    if (sentBytes <= maxSentBytes) break;
+    await rm(dayDir.path, { recursive: true, force: true });
+    sentBytes -= dayDir.bytes;
+    removed += dayDir.count;
+  }
+
+  return removed;
+}
