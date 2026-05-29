@@ -31,7 +31,7 @@ const TelemetryMultimodalItemZodSchema = z.strictObject({
 const TelemetryPayloadZodSchema = z.strictObject({
   prompt_truncated: z.boolean().default(false),
   response_truncated: z.boolean().default(false),
-  multimodal: z.array(TelemetryMultimodalItemZodSchema).default([]),
+  multimodal: z.array(TelemetryMultimodalItemZodSchema).default(() => []),
 });
 
 export const TelemetryEventZodSchema = z.strictObject({
@@ -49,7 +49,11 @@ export const TelemetryEventZodSchema = z.strictObject({
   error_type: z.string().nullable().default(null),
   latency_ms: z.number().int().nonnegative(),
   created_at: IsoString,
-  payload: TelemetryPayloadZodSchema.default({ prompt_truncated: false, response_truncated: false, multimodal: [] }),
+  payload: TelemetryPayloadZodSchema.default(() => ({
+    prompt_truncated: false,
+    response_truncated: false,
+    multimodal: [],
+  })),
 });
 
 export const TelemetryBatchZodSchema = z.strictObject({
@@ -100,13 +104,13 @@ const MASK_PATTERNS = [
   },
   {
     name: "standalone-bearer-token",
-    pattern: /(\bBearer[^\S\r\n]+)[A-Za-z0-9._~+/-]{6,}={0,}/gi,
+    pattern: /(\bBearer[^\S\r\n]+)[^\s"'`]{6,}/gi,
     replacement: "$1[MASKED]",
   },
   {
     name: "env-secret-assignment",
-    pattern: /([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD))=([^\s"'`]+)/g,
-    replacement: "$1=[MASKED]",
+    pattern: /([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD))=(?:(["'])([^\r\n]*?)\2|([^\s"'`]+))/g,
+    replacement: (match, name, quote) => quote ? `${name}=${quote}[MASKED]${quote}` : `${name}=[MASKED]`,
   },
   {
     name: "json-secret-field",

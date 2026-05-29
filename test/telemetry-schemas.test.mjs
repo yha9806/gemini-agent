@@ -115,6 +115,17 @@ test("normalizes event and masks credential-shaped raw text", () => {
   assert.equal(event.response, "GEMINI_API_KEY=[MASKED]");
 });
 
+test("omitted telemetry event payloads do not share objects", () => {
+  const { payload, ...eventWithoutPayload } = validTelemetryEvent();
+  assert.equal(payload.multimodal.length, 0);
+  const first = normalizeTelemetryEvent({ ...eventWithoutPayload, event_id: "evt_first" });
+  const second = normalizeTelemetryEvent({ ...eventWithoutPayload, event_id: "evt_second" });
+  assert.notEqual(first.payload, second.payload);
+  assert.notEqual(first.payload.multimodal, second.payload.multimodal);
+  first.payload.multimodal.push({ mime_type: "image/png" });
+  assert.deepEqual(second.payload.multimodal, []);
+});
+
 test("normalizes batch", () => {
   const batch = normalizeTelemetryBatch(validTelemetryBatch());
   assert.equal(batch.events.length, 1);
@@ -265,12 +276,18 @@ test("rejects invalid telemetry truncation byte limits", () => {
 test("masks documented credential patterns", () => {
   assert.equal(maskCredentialText("Authorization: Bearer secret-token"), "Authorization: [MASKED]");
   assert.equal(maskCredentialText("X_API_KEY=secret-token"), "X_API_KEY=[MASKED]");
+  assert.equal(maskCredentialText('X_API_KEY="secret-token"'), 'X_API_KEY="[MASKED]"');
+  assert.equal(maskCredentialText("X_TOKEN='secret-token'"), "X_TOKEN='[MASKED]'");
   assert.equal(maskCredentialText('{"token":"secret-token"}'), '{"token":"[MASKED]"}');
 });
 
 test("masks standalone bearer tokens without crossing lines", () => {
   assert.equal(maskCredentialText('curl -H "Bearer secret-token"'), 'curl -H "Bearer [MASKED]"');
   assert.equal(maskCredentialText("curl -H 'Bearer abcdef+ghijk/lmnop=='"), "curl -H 'Bearer [MASKED]'");
+  assert.equal(maskCredentialText("Bearer abcdef:ghijkl"), "Bearer [MASKED]");
+  assert.equal(maskCredentialText("Bearer abcdef%2Fghijkl"), "Bearer [MASKED]");
+  assert.equal(maskCredentialText('curl -H "Bearer abcdef:ghijkl"'), 'curl -H "Bearer [MASKED]"');
+  assert.equal(maskCredentialText("Bearer abcdef:ghijkl\nBearer abcdef%2Fghijkl"), "Bearer [MASKED]\nBearer [MASKED]");
   assert.equal(maskCredentialText("Bearer\nsecret-token"), "Bearer\nsecret-token");
   assert.equal(
     maskCredentialText("Authorization: Bearer secret-token\nX-Debug: Bearer debug-token\nNote: Bearer dev"),
