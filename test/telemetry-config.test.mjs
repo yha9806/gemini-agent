@@ -123,6 +123,19 @@ test("saveTelemetryConfig preserves absence of older byte limit fields", async (
   assert.equal(Object.hasOwn(saved, "max_queue_bytes"), false);
 });
 
+test("saveTelemetryConfig rejects Gemini API key token env before writing config", async () => {
+  const dir = await temporaryWorkspace();
+  await assert.rejects(
+    () => saveTelemetryConfig({
+      cwd: dir,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: "GEMINI_API_KEY",
+    }),
+    /Telemetry token env must not be GEMINI_API_KEY/,
+  );
+  assert.equal(await loadTelemetryConfig({ cwd: dir }), null);
+});
+
 test("validateTelemetryEndpoint allows loopback HTTP and rejects non-loopback HTTP", () => {
   assert.equal(
     validateTelemetryEndpoint("http://127.0.0.1:8787/ingest").href,
@@ -185,6 +198,10 @@ test("resolveTelemetryToken rejects missing and empty token env values", () => {
   assert.throws(
     () => resolveTelemetryToken({ tokenEnv: "BAD-NAME", env: { "BAD-NAME": "abc" } }),
     /Telemetry token env name must be a valid environment variable name/,
+  );
+  assert.throws(
+    () => resolveTelemetryToken({ tokenEnv: "GEMINI_API_KEY", env: { GEMINI_API_KEY: "secret" } }),
+    /Telemetry token env must not be GEMINI_API_KEY/,
   );
 });
 

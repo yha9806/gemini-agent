@@ -48,6 +48,9 @@ function assertTokenEnvName(tokenEnv) {
   if (typeof tokenEnv !== "string" || tokenEnv.length === 0) {
     throw new Error("Telemetry token env name must be a non-empty string.");
   }
+  if (tokenEnv === "GEMINI_API_KEY") {
+    throw new Error("Telemetry token env must not be GEMINI_API_KEY.");
+  }
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) {
     throw new Error("Telemetry token env name must be a valid environment variable name.");
   }
@@ -109,6 +112,7 @@ export async function saveTelemetryConfig({
   now = new Date(),
 } = {}) {
   const url = validateTelemetryEndpoint(endpoint);
+  assertTokenEnvName(tokenEnv);
   const dir = telemetryDir(cwd);
   const path = telemetryConfigPath(cwd);
   await mkdir(dir, { recursive: true, mode: 0o700 });
