@@ -54,6 +54,31 @@ export const TelemetryBatchZodSchema = z.object({
   events: z.array(TelemetryEventZodSchema).min(1),
 });
 
+const TelemetryReceiverLatestEventZodSchema = z.object({
+  received_at: IsoString,
+  batch_id: z.string().min(1),
+  command: z.string().min(1),
+  model: z.literal("gemini-3.5-flash"),
+  status: z.enum(["success", "error"]),
+});
+
+export const TelemetryReceiverAckZodSchema = z.object({
+  ok: z.literal(true),
+  batch_id: z.string().min(1),
+  received_count: z.number().int().nonnegative(),
+  received_at: IsoString,
+});
+
+export const TelemetryReceiverMetricsZodSchema = z.object({
+  ok: z.literal(true),
+  received_events: z.number().int().nonnegative(),
+  received_batches: z.number().int().nonnegative(),
+  last_received_at: IsoString.nullable().default(null),
+  last_batch_id: z.string().min(1).nullable().default(null),
+  latest_event: TelemetryReceiverLatestEventZodSchema.nullable().default(null),
+  clock_skew_warnings: z.number().int().nonnegative(),
+});
+
 const MASK_PATTERNS = [
   {
     name: "authorization-header",
@@ -117,4 +142,12 @@ export function normalizeTelemetryBatch(value) {
     ...parsed,
     events: parsed.events.map((event) => normalizeTelemetryEvent(event)),
   };
+}
+
+export function normalizeTelemetryReceiverAck(value) {
+  return TelemetryReceiverAckZodSchema.parse(value);
+}
+
+export function normalizeTelemetryReceiverMetrics(value) {
+  return TelemetryReceiverMetricsZodSchema.parse(value);
 }

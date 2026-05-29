@@ -5,6 +5,8 @@ import {
   normalizeTelemetryBatch,
   normalizeTelemetryConfig,
   normalizeTelemetryEvent,
+  normalizeTelemetryReceiverAck,
+  normalizeTelemetryReceiverMetrics,
   truncateTelemetryText,
 } from "../src/telemetry-schemas.mjs";
 
@@ -76,6 +78,40 @@ test("normalizes batch", () => {
     }],
   });
   assert.equal(batch.events.length, 1);
+});
+
+test("normalizes receiver ingest ack", () => {
+  const ack = normalizeTelemetryReceiverAck({
+    ok: true,
+    batch_id: "batch_test",
+    received_count: 1,
+    received_at: "2026-05-29T09:00:02.000Z",
+  });
+  assert.equal(ack.ok, true);
+  assert.equal(ack.batch_id, "batch_test");
+  assert.equal(ack.received_count, 1);
+});
+
+test("normalizes receiver metrics response", () => {
+  const metrics = normalizeTelemetryReceiverMetrics({
+    ok: true,
+    received_events: 12,
+    received_batches: 3,
+    last_received_at: "2026-05-29T09:00:06.000Z",
+    last_batch_id: "batch_test",
+    latest_event: {
+      received_at: "2026-05-29T09:00:06.000Z",
+      batch_id: "batch_test",
+      command: "ask",
+      model: "gemini-3.5-flash",
+      status: "success",
+    },
+    clock_skew_warnings: 1,
+  });
+  assert.equal(metrics.ok, true);
+  assert.equal(metrics.received_events, 12);
+  assert.equal(metrics.latest_event.command, "ask");
+  assert.equal(metrics.clock_skew_warnings, 1);
 });
 
 test("truncates text by byte limit without splitting utf8 characters", () => {

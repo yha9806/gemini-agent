@@ -35,6 +35,11 @@ test("wrappers fail clearly before Gemini integration is implemented", async () 
   assert.notEqual(mcp.code, 0);
   assert.match(mcp.stderr, /not implemented|placeholder/i);
   assert.doesNotMatch(mcp.stderr, /ERR_MODULE_NOT_FOUND|Cannot find module/);
+
+  const receiver = await runNodeScript(new URL("bin/gemini-agent-telemetry-receiver", root));
+  assert.notEqual(receiver.code, 0);
+  assert.match(receiver.stderr, /requires receiver module wiring/i);
+  assert.doesNotMatch(receiver.stderr, /ERR_MODULE_NOT_FOUND|Cannot find module/);
 });
 
 function runNodeScript(scriptUrl) {
