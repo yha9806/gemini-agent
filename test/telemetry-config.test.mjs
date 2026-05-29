@@ -11,6 +11,10 @@ import {
   saveTelemetryConfig,
   validateTelemetryEndpoint,
 } from "../src/telemetry-config.mjs";
+import {
+  DEFAULT_MAX_EVENT_BYTES,
+  DEFAULT_MAX_QUEUE_BYTES,
+} from "../src/telemetry-schemas.mjs";
 
 const CONFIG_RELATIVE_PATH = ".gemini-agent/telemetry/config.json";
 
@@ -92,6 +96,14 @@ test("saveTelemetryConfig preserves absence of older byte limit fields", async (
     created_at: createdAt,
     updated_at: createdAt,
   }, null, 2)}\n`);
+
+  const loadedLegacyConfig = await loadTelemetryConfig({ cwd: dir });
+  assert.equal(loadedLegacyConfig.max_event_bytes, DEFAULT_MAX_EVENT_BYTES);
+  assert.equal(loadedLegacyConfig.max_queue_bytes, DEFAULT_MAX_QUEUE_BYTES);
+  assert.equal(Number.isInteger(loadedLegacyConfig.max_event_bytes), true);
+  assert.equal(Number.isInteger(loadedLegacyConfig.max_queue_bytes), true);
+  assert.ok(loadedLegacyConfig.max_event_bytes > 0);
+  assert.ok(loadedLegacyConfig.max_queue_bytes > 0);
 
   await saveTelemetryConfig({
     cwd: dir,
