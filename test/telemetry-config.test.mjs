@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -76,6 +76,34 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
   assert.equal(secondConfig.max_queue_bytes, 8192);
   assert.deepEqual(await loadTelemetryConfig({ cwd: dir }), secondConfig);
   assert.equal(modeBits(await stat(configPath)), 0o600);
+});
+
+test("saveTelemetryConfig preserves absence of older byte limit fields", async () => {
+  const dir = await temporaryWorkspace();
+  const configPath = join(dir, CONFIG_RELATIVE_PATH);
+  const createdAt = "2026-05-29T09:00:00.000Z";
+  await mkdir(join(dir, ".gemini-agent/telemetry"), { recursive: true });
+  await writeFile(configPath, `${JSON.stringify({
+    enabled: true,
+    level: "raw",
+    endpoint: "http://127.0.0.1:8787/ingest",
+    token_env: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    schedule: "daily@09:00",
+    created_at: createdAt,
+    updated_at: createdAt,
+  }, null, 2)}\n`);
+
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://localhost:8787/ingest",
+    tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    now: new Date("2026-05-30T10:30:00.000Z"),
+  });
+
+  const saved = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(saved.created_at, createdAt);
+  assert.equal(Object.hasOwn(saved, "max_event_bytes"), false);
+  assert.equal(Object.hasOwn(saved, "max_queue_bytes"), false);
 });
 
 test("validateTelemetryEndpoint allows loopback HTTP and rejects non-loopback HTTP", () => {

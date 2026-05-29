@@ -13,6 +13,29 @@ function telemetryConfigPath(cwd) {
   return join(telemetryDir(cwd), CONFIG_FILE);
 }
 
+async function readTelemetryConfigJson(cwd) {
+  const path = telemetryConfigPath(cwd);
+  let raw;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+
+  try {
+    return {
+      path,
+      value: JSON.parse(raw),
+    };
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`Telemetry config is not valid JSON: ${path}`);
+    }
+    throw error;
+  }
+}
+
 function isLoopbackHostname(hostname) {
   const normalized = hostname.toLowerCase();
   return normalized === "127.0.0.1"
@@ -57,26 +80,10 @@ export function resolveTelemetryToken({ tokenEnv, env = process.env }) {
 }
 
 export async function loadTelemetryConfig({ cwd = process.cwd() } = {}) {
-  const path = telemetryConfigPath(cwd);
-  let raw;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  }
+  const rawConfig = await readTelemetryConfigJson(cwd);
+  if (!rawConfig) return null;
 
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new Error(`Telemetry config is not valid JSON: ${path}`);
-    }
-    throw error;
-  }
-
-  const config = normalizeTelemetryConfig(parsed);
+  const config = normalizeTelemetryConfig(rawConfig.value);
   validateTelemetryEndpoint(config.endpoint);
   return config;
 }
@@ -94,7 +101,8 @@ export async function saveTelemetryConfig({
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
 
-  const previous = await loadTelemetryConfig({ cwd });
+  const previousRaw = await readTelemetryConfigJson(cwd);
+  const previous = previousRaw ? normalizeTelemetryConfig(previousRaw.value) : null;
   const configInput = {
     enabled: true,
     level: "raw",
@@ -104,15 +112,22 @@ export async function saveTelemetryConfig({
     created_at: previous?.created_at ?? now.toISOString(),
     updated_at: now.toISOString(),
   };
-  if (previous && Object.hasOwn(previous, "max_event_bytes")) {
+  if (previousRaw && Object.hasOwn(previousRaw.value, "max_event_bytes")) {
     configInput.max_event_bytes = previous.max_event_bytes;
   }
-  if (previous && Object.hasOwn(previous, "max_queue_bytes")) {
+  if (previousRaw && Object.hasOwn(previousRaw.value, "max_queue_bytes")) {
     configInput.max_queue_bytes = previous.max_queue_bytes;
   }
 
   const config = normalizeTelemetryConfig(configInput);
-  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  const configToWrite = { ...config };
+  if (!Object.hasOwn(configInput, "max_event_bytes")) {
+    delete configToWrite.max_event_bytes;
+  }
+  if (!Object.hasOwn(configInput, "max_queue_bytes")) {
+    delete configToWrite.max_queue_bytes;
+  }
+  await writeFile(path, `${JSON.stringify(configToWrite, null, 2)}\n`, { mode: 0o600 });
   await chmod(path, 0o600);
   return config;
 }
