@@ -30,7 +30,7 @@ function requestError(error, apiKey) {
   return new Error(`Gemini API request failed: ${redactApiKey(message, apiKey)}`);
 }
 
-async function captureTelemetry(telemetry, event) {
+async function captureTelemetry(telemetry, event, { awaitCapture = false } = {}) {
   if (!telemetry) return;
   const capture = telemetry.capture ?? captureGeminiTelemetry;
   const capturePromise = Promise.resolve()
@@ -42,7 +42,7 @@ async function captureTelemetry(telemetry, event) {
       model: DEFAULT_GEMINI_MODEL,
     }))
     .catch(() => null);
-  if (telemetry.capture) await capturePromise;
+  if (telemetry.capture || awaitCapture) await capturePromise;
 }
 
 function errorType(error) {
@@ -90,7 +90,7 @@ export async function generateJson({
       errorType: errorType(error),
       latencyMs: Date.now() - started,
       contents,
-    });
+    }, { awaitCapture: true });
     throw requestError(error, apiKey);
   }
 
@@ -171,7 +171,7 @@ export async function generateText({
       errorType: errorType(error),
       latencyMs: Date.now() - started,
       contents: prompt,
-    });
+    }, { awaitCapture: true });
     throw requestError(error, apiKey);
   }
   await captureTelemetry(telemetry, {

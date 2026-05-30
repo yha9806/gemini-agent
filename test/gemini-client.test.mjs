@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   generateArtifactReview,
@@ -9,6 +12,20 @@ import {
   getDefaultModel,
 } from "../src/gemini-client.mjs";
 import { GeminiArtifactReviewSchema, GeminiContextPackSchema } from "../src/schemas.mjs";
+import { resetTelemetryCaptureForTests } from "../src/telemetry-capture.mjs";
+import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
+import { telemetryQueueDirs } from "../src/telemetry-queue.mjs";
+
+async function tempDir() {
+  return mkdtemp(join(tmpdir(), "gemini-agent-client-"));
+}
+
+async function readPendingTelemetryEvents(cwd) {
+  const files = await readdir(telemetryQueueDirs(cwd).pending);
+  return Promise.all(files.sort().map(async (file) => (
+    JSON.parse(await readFile(join(telemetryQueueDirs(cwd).pending, file), "utf8"))
+  )));
+}
 
 test("uses stable default model", () => {
   assert.equal(getDefaultModel({}), "gemini-3.5-flash");
@@ -513,6 +530,93 @@ test("SDK errors are captured before throwing redacted request errors", async ()
   assert.equal(captures[0].status, "error");
   assert.equal(captures[0].errorType, "TypeError");
   assert.equal(captures[0].model, "gemini-3.5-flash");
+});
+
+test("generateJson SDK errors are captured before throwing redacted request errors", async () => {
+  const apiKey = "fake-secret-key";
+  const captures = [];
+
+  await assert.rejects(
+    () => generateJson({
+      apiKey,
+      prompt: "build context",
+      responseSchema: GeminiContextPackSchema,
+      normalize: (value) => value,
+      telemetry: {
+        cwd: "/tmp/context-project",
+        source: "mcp",
+        command: "context-pack",
+        capture: async (event) => captures.push(event),
+      },
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            throw new TypeError(`structured failed for ${apiKey}`);
+          },
+        },
+      }),
+    }),
+    (error) => {
+      assert.match(error.message, /Gemini API request failed:/);
+      assert.doesNotMatch(error.message, new RegExp(apiKey));
+      assert.match(error.message, /\[REDACTED\]/);
+      return true;
+    },
+  );
+
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].prompt, "build context");
+  assert.equal(captures[0].response, "");
+  assert.equal(captures[0].status, "error");
+  assert.equal(captures[0].errorType, "TypeError");
+  assert.equal(captures[0].model, "gemini-3.5-flash");
+  assert.equal(captures[0].source, "mcp");
+  assert.equal(captures[0].cwd, "/tmp/context-project");
+  assert.equal(captures[0].command, "context-pack");
+  assert.equal(Number.isInteger(captures[0].latencyMs), true);
+});
+
+test("generateJson awaits default SDK error capture before throwing", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+  });
+
+  await assert.rejects(
+    () => generateJson({
+      apiKey: "fake-key",
+      prompt: "build context",
+      responseSchema: GeminiContextPackSchema,
+      normalize: (value) => value,
+      telemetry: {
+        cwd,
+        source: "mcp",
+        command: "context-pack",
+      },
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            throw new TypeError("structured failed");
+          },
+        },
+      }),
+    }),
+    /Gemini API request failed: structured failed/,
+  );
+
+  const events = await readPendingTelemetryEvents(cwd);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].prompt, "build context");
+  assert.equal(events[0].response, "");
+  assert.equal(events[0].status, "error");
+  assert.equal(events[0].error_type, "TypeError");
+  assert.equal(events[0].model, "gemini-3.5-flash");
+  assert.equal(events[0].source, "mcp");
+  assert.equal(events[0].command, "context-pack");
+  assert.equal(Number.isInteger(events[0].latency_ms), true);
 });
 
 test("telemetry hook failures are swallowed", async () => {
