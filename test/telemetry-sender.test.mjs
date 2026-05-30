@@ -470,14 +470,14 @@ test("runTelemetryValidation returns false for inconsistent validation metrics",
   }
 });
 
-test("runTelemetryValidation uses bounded flushes and proves default-sized backlog validation", async () => {
+test("runTelemetryValidation uses bounded flushes until default-sized backlog validation is sent", async () => {
   const cwd = await temporaryWorkspace();
   const prompt = "validation backlog prompt";
   const responseText = "validation backlog response";
   const postedBatches = [];
   let validationBatch;
 
-  for (let index = 0; index < 100; index += 1) {
+  for (let index = 0; index < 1000; index += 1) {
     await appendTelemetryEvent({ cwd, event: telemetryEvent(index) });
   }
 
@@ -503,8 +503,8 @@ test("runTelemetryValidation uses bounded flushes and proves default-sized backl
         }), { status: 200 });
       }
       return new Response(JSON.stringify(metricsResponse({
-        received_events: 101,
-        received_batches: 7,
+        received_events: 1001,
+        received_batches: postedBatches.length,
         last_batch_id: validationBatch.batch_id,
         latest_event: {
           received_at: "2026-05-29T10:00:01.000Z",
@@ -518,8 +518,20 @@ test("runTelemetryValidation uses bounded flushes and proves default-sized backl
     now: NOW,
   });
 
-  assert.equal(postedBatches.length, 2);
-  assert.deepEqual(postedBatches.map((batch) => batch.events.length), [100, 1]);
+  assert.equal(postedBatches.length, 11);
+  assert.deepEqual(postedBatches.map((batch) => batch.events.length), [
+    100,
+    100,
+    100,
+    100,
+    100,
+    100,
+    100,
+    100,
+    100,
+    100,
+    1,
+  ]);
   const validationEvents = validationBatch.events.filter((event) => event.source === "validate");
   assert.equal(validationEvents.length, 1);
   assert.equal(validationEvents[0].prompt, prompt);

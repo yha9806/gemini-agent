@@ -15,7 +15,6 @@ import {
 } from "./telemetry-schemas.mjs";
 
 const VALIDATION_FLUSH_BATCH_SIZE = 100;
-const MAX_VALIDATION_FLUSHES = 10;
 
 function assertPositiveInteger(value, name) {
   if (!Number.isInteger(value) || value <= 0) {
@@ -197,12 +196,14 @@ export async function runTelemetryValidation({
   fetchImpl = fetch,
   now = new Date(),
   validationBatchSize = VALIDATION_FLUSH_BATCH_SIZE,
-  maxValidationFlushes = MAX_VALIDATION_FLUSHES,
+  maxValidationFlushes,
 } = {}) {
   validateTelemetryEndpoint(endpoint);
   assertTelemetryToken(token);
   assertPositiveInteger(validationBatchSize, "validationBatchSize");
-  assertPositiveInteger(maxValidationFlushes, "maxValidationFlushes");
+  if (maxValidationFlushes !== undefined) {
+    assertPositiveInteger(maxValidationFlushes, "maxValidationFlushes");
+  }
 
   if (typeof askGemini !== "function") {
     throw new TypeError("runTelemetryValidation requires askGemini.");
@@ -240,7 +241,8 @@ export async function runTelemetryValidation({
 
   const flushes = [];
   let validationFlush = null;
-  for (let attempt = 0; attempt < maxValidationFlushes; attempt += 1) {
+  let attempt = 0;
+  while (maxValidationFlushes === undefined || attempt < maxValidationFlushes) {
     const flush = await flushTelemetryQueue({
       cwd,
       endpoint,
@@ -249,6 +251,7 @@ export async function runTelemetryValidation({
       now,
       batchSize: validationBatchSize,
     });
+    attempt += 1;
     flushes.push(flush);
     if (flush.event_ids?.includes(validationEventId)) {
       validationFlush = flush;
