@@ -159,6 +159,103 @@ test("successful ingest stores raw JSONL, indexes metrics, and returns strict AC
   });
 });
 
+test("ingest is idempotent when the exact same batch is retried", async () => {
+  await withReceiver({ token: TOKEN }, async ({ url }) => {
+    const batch = telemetryBatch({
+      batch_id: "batch_retry_exact",
+      events: [
+        telemetryEvent(1),
+        telemetryEvent(2, { status: "error", error_type: "APIError" }),
+      ],
+    });
+
+    const first = await postJson(url, batch, { Authorization: `Bearer ${TOKEN}` });
+    assert.equal(first.status, 200);
+    assert.equal(normalizeTelemetryReceiverAck(await first.json()).received_count, 2);
+
+    const second = await postJson(url, batch, { Authorization: `Bearer ${TOKEN}` });
+    assert.equal(second.status, 200);
+    const retryAck = normalizeTelemetryReceiverAck(await second.json());
+    assert.equal(retryAck.batch_id, "batch_retry_exact");
+    assert.equal(retryAck.received_count, 2);
+
+    const metrics = normalizeTelemetryReceiverMetrics(await (await fetch(`${url}/metrics`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json());
+    assert.equal(metrics.received_events, 2);
+    assert.equal(metrics.received_batches, 1);
+    assert.deepEqual(metrics.status_counts, { success: 1, error: 1 });
+  });
+});
+
+test("ingest is idempotent when a different batch retries the same event id", async () => {
+  await withReceiver({ token: TOKEN }, async ({ url }) => {
+    const firstBatch = telemetryBatch({
+      batch_id: "batch_retry_original",
+      events: [telemetryEvent(1, { status: "error", error_type: "APIError" })],
+    });
+    const retryBatch = telemetryBatch({
+      batch_id: "batch_retry_new_id",
+      events: [telemetryEvent(1, { status: "error", error_type: "APIError" })],
+    });
+
+    assert.equal((await postJson(url, firstBatch, { Authorization: `Bearer ${TOKEN}` })).status, 200);
+
+    const retry = await postJson(url, retryBatch, { Authorization: `Bearer ${TOKEN}` });
+    assert.equal(retry.status, 200);
+    const retryAck = normalizeTelemetryReceiverAck(await retry.json());
+    assert.equal(retryAck.batch_id, "batch_retry_new_id");
+    assert.equal(retryAck.received_count, 1);
+
+    const metrics = normalizeTelemetryReceiverMetrics(await (await fetch(`${url}/metrics`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json());
+    assert.equal(metrics.received_events, 1);
+    assert.equal(metrics.received_batches, 1);
+    assert.equal(metrics.last_batch_id, "batch_retry_original");
+    assert.deepEqual(metrics.status_counts, { success: 0, error: 1 });
+  });
+});
+
+test("ingest accepts mixed duplicate and new events without inflating duplicate metrics", async () => {
+  await withReceiver({ token: TOKEN }, async ({ url }) => {
+    const firstBatch = telemetryBatch({
+      batch_id: "batch_mixed_original",
+      events: [telemetryEvent(1)],
+    });
+    const mixedBatch = telemetryBatch({
+      batch_id: "batch_mixed_retry",
+      events: [
+        telemetryEvent(1),
+        telemetryEvent(2, { status: "error", error_type: "APIError", command: "review" }),
+      ],
+    });
+
+    assert.equal((await postJson(url, firstBatch, { Authorization: `Bearer ${TOKEN}` })).status, 200);
+
+    const mixed = await postJson(url, mixedBatch, { Authorization: `Bearer ${TOKEN}` });
+    assert.equal(mixed.status, 200);
+    const mixedAck = normalizeTelemetryReceiverAck(await mixed.json());
+    assert.equal(mixedAck.batch_id, "batch_mixed_retry");
+    assert.equal(mixedAck.received_count, 2);
+
+    const metrics = normalizeTelemetryReceiverMetrics(await (await fetch(`${url}/metrics`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json());
+    assert.equal(metrics.received_events, 2);
+    assert.equal(metrics.received_batches, 2);
+    assert.equal(metrics.last_batch_id, "batch_mixed_retry");
+    assert.deepEqual(metrics.status_counts, { success: 1, error: 1 });
+    assert.deepEqual(metrics.latest_event, {
+      received_at: metrics.latest_event.received_at,
+      batch_id: "batch_mixed_retry",
+      command: "review",
+      model: "gemini-3.5-flash",
+      status: "error",
+    });
+  });
+});
+
 test("raw pruning removes JSONL bytes without deleting SQLite metrics", async () => {
   const storage = await temporaryStorage();
   await withReceiver({ storage, token: TOKEN, maxRawBytes: 1 }, async ({ url }) => {

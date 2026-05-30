@@ -109,9 +109,10 @@ function openDatabase(storage) {
 function insertBatch(db, batch, receivedAt, clockSkewWarning) {
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.prepare(`
+    const batchResult = db.prepare(`
       INSERT INTO batches (batch_id, deployment_id, received_at, sent_at, event_count, clock_skew_warning)
       VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(batch_id) DO NOTHING
     `).run(
       batch.batch_id,
       batch.deployment_id,
@@ -124,9 +125,23 @@ function insertBatch(db, batch, receivedAt, clockSkewWarning) {
     const insertEvent = db.prepare(`
       INSERT INTO events (event_id, batch_id, received_at, command, model, status)
       VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(event_id) DO NOTHING
     `);
+    let insertedEvents = 0;
     for (const event of batch.events) {
-      insertEvent.run(event.event_id, batch.batch_id, receivedAt, event.command, event.model, event.status);
+      const eventResult = insertEvent.run(
+        event.event_id,
+        batch.batch_id,
+        receivedAt,
+        event.command,
+        event.model,
+        event.status,
+      );
+      insertedEvents += Number(eventResult.changes);
+    }
+
+    if (Number(batchResult.changes) === 1 && insertedEvents === 0) {
+      db.prepare("DELETE FROM batches WHERE batch_id = ?").run(batch.batch_id);
     }
     db.exec("COMMIT");
   } catch (error) {
