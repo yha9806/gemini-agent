@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -49,6 +49,19 @@ async function regularFileNames(dir) {
     const entries = await readdir(dir, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function directoryNames(dir) {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
   } catch (error) {
@@ -204,6 +217,38 @@ test("flushTelemetryQueue preserves pending queue on receiver failure", async ()
   const state = await loadTelemetryState({ cwd });
   assert.equal(state.sent_success_count, 0);
   assert.equal(state.sent_failure_count, 1);
+});
+
+test("flushTelemetryQueue surfaces post-ACK completion failure without failing the batch", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(6) });
+  const dirs = telemetryQueueDirs(cwd);
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async (url, options) => {
+        const body = JSON.parse(options.body);
+        await writeFile(join(dirs.sent, "2026-05-29"), "not a directory\n");
+        return new Response(JSON.stringify({
+          ok: true,
+          batch_id: body.batch_id,
+          received_count: body.events.length,
+          received_at: "2026-05-29T10:00:01.000Z",
+        }), { status: 200 });
+      },
+      now: NOW,
+    }),
+    /EEXIST|not a directory|ENOTDIR/,
+  );
+
+  assert.deepEqual(await readPendingEvents(cwd), []);
+  assert.equal((await directoryNames(dirs.inflight)).length, 1);
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_success_count, 0);
+  assert.equal(state.sent_failure_count, 0);
 });
 
 test("receiverMetrics fetches metrics endpoint and validates strict metrics shape", async () => {
@@ -425,11 +470,12 @@ test("runTelemetryValidation returns false for inconsistent validation metrics",
   }
 });
 
-test("runTelemetryValidation includes validation event despite default-sized backlog", async () => {
+test("runTelemetryValidation uses bounded flushes and proves default-sized backlog validation", async () => {
   const cwd = await temporaryWorkspace();
   const prompt = "validation backlog prompt";
   const responseText = "validation backlog response";
-  let postedBatch;
+  const postedBatches = [];
+  let validationBatch;
 
   for (let index = 0; index < 100; index += 1) {
     await appendTelemetryEvent({ cwd, event: telemetryEvent(index) });
@@ -443,7 +489,12 @@ test("runTelemetryValidation includes validation event despite default-sized bac
     askGemini: async () => responseText,
     fetchImpl: async (url, options) => {
       if (options.method === "POST") {
-        postedBatch = JSON.parse(options.body);
+        const postedBatch = JSON.parse(options.body);
+        postedBatches.push(postedBatch);
+        const validationEvents = postedBatch.events.filter((event) => event.source === "validate");
+        if (validationEvents.length > 0) {
+          validationBatch = postedBatch;
+        }
         return new Response(JSON.stringify({
           ok: true,
           batch_id: postedBatch.batch_id,
@@ -454,11 +505,11 @@ test("runTelemetryValidation includes validation event despite default-sized bac
       return new Response(JSON.stringify(metricsResponse({
         received_events: 101,
         received_batches: 7,
-        last_batch_id: "batch_stale",
+        last_batch_id: validationBatch.batch_id,
         latest_event: {
           received_at: "2026-05-29T10:00:01.000Z",
-          batch_id: "batch_stale",
-          command: "ask",
+          batch_id: validationBatch.batch_id,
+          command: "telemetry validate",
           model: "gemini-3.5-flash",
           status: "success",
         },
@@ -467,18 +518,70 @@ test("runTelemetryValidation includes validation event despite default-sized bac
     now: NOW,
   });
 
-  const validationEvents = postedBatch.events.filter((event) => event.source === "validate");
-  assert.equal(postedBatch.events.length, 101);
+  assert.equal(postedBatches.length, 2);
+  assert.deepEqual(postedBatches.map((batch) => batch.events.length), [100, 1]);
+  const validationEvents = validationBatch.events.filter((event) => event.source === "validate");
   assert.equal(validationEvents.length, 1);
   assert.equal(validationEvents[0].prompt, prompt);
   assert.equal(validationEvents[0].response, responseText);
-  assert.equal(result.ok, false);
-  assert.equal(result.flush.batch_id, postedBatch.batch_id);
-  assert.equal(result.metrics.last_batch_id, "batch_stale");
+  assert.equal(result.ok, true);
+  assert.equal(result.flush.batch_id, validationBatch.batch_id);
+  assert.deepEqual(result.flush.event_ids, [validationEvents[0].event_id]);
+  assert.equal(result.metrics.last_batch_id, validationBatch.batch_id);
 
   const pendingValidationEvents = (await readPendingEvents(cwd))
     .filter((event) => event.source === "validate");
   assert.deepEqual(pendingValidationEvents, []);
+});
+
+test("runTelemetryValidation returns false when max bounded flushes are exhausted first", async () => {
+  const cwd = await temporaryWorkspace();
+  const postedBatches = [];
+
+  for (let index = 0; index < 200; index += 1) {
+    await appendTelemetryEvent({ cwd, event: telemetryEvent(index) });
+  }
+
+  const result = await runTelemetryValidation({
+    cwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    askGemini: async () => "telemetry-ok",
+    fetchImpl: async (url, options) => {
+      if (options.method === "POST") {
+        const postedBatch = JSON.parse(options.body);
+        postedBatches.push(postedBatch);
+        return new Response(JSON.stringify({
+          ok: true,
+          batch_id: postedBatch.batch_id,
+          received_count: postedBatch.events.length,
+          received_at: "2026-05-29T10:00:01.000Z",
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify(metricsResponse({
+        received_events: 100,
+        received_batches: 1,
+        last_batch_id: postedBatches.at(-1).batch_id,
+        latest_event: {
+          received_at: "2026-05-29T10:00:01.000Z",
+          batch_id: postedBatches.at(-1).batch_id,
+          command: "ask",
+          model: "gemini-3.5-flash",
+          status: "success",
+        },
+      })), { status: 200 });
+    },
+    now: NOW,
+    maxValidationFlushes: 1,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(postedBatches.length, 1);
+  assert.equal(postedBatches[0].events.length, 100);
+  assert.equal(postedBatches[0].events.some((event) => event.source === "validate"), false);
+  assert.equal(result.flushes.length, 1);
+  assert.equal(result.flush, null);
+  assert.equal((await readPendingEvents(cwd)).some((event) => event.source === "validate"), true);
 });
 
 test("flushTelemetryQueue fails batch on timeout and invalid ACK", async () => {

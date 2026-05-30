@@ -14,7 +14,8 @@ import {
   normalizeTelemetryReceiverMetrics,
 } from "./telemetry-schemas.mjs";
 
-const VALIDATION_FLUSH_BATCH_SIZE = Number.MAX_SAFE_INTEGER;
+const VALIDATION_FLUSH_BATCH_SIZE = 100;
+const MAX_VALIDATION_FLUSHES = 10;
 
 function assertPositiveInteger(value, name) {
   if (!Number.isInteger(value) || value <= 0) {
@@ -28,7 +29,8 @@ function assertTelemetryToken(token) {
   }
 }
 
-function validationBatchRecorded({ flush, metrics }) {
+function validationBatchRecorded({ flush, metrics, validationEventId }) {
+  if (!flush?.event_ids?.includes(validationEventId)) return false;
   const ackedBatchId = flush.ack?.batch_id;
   if (!ackedBatchId || ackedBatchId !== flush.batch_id) return false;
   if (flush.ack.received_count !== flush.sent_count) return false;
@@ -122,6 +124,7 @@ export async function flushTelemetryQueue({
     events: claimed.events,
   });
 
+  let ack;
   try {
     const response = await withTimeout(timeoutMs, (signal) => fetchImpl(url.href, {
       method: "POST",
@@ -137,7 +140,7 @@ export async function flushTelemetryQueue({
       throw new Error(`Telemetry receiver returned ${response.status}.`);
     }
 
-    const ack = normalizeReceiverAck(await parseJsonResponse(response, "Telemetry receiver ACK"));
+    ack = normalizeReceiverAck(await parseJsonResponse(response, "Telemetry receiver ACK"));
     if (ack.batch_id !== batch.batch_id) {
       throw new Error("Telemetry receiver ACK batch_id does not match the sent batch.");
     }
@@ -145,17 +148,19 @@ export async function flushTelemetryQueue({
       throw new Error("Telemetry receiver ACK received_count does not match the sent batch.");
     }
 
-    await completeTelemetryBatch({ cwd, batchId: claimed.batchId, now });
-    return {
-      ok: true,
-      sent_count: batch.events.length,
-      batch_id: batch.batch_id,
-      ack,
-    };
   } catch (error) {
     await failTelemetryBatch({ cwd, batchId: claimed.batchId });
     throw error;
   }
+
+  await completeTelemetryBatch({ cwd, batchId: claimed.batchId, now });
+  return {
+    ok: true,
+    sent_count: batch.events.length,
+    batch_id: batch.batch_id,
+    event_ids: batch.events.map((event) => event.event_id),
+    ack,
+  };
 }
 
 export async function receiverMetrics({
@@ -191,9 +196,13 @@ export async function runTelemetryValidation({
   askGemini,
   fetchImpl = fetch,
   now = new Date(),
+  validationBatchSize = VALIDATION_FLUSH_BATCH_SIZE,
+  maxValidationFlushes = MAX_VALIDATION_FLUSHES,
 } = {}) {
   validateTelemetryEndpoint(endpoint);
   assertTelemetryToken(token);
+  assertPositiveInteger(validationBatchSize, "validationBatchSize");
+  assertPositiveInteger(maxValidationFlushes, "maxValidationFlushes");
 
   if (typeof askGemini !== "function") {
     throw new TypeError("runTelemetryValidation requires askGemini.");
@@ -202,12 +211,13 @@ export async function runTelemetryValidation({
   const startedAtMs = Date.now();
   const responseText = await askGemini(prompt);
   const latencyMs = Math.max(0, Math.round(Date.now() - startedAtMs));
+  const validationEventId = `evt_${randomUUID()}`;
 
   await appendTelemetryEvent({
     cwd,
     event: {
       schema_version: TELEMETRY_SCHEMA_VERSION,
-      event_id: `evt_${randomUUID()}`,
+      event_id: validationEventId,
       trace_id: `trace_${randomUUID()}`,
       deployment_id: "gemini-agent-validation",
       project_id: "gemini-agent",
@@ -228,18 +238,34 @@ export async function runTelemetryValidation({
     },
   });
 
-  const flush = await flushTelemetryQueue({
-    cwd,
-    endpoint,
-    token,
-    fetchImpl,
-    now,
-    batchSize: VALIDATION_FLUSH_BATCH_SIZE,
-  });
+  const flushes = [];
+  let validationFlush = null;
+  for (let attempt = 0; attempt < maxValidationFlushes; attempt += 1) {
+    const flush = await flushTelemetryQueue({
+      cwd,
+      endpoint,
+      token,
+      fetchImpl,
+      now,
+      batchSize: validationBatchSize,
+    });
+    flushes.push(flush);
+    if (flush.event_ids?.includes(validationEventId)) {
+      validationFlush = flush;
+      break;
+    }
+    if (flush.sent_count === 0) break;
+  }
+
   const metrics = await receiverMetrics({ endpoint, token, fetchImpl });
   return {
-    ok: validationBatchRecorded({ flush, metrics }),
-    flush,
+    ok: validationBatchRecorded({
+      flush: validationFlush,
+      metrics,
+      validationEventId,
+    }),
+    flush: validationFlush,
+    flushes,
     metrics,
   };
 }
