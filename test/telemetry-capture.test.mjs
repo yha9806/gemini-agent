@@ -96,6 +96,60 @@ test("captureGeminiTelemetry passes queue byte bound and can be reset for tests"
   assert.doesNotThrow(() => resetTelemetryCaptureForTests());
 });
 
+test("captureGeminiTelemetry truncates raw prompt and response to max_event_bytes", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "ask",
+    prompt: "abcdef",
+    response: "ghijkl",
+    status: "success",
+    loadConfig: async () => ({
+      enabled: true,
+      level: "raw",
+      max_event_bytes: 3,
+      max_queue_bytes: 1024,
+    }),
+    appendEvent: async ({ event }) => appended.push(event),
+  });
+
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].prompt, "abc");
+  assert.equal(appended[0].response, "ghi");
+  assert.equal(appended[0].payload.prompt_truncated, true);
+  assert.equal(appended[0].payload.response_truncated, true);
+});
+
+test("captureGeminiTelemetry truncates multibyte text without malformed output", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "ask",
+    prompt: "ééé",
+    response: "ok",
+    status: "success",
+    loadConfig: async () => ({
+      enabled: true,
+      level: "raw",
+      max_event_bytes: 3,
+      max_queue_bytes: 1024,
+    }),
+    appendEvent: async ({ event }) => appended.push(event),
+  });
+
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].prompt, "é");
+  assert.equal(Buffer.from(appended[0].prompt, "utf8").includes(0xef), false);
+  assert.equal(appended[0].payload.prompt_truncated, true);
+  assert.equal(appended[0].payload.response_truncated, false);
+});
+
 test("captureGeminiTelemetry caches config lookup per cwd and loader", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();
@@ -142,6 +196,46 @@ test("captureGeminiTelemetry refreshes cached config after TTL", async () => {
     loadConfig,
     appendEvent: async ({ event }) => appended.push(event),
     configCacheTtlMs: 1,
+  });
+
+  assert.equal(loadCount, 2);
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].prompt, "one");
+});
+
+test("captureGeminiTelemetry refreshes enabled config immediately after disable", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const appended = [];
+  let enabled = true;
+  let loadCount = 0;
+  const loadConfig = async () => {
+    loadCount += 1;
+    return enabled
+      ? { enabled: true, level: "raw", max_queue_bytes: 1024 }
+      : { enabled: false, level: "raw", max_queue_bytes: 1024 };
+  };
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "ask",
+    prompt: "one",
+    response: "ok",
+    status: "success",
+    loadConfig,
+    appendEvent: async ({ event }) => appended.push(event),
+    configCacheTtlMs: 60_000,
+  });
+  enabled = false;
+  await captureGeminiTelemetry({
+    cwd,
+    command: "ask",
+    prompt: "two",
+    response: "ok",
+    status: "success",
+    loadConfig,
+    appendEvent: async ({ event }) => appended.push(event),
+    configCacheTtlMs: 60_000,
   });
 
   assert.equal(loadCount, 2);

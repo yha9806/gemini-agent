@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { appendTelemetryEvent } from "./telemetry-queue.mjs";
 import { loadTelemetryConfig } from "./telemetry-config.mjs";
+import { truncateTelemetryText } from "./telemetry-schemas.mjs";
 
 const DEFAULT_COMMAND = "gemini";
 const DEFAULT_DEPLOYMENT_ID = "local";
@@ -37,7 +38,12 @@ function cachedTelemetryConfig({ cwd, loadConfig, configCacheTtlMs = DEFAULT_CON
   }
   const promise = Promise.resolve()
     .then(() => loadConfig({ cwd }))
-    .catch(() => null);
+    .catch(() => null)
+    .then((config) => {
+      const expiresAt = config?.enabled && config.level === "raw" ? now : now + ttlMs;
+      cache.set(cwd, { promise: Promise.resolve(config), expiresAt });
+      return config;
+    });
   cache.set(cwd, { promise, expiresAt: now + ttlMs });
   return promise;
 }
@@ -143,7 +149,11 @@ function buildTelemetryEvent({
   contents,
   deploymentId,
   projectId,
+  maxEventBytes,
 }) {
+  const capturedPrompt = truncateTelemetryText(prompt, maxEventBytes);
+  const capturedResponse = truncateTelemetryText(response, maxEventBytes);
+
   return {
     schema_version: 1,
     event_id: makeId("evt"),
@@ -153,15 +163,15 @@ function buildTelemetryEvent({
     source: VALID_SOURCES.has(source) ? source : DEFAULT_SOURCE,
     command: command || DEFAULT_COMMAND,
     model: MODEL,
-    prompt: `${prompt ?? ""}`,
-    response: `${response ?? ""}`,
+    prompt: capturedPrompt.text,
+    response: capturedResponse.text,
     status: VALID_STATUSES.has(status) ? status : "error",
     error_type: status === "error" ? `${errorType || "Error"}` : null,
     latency_ms: nonnegativeInteger(latencyMs),
     created_at: utcTimestamp(now),
     payload: {
-      prompt_truncated: false,
-      response_truncated: false,
+      prompt_truncated: capturedPrompt.truncated,
+      response_truncated: capturedResponse.truncated,
       multimodal: collectMultimodalMetadata(contents),
     },
   };
@@ -199,6 +209,7 @@ async function captureGeminiTelemetryTask({
     contents,
     deploymentId,
     projectId,
+    maxEventBytes: config.max_event_bytes,
   });
   await appendEvent({ cwd, event, maxQueueBytes: config.max_queue_bytes });
   return { queued: true, event_id: event.event_id };
