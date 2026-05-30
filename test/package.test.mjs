@@ -38,16 +38,19 @@ test("wrappers fail clearly before Gemini integration is implemented", async () 
   assert.match(mcp.stderr, /not implemented|placeholder/i);
   assert.doesNotMatch(mcp.stderr, /ERR_MODULE_NOT_FOUND|Cannot find module/);
 
-  const receiver = await runNodeScript(new URL("bin/gemini-agent-telemetry-receiver", root));
+  const receiver = await runNodeScript(new URL("bin/gemini-agent-telemetry-receiver", root), {
+    env: { GEMINI_AGENT_TELEMETRY_TOKEN: "" },
+  });
   assert.notEqual(receiver.code, 0);
-  assert.match(receiver.stderr, /requires receiver module wiring/i);
+  assert.match(receiver.stderr, /GEMINI_AGENT_TELEMETRY_TOKEN/);
   assert.doesNotMatch(receiver.stderr, /ERR_MODULE_NOT_FOUND|Cannot find module/);
 });
 
-function runNodeScript(scriptUrl) {
+function runNodeScript(scriptUrl, { env = {} } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [fileURLToPath(scriptUrl)], {
       cwd: fileURLToPath(root),
+      env: { ...process.env, ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
