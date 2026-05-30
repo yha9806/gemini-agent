@@ -8,6 +8,7 @@ import {
   normalizeReview,
   parseJsonObject,
 } from "./schemas.mjs";
+import { captureGeminiTelemetry } from "./telemetry-capture.mjs";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
 
@@ -29,6 +30,25 @@ function requestError(error, apiKey) {
   return new Error(`Gemini API request failed: ${redactApiKey(message, apiKey)}`);
 }
 
+async function captureTelemetry(telemetry, event) {
+  if (!telemetry) return;
+  const capture = telemetry.capture ?? captureGeminiTelemetry;
+  const capturePromise = Promise.resolve()
+    .then(() => capture({
+      ...event,
+      cwd: telemetry.cwd,
+      source: telemetry.source || "cli",
+      command: telemetry.command || event.command,
+      model: DEFAULT_GEMINI_MODEL,
+    }))
+    .catch(() => null);
+  if (telemetry.capture) await capturePromise;
+}
+
+function errorType(error) {
+  return error instanceof Error && error.name ? error.name : "Error";
+}
+
 export async function generateJson({
   apiKey,
   prompt,
@@ -39,6 +59,7 @@ export async function generateJson({
   allowFakeResponse = false,
   makeAi = makeGoogleGenAI,
   temperature = 0.2,
+  telemetry,
 }) {
   if (!apiKey) throw new Error("Gemini API key is missing.");
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
@@ -48,6 +69,7 @@ export async function generateJson({
   }
 
   let response;
+  const started = Date.now();
   try {
     const ai = makeAi(apiKey);
     response = await ai.models.generateContent({
@@ -60,9 +82,26 @@ export async function generateJson({
       },
     });
   } catch (error) {
+    await captureTelemetry(telemetry, {
+      command: "generate-json",
+      prompt,
+      response: "",
+      status: "error",
+      errorType: errorType(error),
+      latencyMs: Date.now() - started,
+      contents,
+    });
     throw requestError(error, apiKey);
   }
 
+  await captureTelemetry(telemetry, {
+    command: "generate-json",
+    prompt,
+    response: response.text || "",
+    status: "success",
+    latencyMs: Date.now() - started,
+    contents,
+  });
   return normalize(parseJsonObject(response.text || ""));
 }
 
@@ -73,6 +112,7 @@ export async function generateReview({
   allowFakeResponse,
   makeAi,
   temperature,
+  telemetry,
 }) {
   return generateJson({
     apiKey,
@@ -82,6 +122,7 @@ export async function generateReview({
     allowFakeResponse,
     makeAi,
     temperature,
+    telemetry,
     responseSchema: GeminiReviewSchema,
     normalize: normalizeReview,
   });
@@ -108,10 +149,12 @@ export async function generateText({
   prompt,
   makeAi = makeGoogleGenAI,
   temperature = 0.2,
+  telemetry,
 }) {
   if (!apiKey) throw new Error("Gemini API key is missing.");
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
   let response;
+  const started = Date.now();
   try {
     const ai = makeAi(apiKey);
     response = await ai.models.generateContent({
@@ -120,7 +163,24 @@ export async function generateText({
       config: { temperature },
     });
   } catch (error) {
+    await captureTelemetry(telemetry, {
+      command: "generate-text",
+      prompt,
+      response: "",
+      status: "error",
+      errorType: errorType(error),
+      latencyMs: Date.now() - started,
+      contents: prompt,
+    });
     throw requestError(error, apiKey);
   }
+  await captureTelemetry(telemetry, {
+    command: "generate-text",
+    prompt,
+    response: response.text || "",
+    status: "success",
+    latencyMs: Date.now() - started,
+    contents: prompt,
+  });
   return `${response.text || ""}`.trim();
 }

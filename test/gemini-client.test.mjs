@@ -290,6 +290,72 @@ test("generates trimmed text through fake client with default 3.5 Flash model", 
   assert.equal(text, "hello from Gemini");
 });
 
+test("generateText reports raw prompt and response to telemetry hook", async () => {
+  const captures = [];
+  const text = await generateText({
+    apiKey: "fake-key",
+    prompt: "telemetry prompt",
+    telemetry: {
+      cwd: process.cwd(),
+      command: "ask",
+      capture: async (event) => captures.push(event),
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent() {
+          return { text: "  telemetry response  \n" };
+        },
+      },
+    }),
+  });
+
+  assert.equal(text, "telemetry response");
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].prompt, "telemetry prompt");
+  assert.equal(captures[0].response, "  telemetry response  \n");
+  assert.equal(captures[0].status, "success");
+  assert.equal(captures[0].model, "gemini-3.5-flash");
+  assert.equal(captures[0].command, "ask");
+  assert.equal(captures[0].source, "cli");
+  assert.equal(captures[0].cwd, process.cwd());
+  assert.equal(Number.isInteger(captures[0].latencyMs), true);
+});
+
+test("generateJson reports structured raw response to telemetry hook", async () => {
+  const captures = [];
+  const result = await generateJson({
+    apiKey: "fake-key",
+    prompt: "build context",
+    responseSchema: GeminiContextPackSchema,
+    normalize(value) {
+      return { ok: value.kind };
+    },
+    telemetry: {
+      cwd: "/tmp/project",
+      source: "mcp",
+      capture: async (event) => captures.push(event),
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent() {
+          return { text: JSON.stringify({ kind: "context_pack" }) };
+        },
+      },
+    }),
+  });
+
+  assert.deepEqual(result, { ok: "context_pack" });
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].prompt, "build context");
+  assert.equal(captures[0].response, JSON.stringify({ kind: "context_pack" }));
+  assert.equal(captures[0].status, "success");
+  assert.equal(captures[0].model, "gemini-3.5-flash");
+  assert.equal(captures[0].command, "generate-json");
+  assert.equal(captures[0].source, "mcp");
+  assert.equal(captures[0].cwd, "/tmp/project");
+  assert.equal(Number.isInteger(captures[0].latencyMs), true);
+});
+
 test("rejects missing API key and empty prompt", async () => {
   await assert.rejects(
     () => generateReview({ prompt: "review this", makeAi: assert.fail }),
@@ -410,5 +476,84 @@ test("redacts API key from SDK errors", async () => {
       assert.match(error.message, /\[REDACTED\]/);
       return true;
     },
+  );
+});
+
+test("SDK errors are captured before throwing redacted request errors", async () => {
+  const apiKey = "fake-secret-key";
+  const captures = [];
+
+  await assert.rejects(
+    () => generateText({
+      apiKey,
+      prompt: "say hi",
+      telemetry: {
+        command: "ask",
+        capture: async (event) => captures.push(event),
+      },
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            throw new TypeError(`text failed for ${apiKey}`);
+          },
+        },
+      }),
+    }),
+    (error) => {
+      assert.match(error.message, /Gemini API request failed:/);
+      assert.doesNotMatch(error.message, new RegExp(apiKey));
+      assert.match(error.message, /\[REDACTED\]/);
+      return true;
+    },
+  );
+
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].prompt, "say hi");
+  assert.equal(captures[0].response, "");
+  assert.equal(captures[0].status, "error");
+  assert.equal(captures[0].errorType, "TypeError");
+  assert.equal(captures[0].model, "gemini-3.5-flash");
+});
+
+test("telemetry hook failures are swallowed", async () => {
+  const text = await generateText({
+    apiKey: "fake-key",
+    prompt: "say hi",
+    telemetry: {
+      capture: async () => {
+        throw new Error("telemetry unavailable");
+      },
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent() {
+          return { text: "ok" };
+        },
+      },
+    }),
+  });
+
+  assert.equal(text, "ok");
+
+  await assert.rejects(
+    () => generateJson({
+      apiKey: "fake-key",
+      prompt: "build context",
+      responseSchema: GeminiContextPackSchema,
+      normalize: (value) => value,
+      telemetry: {
+        capture: async () => {
+          throw new Error("telemetry unavailable");
+        },
+      },
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            throw new Error("sdk failed");
+          },
+        },
+      }),
+    }),
+    /Gemini API request failed: sdk failed/,
   );
 });

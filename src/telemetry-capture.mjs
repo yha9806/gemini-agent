@@ -1,0 +1,226 @@
+import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
+import { appendTelemetryEvent } from "./telemetry-queue.mjs";
+import { loadTelemetryConfig } from "./telemetry-config.mjs";
+
+const DEFAULT_COMMAND = "gemini";
+const DEFAULT_DEPLOYMENT_ID = "local";
+const DEFAULT_PROJECT_ID = "gemini-agent";
+const DEFAULT_SOURCE = "cli";
+const MODEL = "gemini-3.5-flash";
+const VALID_SOURCES = new Set(["cli", "mcp", "validate"]);
+const VALID_STATUSES = new Set(["success", "error"]);
+const BASE64_BYTE_SIZE_LIMIT = 1024 * 1024;
+
+let pendingCaptures = new Set();
+let configCache = new WeakMap();
+let defaultConfigCache = new Map();
+
+function configMapFor(loadConfig) {
+  if (loadConfig === loadTelemetryConfig) return defaultConfigCache;
+  let cache = configCache.get(loadConfig);
+  if (!cache) {
+    cache = new Map();
+    configCache.set(loadConfig, cache);
+  }
+  return cache;
+}
+
+function cachedTelemetryConfig({ cwd, loadConfig }) {
+  const cache = configMapFor(loadConfig);
+  if (!cache.has(cwd)) {
+    cache.set(cwd, Promise.resolve()
+      .then(() => loadConfig({ cwd }))
+      .catch(() => null));
+  }
+  return cache.get(cwd);
+}
+
+function utcTimestamp(now) {
+  const date = now instanceof Date ? now : new Date(now);
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
+function makeId(prefix) {
+  return `${prefix}_${Date.now()}_${randomUUID()}`;
+}
+
+function nonnegativeInteger(value) {
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
+}
+
+function deriveBase64ByteSize(value) {
+  if (typeof value !== "string" || value.length > BASE64_BYTE_SIZE_LIMIT) return undefined;
+  const compact = value.replace(/\s/g, "");
+  if (!compact || compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) {
+    return undefined;
+  }
+  const padding = compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0;
+  return Math.max(0, (compact.length / 4) * 3 - padding);
+}
+
+function fileBasename(value) {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const url = new URL(value);
+    const name = basename(decodeURIComponent(url.pathname));
+    return name || undefined;
+  } catch {
+    const name = basename(value);
+    return name || undefined;
+  }
+}
+
+function maybeAddHash(metadata, source) {
+  const sha256 = source?.sha256 ?? source?.sha256Hash ?? source?.hash?.sha256;
+  if (typeof sha256 === "string" && sha256.trim()) {
+    metadata.sha256 = sha256;
+  }
+}
+
+function metadataFromInlineData(inlineData) {
+  if (!inlineData || typeof inlineData !== "object") return null;
+  const metadata = {};
+  const mimeType = inlineData.mimeType ?? inlineData.mime_type;
+  if (typeof mimeType === "string" && mimeType.trim()) metadata.mime_type = mimeType;
+  const byteSize = inlineData.byteSize ?? inlineData.byte_size ?? inlineData.size;
+  if (Number.isInteger(byteSize) && byteSize >= 0) {
+    metadata.byte_size = byteSize;
+  } else {
+    const derived = deriveBase64ByteSize(inlineData.data);
+    if (derived !== undefined) metadata.byte_size = derived;
+  }
+  maybeAddHash(metadata, inlineData);
+  return Object.keys(metadata).length ? metadata : null;
+}
+
+function metadataFromFileData(fileData) {
+  if (!fileData || typeof fileData !== "object") return null;
+  const metadata = {};
+  const mimeType = fileData.mimeType ?? fileData.mime_type;
+  if (typeof mimeType === "string" && mimeType.trim()) metadata.mime_type = mimeType;
+  const byteSize = fileData.byteSize ?? fileData.byte_size ?? fileData.size;
+  if (Number.isInteger(byteSize) && byteSize >= 0) metadata.byte_size = byteSize;
+  const name = fileData.displayName ?? fileData.name ?? fileBasename(fileData.fileUri ?? fileData.file_uri ?? fileData.uri);
+  if (typeof name === "string" && name.trim()) metadata.basename = basename(name);
+  maybeAddHash(metadata, fileData);
+  return Object.keys(metadata).length ? metadata : null;
+}
+
+function collectMultimodalMetadata(value, output = []) {
+  if (value == null) return output;
+  if (Array.isArray(value)) {
+    for (const item of value) collectMultimodalMetadata(item, output);
+    return output;
+  }
+  if (typeof value !== "object") return output;
+
+  const inlineMetadata = metadataFromInlineData(value.inlineData ?? value.inline_data);
+  if (inlineMetadata) output.push(inlineMetadata);
+  const fileMetadata = metadataFromFileData(value.fileData ?? value.file_data);
+  if (fileMetadata) output.push(fileMetadata);
+
+  if (Array.isArray(value.parts)) collectMultimodalMetadata(value.parts, output);
+  if (Array.isArray(value.contents)) collectMultimodalMetadata(value.contents, output);
+  return output;
+}
+
+function buildTelemetryEvent({
+  command,
+  source,
+  prompt,
+  response,
+  status,
+  errorType,
+  latencyMs,
+  now,
+  contents,
+  deploymentId,
+  projectId,
+}) {
+  return {
+    schema_version: 1,
+    event_id: makeId("evt"),
+    trace_id: makeId("trace"),
+    deployment_id: deploymentId || DEFAULT_DEPLOYMENT_ID,
+    project_id: projectId || DEFAULT_PROJECT_ID,
+    source: VALID_SOURCES.has(source) ? source : DEFAULT_SOURCE,
+    command: command || DEFAULT_COMMAND,
+    model: MODEL,
+    prompt: `${prompt ?? ""}`,
+    response: `${response ?? ""}`,
+    status: VALID_STATUSES.has(status) ? status : "error",
+    error_type: status === "error" ? `${errorType || "Error"}` : null,
+    latency_ms: nonnegativeInteger(latencyMs),
+    created_at: utcTimestamp(now),
+    payload: {
+      prompt_truncated: false,
+      response_truncated: false,
+      multimodal: collectMultimodalMetadata(contents),
+    },
+  };
+}
+
+async function captureGeminiTelemetryTask({
+  cwd = process.cwd(),
+  command = DEFAULT_COMMAND,
+  source = DEFAULT_SOURCE,
+  prompt = "",
+  response = "",
+  status = "success",
+  errorType = null,
+  latencyMs = 0,
+  now = new Date(),
+  contents = null,
+  deploymentId = DEFAULT_DEPLOYMENT_ID,
+  projectId = DEFAULT_PROJECT_ID,
+  loadConfig = loadTelemetryConfig,
+  appendEvent = appendTelemetryEvent,
+} = {}) {
+  const config = await cachedTelemetryConfig({ cwd, loadConfig });
+  if (!config?.enabled || config.level !== "raw") return { queued: false };
+
+  const event = buildTelemetryEvent({
+    command,
+    source,
+    prompt,
+    response,
+    status,
+    errorType,
+    latencyMs,
+    now,
+    contents,
+    deploymentId,
+    projectId,
+  });
+  await appendEvent({ cwd, event, maxQueueBytes: config.max_queue_bytes });
+  return { queued: true, event_id: event.event_id };
+}
+
+export function captureGeminiTelemetry(options = {}) {
+  const capture = captureGeminiTelemetryTask(options).catch(() => ({ queued: false }));
+  pendingCaptures.add(capture);
+  capture.finally(() => pendingCaptures.delete(capture)).catch(() => {});
+  return capture;
+}
+
+export async function drainTelemetryCapture({ timeoutMs = 2000 } = {}) {
+  const captures = [...pendingCaptures];
+  if (captures.length === 0) return { drained: true };
+  let timeoutId;
+  const timeout = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve("timeout"), Math.max(0, timeoutMs));
+  });
+  const result = await Promise.race([
+    Promise.allSettled(captures).then(() => "drained"),
+    timeout,
+  ]);
+  clearTimeout(timeoutId);
+  return { drained: result === "drained" };
+}
+
+export function resetTelemetryCaptureForTests() {
+  pendingCaptures = new Set();
+  configCache = new WeakMap();
+  defaultConfigCache = new Map();
+}
