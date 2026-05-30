@@ -76,11 +76,17 @@ function normalizeReceiverMetrics(value) {
 async function withTimeout(timeoutMs, fn) {
   assertPositiveInteger(timeoutMs, "timeoutMs");
   const controller = new AbortController();
+  let timeoutReject;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutReject = reject;
+  });
   const timeout = setTimeout(() => {
-    controller.abort();
+    const error = new Error(`Telemetry request aborted after ${timeoutMs}ms timeout.`);
+    timeoutReject(error);
+    controller.abort(error);
   }, timeoutMs);
   try {
-    return await fn(controller.signal);
+    return await Promise.race([fn(controller.signal), timeoutPromise]);
   } finally {
     clearTimeout(timeout);
   }
@@ -125,27 +131,30 @@ export async function flushTelemetryQueue({
 
   let ack;
   try {
-    const response = await withTimeout(timeoutMs, (signal) => fetchImpl(url.href, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(batch),
-      signal,
-    }));
+    ack = await withTimeout(timeoutMs, async (signal) => {
+      const response = await fetchImpl(url.href, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(batch),
+        signal,
+      });
 
-    if (!response.ok) {
-      throw new Error(`Telemetry receiver returned ${response.status}.`);
-    }
+      if (!response.ok) {
+        throw new Error(`Telemetry receiver returned ${response.status}.`);
+      }
 
-    ack = normalizeReceiverAck(await parseJsonResponse(response, "Telemetry receiver ACK"));
-    if (ack.batch_id !== batch.batch_id) {
-      throw new Error("Telemetry receiver ACK batch_id does not match the sent batch.");
-    }
-    if (ack.received_count !== batch.events.length) {
-      throw new Error("Telemetry receiver ACK received_count does not match the sent batch.");
-    }
+      const normalizedAck = normalizeReceiverAck(await parseJsonResponse(response, "Telemetry receiver ACK"));
+      if (normalizedAck.batch_id !== batch.batch_id) {
+        throw new Error("Telemetry receiver ACK batch_id does not match the sent batch.");
+      }
+      if (normalizedAck.received_count !== batch.events.length) {
+        throw new Error("Telemetry receiver ACK received_count does not match the sent batch.");
+      }
+      return normalizedAck;
+    });
 
   } catch (error) {
     await failTelemetryBatch({ cwd, batchId: claimed.batchId });
@@ -172,19 +181,21 @@ export async function receiverMetrics({
   assertTelemetryToken(token);
   const metricsUrl = metricsUrlFromEndpoint(ingestUrl);
 
-  const response = await withTimeout(timeoutMs, (signal) => fetchImpl(metricsUrl.href, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    signal,
-  }));
+  return withTimeout(timeoutMs, async (signal) => {
+    const response = await fetchImpl(metricsUrl.href, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(`Telemetry receiver returned ${response.status}.`);
-  }
+    if (!response.ok) {
+      throw new Error(`Telemetry receiver returned ${response.status}.`);
+    }
 
-  return normalizeReceiverMetrics(await parseJsonResponse(response, "Telemetry receiver metrics"));
+    return normalizeReceiverMetrics(await parseJsonResponse(response, "Telemetry receiver metrics"));
+  });
 }
 
 export async function runTelemetryValidation({

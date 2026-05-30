@@ -634,6 +634,65 @@ test("flushTelemetryQueue fails batch on timeout and invalid ACK", async () => {
   assert.deepEqual((await readPendingEvents(ackCwd)).map((event) => event.event_id), ["evt_000005"]);
 });
 
+test("flushTelemetryQueue times out stalled ACK body parsing and requeues the batch", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(7) });
+  let jsonAborted = false;
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      timeoutMs: 5,
+      fetchImpl: async (_, options) => ({
+        ok: true,
+        status: 200,
+        json: () => new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () => {
+            jsonAborted = true;
+            reject(options.signal.reason ?? new Error("aborted"));
+          });
+        }),
+      }),
+      now: NOW,
+    }),
+    /Telemetry request aborted after 5ms timeout\./,
+  );
+
+  assert.equal(jsonAborted, true);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000007"]);
+  assert.deepEqual(await regularFileNames(telemetryQueueDirs(cwd).inflight), []);
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_success_count, 0);
+  assert.equal(state.sent_failure_count, 1);
+});
+
+test("receiverMetrics times out stalled metrics body parsing", async () => {
+  let jsonAborted = false;
+
+  await assert.rejects(
+    () => receiverMetrics({
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      timeoutMs: 5,
+      fetchImpl: async (_, options) => ({
+        ok: true,
+        status: 200,
+        json: () => new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () => {
+            jsonAborted = true;
+            reject(options.signal.reason ?? new Error("aborted"));
+          });
+        }),
+      }),
+    }),
+    /Telemetry request aborted after 5ms timeout\./,
+  );
+
+  assert.equal(jsonAborted, true);
+});
+
 test("receiverMetrics rejects invalid metrics response", async () => {
   await assert.rejects(
     () => receiverMetrics({
