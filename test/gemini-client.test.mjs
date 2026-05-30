@@ -373,6 +373,69 @@ test("generateJson reports structured raw response to telemetry hook", async () 
   assert.equal(Number.isInteger(captures[0].latencyMs), true);
 });
 
+test("generateJson captures parse and normalize failures as telemetry errors", async () => {
+  const parseCaptures = [];
+  await assert.rejects(
+    () => generateJson({
+      apiKey: "fake-key",
+      prompt: "build context",
+      responseSchema: GeminiContextPackSchema,
+      normalize: (value) => value,
+      telemetry: {
+        cwd: "/tmp/context-project",
+        source: "mcp",
+        command: "context-pack",
+        capture: async (event) => parseCaptures.push(event),
+      },
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            return { text: "not json" };
+          },
+        },
+      }),
+    }),
+    /Gemini response did not contain a JSON object/,
+  );
+
+  assert.equal(parseCaptures.length, 1);
+  assert.equal(parseCaptures[0].response, "not json");
+  assert.equal(parseCaptures[0].status, "error");
+  assert.equal(parseCaptures[0].errorType, "Error");
+  assert.equal(parseCaptures[0].command, "context-pack");
+
+  const normalizeCaptures = [];
+  await assert.rejects(
+    () => generateJson({
+      apiKey: "fake-key",
+      prompt: "build context",
+      responseSchema: GeminiContextPackSchema,
+      normalize() {
+        throw new TypeError("schema invalid");
+      },
+      telemetry: {
+        cwd: "/tmp/context-project",
+        source: "mcp",
+        command: "context-pack",
+        capture: async (event) => normalizeCaptures.push(event),
+      },
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            return { text: JSON.stringify({ kind: "context_pack" }) };
+          },
+        },
+      }),
+    }),
+    /schema invalid/,
+  );
+
+  assert.equal(normalizeCaptures.length, 1);
+  assert.equal(normalizeCaptures[0].response, JSON.stringify({ kind: "context_pack" }));
+  assert.equal(normalizeCaptures[0].status, "error");
+  assert.equal(normalizeCaptures[0].errorType, "TypeError");
+});
+
 test("rejects missing API key and empty prompt", async () => {
   await assert.rejects(
     () => generateReview({ prompt: "review this", makeAi: assert.fail }),

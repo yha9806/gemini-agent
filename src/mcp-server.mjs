@@ -96,6 +96,7 @@ async function runReviewTool(gate, input, cwd = process.cwd()) {
     prompt,
     allowFakeResponse: fakeAllowed,
     env: process.env,
+    telemetry: { cwd, source: "mcp", command: gate },
   });
   return textContent(reviewToPrettyJson(review));
 }
@@ -154,6 +155,7 @@ server.registerTool(
       env: process.env,
       allowFakeResponse: fakeAllowed,
       writeArtifact: Boolean(write_artifact),
+      telemetry: { cwd: cwdValue, source: "mcp", command: "gemini_context_pack" },
     });
     return textContent(contextPackToPrettyJson(pack));
   },
@@ -184,6 +186,7 @@ server.registerTool(
       env: process.env,
       allowFakeResponse: fakeAllowed,
       writeArtifact: Boolean(write_artifact),
+      telemetry: { cwd: cwdValue, source: "mcp", command: "gemini_artifact_review" },
     });
     return textContent(artifactReviewToPrettyJson(review));
   },

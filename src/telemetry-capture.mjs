@@ -11,6 +11,7 @@ const MODEL = "gemini-3.5-flash";
 const VALID_SOURCES = new Set(["cli", "mcp", "validate"]);
 const VALID_STATUSES = new Set(["success", "error"]);
 const BASE64_BYTE_SIZE_LIMIT = 1024 * 1024;
+const DEFAULT_CONFIG_CACHE_TTL_MS = 1000;
 
 let pendingCaptures = new Set();
 let configCache = new WeakMap();
@@ -26,14 +27,19 @@ function configMapFor(loadConfig) {
   return cache;
 }
 
-function cachedTelemetryConfig({ cwd, loadConfig }) {
+function cachedTelemetryConfig({ cwd, loadConfig, configCacheTtlMs = DEFAULT_CONFIG_CACHE_TTL_MS }) {
   const cache = configMapFor(loadConfig);
-  if (!cache.has(cwd)) {
-    cache.set(cwd, Promise.resolve()
-      .then(() => loadConfig({ cwd }))
-      .catch(() => null));
+  const now = Date.now();
+  const ttlMs = nonnegativeInteger(configCacheTtlMs);
+  const cached = cache.get(cwd);
+  if (cached && cached.expiresAt > now) {
+    return cached.promise;
   }
-  return cache.get(cwd);
+  const promise = Promise.resolve()
+    .then(() => loadConfig({ cwd }))
+    .catch(() => null);
+  cache.set(cwd, { promise, expiresAt: now + ttlMs });
+  return promise;
 }
 
 function utcTimestamp(now) {
@@ -176,8 +182,9 @@ async function captureGeminiTelemetryTask({
   projectId = DEFAULT_PROJECT_ID,
   loadConfig = loadTelemetryConfig,
   appendEvent = appendTelemetryEvent,
+  configCacheTtlMs = DEFAULT_CONFIG_CACHE_TTL_MS,
 } = {}) {
-  const config = await cachedTelemetryConfig({ cwd, loadConfig });
+  const config = await cachedTelemetryConfig({ cwd, loadConfig, configCacheTtlMs });
   if (!config?.enabled || config.level !== "raw") return { queued: false };
 
   const event = buildTelemetryEvent({

@@ -27,16 +27,18 @@ test("runContextPack builds prompt, calls Gemini, attaches metadata, and writes 
   let seenPrompt = "";
   let seenApiKey = "";
   let seenAllowFakeResponse = null;
+  let seenTelemetry = null;
 
   const pack = await runContextPack({
     apiKey: "fake-key",
     cwd: dir,
     stdinText: "project notes",
     now: new Date("2026-05-28T12:00:00.000Z"),
-    generate: async ({ apiKey, prompt, allowFakeResponse }) => {
+    generate: async ({ apiKey, prompt, allowFakeResponse, telemetry }) => {
       seenApiKey = apiKey;
       seenPrompt = prompt;
       seenAllowFakeResponse = allowFakeResponse;
+      seenTelemetry = telemetry;
       return fakePack;
     },
     writeArtifact: true,
@@ -44,6 +46,7 @@ test("runContextPack builds prompt, calls Gemini, attaches metadata, and writes 
 
   assert.equal(seenApiKey, "fake-key");
   assert.equal(seenAllowFakeResponse, false);
+  assert.deepEqual(seenTelemetry, { cwd: dir, source: "cli", command: "context-pack" });
   assert.match(seenPrompt, /project notes/);
   assert.match(seenPrompt, /stdin/);
   assert.equal(pack.metadata.model, "gemini-3.5-flash");
@@ -55,6 +58,25 @@ test("runContextPack builds prompt, calls Gemini, attaches metadata, and writes 
   assert.equal(latest.kind, "context_pack");
   assert.equal(latest.metadata.generated_at, "2026-05-28T12:00:00.000Z");
   assert.match(await readFile(join(dir, ".gitignore"), "utf8"), /\.gemini-agent\//);
+});
+
+test("runContextPack passes explicit telemetry override to generation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-context-"));
+  const telemetry = { cwd: "/override", source: "mcp", command: "gemini_context_pack", awaitCapture: true };
+  let seenTelemetry = null;
+
+  await runContextPack({
+    apiKey: "fake-key",
+    cwd: dir,
+    stdinText: "project notes",
+    telemetry,
+    generate: async ({ telemetry: generatedTelemetry }) => {
+      seenTelemetry = generatedTelemetry;
+      return fakePack;
+    },
+  });
+
+  assert.equal(seenTelemetry, telemetry);
 });
 
 test("runContextPack rejects empty input before generate is called", async () => {

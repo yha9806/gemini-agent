@@ -26,6 +26,7 @@ export async function runArtifactReview({
   now = new Date(),
   writeArtifact = false,
   generate = generateArtifactReview,
+  telemetry = { cwd, source: "cli", command: "artifact-review" },
 } = {}) {
   if (!file) throw new Error("--file requires a path.");
 
@@ -52,6 +53,7 @@ export async function runArtifactReview({
     contents,
     env,
     allowFakeResponse,
+    telemetry,
   });
 
   const review = normalizeArtifactReview({

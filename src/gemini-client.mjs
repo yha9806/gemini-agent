@@ -42,7 +42,7 @@ async function captureTelemetry(telemetry, event, { awaitCapture = false } = {})
       model: DEFAULT_GEMINI_MODEL,
     }))
     .catch(() => null);
-  if (telemetry.capture || awaitCapture) await capturePromise;
+  if (telemetry.capture || telemetry.awaitCapture || awaitCapture) await capturePromise;
 }
 
 function errorType(error) {
@@ -94,15 +94,32 @@ export async function generateJson({
     throw requestError(error, apiKey);
   }
 
+  const responseText = response.text || "";
+  let normalized;
+  try {
+    normalized = normalize(parseJsonObject(responseText));
+  } catch (error) {
+    await captureTelemetry(telemetry, {
+      command: "generate-json",
+      prompt,
+      response: responseText,
+      status: "error",
+      errorType: errorType(error),
+      latencyMs: Date.now() - started,
+      contents,
+    }, { awaitCapture: true });
+    throw error;
+  }
+
   await captureTelemetry(telemetry, {
     command: "generate-json",
     prompt,
-    response: response.text || "",
+    response: responseText,
     status: "success",
     latencyMs: Date.now() - started,
     contents,
   });
-  return normalize(parseJsonObject(response.text || ""));
+  return normalized;
 }
 
 export async function generateReview({

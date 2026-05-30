@@ -34,17 +34,19 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   let seenPrompt = "";
   let seenContents = null;
   let seenAllowFakeResponse = null;
+  let seenTelemetry = null;
 
   const review = await runArtifactReview({
     apiKey: "fake-key",
     cwd: dir,
     file: "design.png",
     now: new Date("2026-05-28T12:00:00.000Z"),
-    generate: async ({ apiKey, prompt, contents, allowFakeResponse }) => {
+    generate: async ({ apiKey, prompt, contents, allowFakeResponse, telemetry }) => {
       seenApiKey = apiKey;
       seenPrompt = prompt;
       seenContents = contents;
       seenAllowFakeResponse = allowFakeResponse;
+      seenTelemetry = telemetry;
       return fakeReview;
     },
     writeArtifact: true,
@@ -52,6 +54,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
 
   assert.equal(seenApiKey, "fake-key");
   assert.equal(seenAllowFakeResponse, false);
+  assert.deepEqual(seenTelemetry, { cwd: dir, source: "cli", command: "artifact-review" });
   assert.match(seenPrompt, /artifact review/i);
   assert.match(seenPrompt, /design\.png/);
   assert.deepEqual(seenContents[0], {
@@ -69,6 +72,26 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   const latest = JSON.parse(await readFile(join(dir, ".gemini-agent/artifacts/latest.json"), "utf8"));
   assert.equal(latest.kind, "artifact_review");
   assert.equal(latest.metadata.generated_at, "2026-05-28T12:00:00.000Z");
+});
+
+test("runArtifactReview passes explicit telemetry override to generation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
+  await writeFile(join(dir, "design.png"), pngBytes);
+  const telemetry = { cwd: "/override", source: "mcp", command: "gemini_artifact_review", awaitCapture: true };
+  let seenTelemetry = null;
+
+  await runArtifactReview({
+    apiKey: "fake-key",
+    cwd: dir,
+    file: "design.png",
+    telemetry,
+    generate: async ({ telemetry: generatedTelemetry }) => {
+      seenTelemetry = generatedTelemetry;
+      return fakeReview;
+    },
+  });
+
+  assert.equal(seenTelemetry, telemetry);
 });
 
 test("runArtifactReview rejects PDF with explicit unsupported runtime error", async () => {

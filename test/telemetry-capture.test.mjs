@@ -111,6 +111,44 @@ test("captureGeminiTelemetry caches config lookup per cwd and loader", async () 
   assert.equal(loadCount, 1);
 });
 
+test("captureGeminiTelemetry refreshes cached config after TTL", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const appended = [];
+  let loadCount = 0;
+  const configs = [
+    { enabled: true, level: "raw", max_queue_bytes: 1024 },
+    { enabled: false, level: "raw", max_queue_bytes: 1024 },
+  ];
+  const loadConfig = async () => configs[Math.min(loadCount++, configs.length - 1)];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "ask",
+    prompt: "one",
+    response: "ok",
+    status: "success",
+    loadConfig,
+    appendEvent: async ({ event }) => appended.push(event),
+    configCacheTtlMs: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await captureGeminiTelemetry({
+    cwd,
+    command: "ask",
+    prompt: "two",
+    response: "ok",
+    status: "success",
+    loadConfig,
+    appendEvent: async ({ event }) => appended.push(event),
+    configCacheTtlMs: 1,
+  });
+
+  assert.equal(loadCount, 2);
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].prompt, "one");
+});
+
 test("captureGeminiTelemetry never throws or rejects when load or append fails", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();

@@ -204,7 +204,13 @@ async function runGate(command, args) {
   if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
   const policy = await loadProjectPolicy(process.cwd());
   const prompt = buildGatePrompt({ gate, input: inputText, policy });
-  const review = await generateReview({ apiKey: key.key, prompt, allowFakeResponse: fakeAllowed, env: process.env });
+  const review = await generateReview({
+    apiKey: key.key,
+    prompt,
+    allowFakeResponse: fakeAllowed,
+    env: process.env,
+    telemetry: { cwd: process.cwd(), source: "cli", command, awaitCapture: true },
+  });
   output.write(reviewToPrettyJson(review));
 }
 
@@ -225,6 +231,7 @@ async function runContextPackCommand(args) {
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,
+    telemetry: { cwd, source: "cli", command: "context-pack", awaitCapture: true },
   });
   output.write(contextPackToPrettyJson(pack));
 }
@@ -247,6 +254,7 @@ async function runArtifactReviewCommand(args) {
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,
+    telemetry: { cwd, source: "cli", command: "artifact-review", awaitCapture: true },
   });
   output.write(artifactReviewToPrettyJson(review));
 }
@@ -266,7 +274,11 @@ async function main(argv = process.argv.slice(2)) {
     if (!prompt) throw new Error("Prompt is empty.");
     const key = await resolveApiKey();
     if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
-    const text = await generateText({ apiKey: key.key, prompt });
+    const text = await generateText({
+      apiKey: key.key,
+      prompt,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "ask", awaitCapture: true },
+    });
     output.write(`${text}\n`);
     return;
   }

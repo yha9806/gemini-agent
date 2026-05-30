@@ -17,6 +17,7 @@ export async function runContextPack({
   now = new Date(),
   writeArtifact = false,
   generate = generateContextPack,
+  telemetry = { cwd, source: "cli", command: "context-pack" },
 } = {}) {
   const context = collected ?? await collectTextInput({ stdinText, files, diff, cwd });
   const policy = await loadProjectPolicy(cwd);
@@ -31,6 +32,7 @@ export async function runContextPack({
     prompt,
     env,
     allowFakeResponse,
+    telemetry,
   });
 
   const pack = normalizeContextPack({
