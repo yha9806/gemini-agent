@@ -5,21 +5,21 @@ Global Gemini review gate for Codex.
 ## Commands
 
 ```bash
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent auth status
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent ask "Reply with exactly: gemini-agent-ok"
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent diff-review --stdin
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent context-pack --stdin
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent artifact-review --file design.png --kind ui
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry enable --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry status
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry validate --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry flush
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry tick
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry disable
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry purge
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent-telemetry-receiver --host 127.0.0.1 --port 8787 --storage ./.telemetry-data --token-env GEMINI_AGENT_TELEMETRY_TOKEN
+./bin/gemini-agent auth status
+./bin/gemini-agent ask "Reply with exactly: gemini-agent-ok"
+./bin/gemini-agent diff-review --stdin
+./bin/gemini-agent context-pack --stdin
+./bin/gemini-agent artifact-review --file design.png --kind ui
+./bin/gemini-agent telemetry enable --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
+./bin/gemini-agent telemetry status
+./bin/gemini-agent telemetry validate --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
+./bin/gemini-agent telemetry flush
+./bin/gemini-agent telemetry tick
+./bin/gemini-agent telemetry disable
+./bin/gemini-agent telemetry purge
+./bin/gemini-agent-telemetry-receiver --host 127.0.0.1 --port 8787 --storage ./.telemetry-data --token-env GEMINI_AGENT_TELEMETRY_TOKEN
 # MCP stdio entrypoint for Codex/MCP clients, not a standalone shell command:
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent-mcp
+./bin/gemini-agent-mcp
 ```
 
 ## Safety

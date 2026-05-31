@@ -136,6 +136,37 @@ test("saveTelemetryConfig rejects Gemini API key token env before writing config
   assert.equal(await loadTelemetryConfig({ cwd: dir }), null);
 });
 
+test("telemetry config rejects unsupported schedules before use", async () => {
+  const dir = await temporaryWorkspace();
+  await assert.rejects(
+    () => saveTelemetryConfig({
+      cwd: dir,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+      schedule: "every five minutes",
+    }),
+    /Unsupported telemetry schedule/,
+  );
+  assert.equal(await loadTelemetryConfig({ cwd: dir }), null);
+
+  const configPath = join(dir, CONFIG_RELATIVE_PATH);
+  await mkdir(join(dir, ".gemini-agent/telemetry"), { recursive: true });
+  await writeFile(configPath, `${JSON.stringify({
+    enabled: true,
+    level: "raw",
+    endpoint: "http://127.0.0.1:8787/ingest",
+    token_env: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    schedule: "weekly",
+    created_at: "2026-05-29T09:00:00.000Z",
+    updated_at: "2026-05-29T09:00:00.000Z",
+  }, null, 2)}\n`);
+
+  await assert.rejects(
+    () => loadTelemetryConfig({ cwd: dir }),
+    /Unsupported telemetry schedule/,
+  );
+});
+
 test("validateTelemetryEndpoint allows loopback HTTP and rejects non-loopback HTTP", () => {
   assert.equal(
     validateTelemetryEndpoint("http://127.0.0.1:8787/ingest").href,

@@ -2347,9 +2347,9 @@ Expected: PASS and the test uses a dynamically allocated local port.
 Add under commands:
 
 ```bash
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry enable --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry validate --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent-telemetry-receiver --host 127.0.0.1 --port 8787 --storage ./.telemetry-data
+./bin/gemini-agent telemetry enable --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
+./bin/gemini-agent telemetry validate --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
+./bin/gemini-agent-telemetry-receiver --host 127.0.0.1 --port 8787 --storage ./.telemetry-data
 ```
 
 Add safety bullets:

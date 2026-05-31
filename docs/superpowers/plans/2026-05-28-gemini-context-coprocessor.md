@@ -2192,8 +2192,8 @@ git commit -m "feat: expose coprocessor mcp tools"
 Add commands:
 
 ```md
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent context-pack --stdin
-/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent artifact-review --file design.png --kind ui
+./bin/gemini-agent context-pack --stdin
+./bin/gemini-agent artifact-review --file design.png --kind ui
 ```
 
 Add safety bullets:
