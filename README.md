@@ -17,7 +17,12 @@ Global Gemini review gate for Codex.
 /Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry tick
 /Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry disable
 /Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry purge
+gemini-agent telemetry install-scheduler --target launchd --name gemini-agent-main --schedule daily@09:00 --env-file ~/.gemini-agent/telemetry.env --dry-run
+gemini-agent telemetry scheduler-status --target launchd --name gemini-agent-main
+gemini-agent telemetry uninstall-scheduler --target launchd --name gemini-agent-main
 /Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent-telemetry-receiver --host 127.0.0.1 --port 8787 --storage ./.telemetry-data --token-env GEMINI_AGENT_TELEMETRY_TOKEN
+gemini-agent install-codex-global --mode active --dry-run
+gemini-agent install-codex-global --mode active --write
 # MCP stdio entrypoint for Codex/MCP clients, not a standalone shell command:
 /Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent-mcp
 ```
@@ -37,6 +42,10 @@ Global Gemini review gate for Codex.
 - Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
 - Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.
 - Telemetry uses a separate ingestion token from `GEMINI_AGENT_TELEMETRY_TOKEN` or another `--token-env` value. It never uses `GEMINI_API_KEY`.
+- Scheduler files never store `GEMINI_API_KEY` or telemetry token values directly.
+- macOS launchd activation defaults to `gui/<uid>`; use `--launchd-domain user` only when that session model is required.
+- Global active Codex install defaults to dry-run behavior and writes a backup before changing global instructions.
+- Release validation must keep the allowed runtime model at `gemini-3.5-flash` unless the project explicitly changes that policy.
 - `gemini-agent-telemetry-receiver` is for low-volume intranet validation. If Node prints experimental `node:sqlite` warnings, run it with `NODE_NO_WARNINGS=1`.
 - PDF, video, batch, explicit cache, and automatic routing are deferred.
 
