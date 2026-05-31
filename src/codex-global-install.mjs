@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
@@ -143,6 +143,49 @@ async function readCurrentTarget(targetPath) {
   return { currentContent, targetStats: afterStats };
 }
 
+function changedDuringInstallError() {
+  return new Error("~/.codex/AGENTS.md changed during install. Please retry install-codex-global.");
+}
+
+function createdDuringInstallError() {
+  return new Error("~/.codex/AGENTS.md was created during install. Please retry install-codex-global.");
+}
+
+async function restoreBackupIfTargetMissing({ backupPath, targetPath }) {
+  const targetStats = await maybeLstat(targetPath);
+  if (targetStats) return false;
+  await rename(backupPath, targetPath);
+  await chmod(targetPath, 0o600);
+  return true;
+}
+
+async function moveCurrentTargetToBackup({ targetPath, backupPath, targetStats, currentContent }) {
+  try {
+    await rename(targetPath, backupPath);
+  } catch (error) {
+    if (error.code === "ENOENT") throw changedDuringInstallError();
+    throw error;
+  }
+  const backupStats = await maybeLstat(backupPath);
+  assertSafeExistingPath(backupStats, "~/.codex/AGENTS.md backup", "file");
+  await chmod(backupPath, 0o600);
+  const backupContent = await readFile(backupPath, "utf8");
+  if (!sameTargetState(targetStats, backupStats) || backupContent !== currentContent) {
+    await restoreBackupIfTargetMissing({ backupPath, targetPath });
+    throw changedDuringInstallError();
+  }
+}
+
+async function linkTmpToTargetNoClobber({ tmpPath, targetPath }) {
+  try {
+    await link(tmpPath, targetPath);
+  } catch (error) {
+    if (error.code === "EEXIST") throw createdDuringInstallError();
+    throw error;
+  }
+  await chmod(targetPath, 0o600);
+}
+
 export async function planCodexGlobalInstall({ home, mode = "active" } = {}) {
   assertSupportedMode(mode);
   if (!home) throw new Error("home is required.");
@@ -169,6 +212,7 @@ export async function applyCodexGlobalInstall({
   mode = "active",
   write = false,
   now = new Date(),
+  testHooks = {},
 } = {}) {
   assertSupportedMode(mode);
   if (!home) throw new Error("home is required.");
@@ -198,22 +242,32 @@ export async function applyCodexGlobalInstall({
 
   const stamp = now.toISOString().replace(/[:.]/gu, "-");
   const backupPath = join(backupsDir, `AGENTS.md.${stamp}.${randomUUID()}.bak`);
-  await writeFile(backupPath, currentContent, { mode: 0o600 });
-  await chmod(backupPath, 0o600);
 
   const tmpPath = join(codexDir, `.AGENTS.md.${process.pid}.${randomUUID()}.tmp`);
+  let targetMovedToBackup = false;
   try {
-    await writeFile(tmpPath, nextContent, { mode: 0o600 });
+    await writeFile(tmpPath, nextContent, { mode: 0o600, flag: "wx" });
     await chmod(tmpPath, 0o600);
-    const latestTargetStats = await maybeLstat(targetPath);
-    assertSafeExistingPath(latestTargetStats, "~/.codex/AGENTS.md", "file");
-    if (!sameTargetState(targetStats, latestTargetStats)) {
-      throw new Error("~/.codex/AGENTS.md changed during install. Please retry install-codex-global.");
+    await testHooks.beforeCommit?.({ backupPath, targetPath, tmpPath });
+
+    if (targetStats) {
+      await moveCurrentTargetToBackup({ targetPath, backupPath, targetStats, currentContent });
+      targetMovedToBackup = true;
+    } else {
+      await writeFile(backupPath, "", { mode: 0o600, flag: "wx" });
+      await chmod(backupPath, 0o600);
     }
-    await rename(tmpPath, targetPath);
-    await chmod(targetPath, 0o600);
+
+    await linkTmpToTargetNoClobber({ tmpPath, targetPath });
+    await rm(tmpPath, { force: true });
   } catch (error) {
     await rm(tmpPath, { force: true });
+    if (targetMovedToBackup) {
+      const targetNow = await maybeLstat(targetPath);
+      if (!targetNow) {
+        await restoreBackupIfTargetMissing({ backupPath, targetPath });
+      }
+    }
     throw error;
   }
 

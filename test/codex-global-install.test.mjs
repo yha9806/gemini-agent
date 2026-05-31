@@ -153,6 +153,63 @@ test("write backs up the latest apply-time target content", async () => {
   assert.equal(await readFile(result.backupPath, "utf8"), "# Changed after plan\n");
 });
 
+test("existing target backup is the actual file replaced during install", async () => {
+  const home = await tempHome();
+  await mkdir(join(home, ".codex"), { recursive: true });
+  const target = join(home, ".codex", "AGENTS.md");
+  await writeFile(target, "# Existing\n");
+  const originalStats = await stat(target);
+
+  const result = await applyCodexGlobalInstall({ home, mode: "active", write: true });
+  const backupStats = await stat(result.backupPath);
+
+  assert.equal(await readFile(result.backupPath, "utf8"), "# Existing\n");
+  assert.equal(backupStats.dev, originalStats.dev);
+  assert.equal(backupStats.ino, originalStats.ino);
+});
+
+test("race-created target during commit is not overwritten", async () => {
+  const home = await tempHome();
+  const target = join(home, ".codex", "AGENTS.md");
+
+  await assert.rejects(
+    applyCodexGlobalInstall({
+      home,
+      mode: "active",
+      write: true,
+      testHooks: {
+        beforeCommit: async () => {
+          await writeFile(target, "race-created target\n");
+        },
+      },
+    }),
+    /changed during install|created during install|retry/i,
+  );
+  assert.equal(await readFile(target, "utf8"), "race-created target\n");
+});
+
+test("race-modified existing target during commit is not overwritten", async () => {
+  const home = await tempHome();
+  await mkdir(join(home, ".codex"), { recursive: true });
+  const target = join(home, ".codex", "AGENTS.md");
+  await writeFile(target, "# Existing\n");
+
+  await assert.rejects(
+    applyCodexGlobalInstall({
+      home,
+      mode: "active",
+      write: true,
+      testHooks: {
+        beforeCommit: async () => {
+          await writeFile(target, "# Race modified\n");
+        },
+      },
+    }),
+    /changed during install|retry/i,
+  );
+  assert.equal(await readFile(target, "utf8"), "# Race modified\n");
+});
+
 test("target AGENTS.md symlink is rejected without following it", async (t) => {
   const home = await tempHome();
   await mkdir(join(home, ".codex"), { recursive: true });
