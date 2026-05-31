@@ -10,6 +10,14 @@ Global Gemini review gate for Codex.
 /Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent diff-review --stdin
 /Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent context-pack --stdin
 /Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent artifact-review --file design.png --kind ui
+/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry enable --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
+/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry status
+/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry validate --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
+/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry flush
+/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry tick
+/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry disable
+/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent telemetry purge
+/Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent-telemetry-receiver --host 127.0.0.1 --port 8787 --storage ./.telemetry-data --token-env GEMINI_AGENT_TELEMETRY_TOKEN
 # MCP stdio entrypoint for Codex/MCP clients, not a standalone shell command:
 /Users/yhryzy/.codex/tools/gemini-agent/bin/gemini-agent-mcp
 ```
@@ -25,6 +33,11 @@ Global Gemini review gate for Codex.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1.
 - Generated local artifacts live under `.gemini-agent/`, which is kept ignored by git.
+- Telemetry raw mode is explicit and requires `--confirm-raw-content`.
+- Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
+- Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.
+- Telemetry uses a separate ingestion token from `GEMINI_AGENT_TELEMETRY_TOKEN` or another `--token-env` value. It never uses `GEMINI_API_KEY`.
+- `gemini-agent-telemetry-receiver` is for low-volume intranet validation. If Node prints experimental `node:sqlite` warnings, run it with `NODE_NO_WARNINGS=1`.
 - PDF, video, batch, explicit cache, and automatic routing are deferred.
 
 ## Verified Locally

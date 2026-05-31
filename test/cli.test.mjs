@@ -11,6 +11,7 @@ import { appendTelemetryEvent } from "../src/telemetry-queue.mjs";
 
 const execFileAsync = promisify(execFile);
 const bin = new URL("../bin/gemini-agent", import.meta.url).pathname;
+const receiverBin = new URL("../bin/gemini-agent-telemetry-receiver", import.meta.url).pathname;
 const TELEMETRY_TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
 const TELEMETRY_TOKEN = "telemetry-token";
 const fakeReview = JSON.stringify({
@@ -94,6 +95,126 @@ function execBin(args, { input = "", env = process.env, cwd } = {}) {
     });
     child.stdin.end(input);
   });
+}
+
+async function fetchJson(url, { token } = {}) {
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    assert.fail(`${url} returned ${response.status}: ${await response.text()}`);
+  }
+  return response.json();
+}
+
+async function waitForHealth(url, { timeoutMs = 5000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+      lastError = new Error(`${url} returned ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Telemetry receiver health check did not become ready: ${lastError?.message ?? "timeout"}`);
+}
+
+function closeChildProcess(child) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, 1000);
+    child.once("close", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    child.kill("SIGTERM");
+  });
+}
+
+async function startTelemetryReceiverCli({ storage, env = process.env } = {}) {
+  const child = spawn(receiverBin, [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--storage",
+    storage,
+    "--token-env",
+    TELEMETRY_TOKEN_ENV,
+  ], { env });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+
+  const endpoint = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`Telemetry receiver did not start.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    }, 5000);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      child.stdout.off("data", onStdout);
+      child.stderr.off("data", onStderr);
+      child.off("error", onError);
+      child.off("close", onClose);
+    }
+    function onStdout(chunk) {
+      stdout += chunk;
+    }
+    function onStderr(chunk) {
+      stderr += chunk;
+      const match = stderr.match(/Telemetry receiver listening on (http:\/\/[^\s]+)/);
+      if (match) {
+        cleanup();
+        resolve(`${match[1]}/ingest`);
+      }
+    }
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+    function onClose(code, signal) {
+      cleanup();
+      reject(new Error(
+        `Telemetry receiver exited before startup (code=${code}, signal=${signal}).\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      ));
+    }
+
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.once("error", onError);
+    child.once("close", onClose);
+  }).catch(async (error) => {
+    await closeChildProcess(child);
+    throw error;
+  });
+
+  try {
+    await waitForHealth(endpoint.replace(/\/ingest$/, "/health"));
+  } catch (error) {
+    await closeChildProcess(child);
+    error.message = `${error.message}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
+    throw error;
+  }
+
+  return {
+    endpoint,
+    child,
+    get output() {
+      return { stdout, stderr };
+    },
+    close: () => closeChildProcess(child),
+  };
 }
 const fakeContextPack = JSON.stringify({
   kind: "context_pack",
@@ -728,6 +849,50 @@ test("telemetry validate uses fake response path and prints result JSON", async 
     assert.equal(parsed.ok, true);
     assert.equal(latestBatch.events[0].command, "telemetry validate");
     assert.equal(latestBatch.events[0].response, "telemetry-ok");
+  } finally {
+    await receiver.close();
+  }
+});
+
+test("telemetry validate posts to the real local receiver CLI", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const storage = await mkdtemp(join(tmpdir(), "gemini-agent-receiver-"));
+  const receiver = await startTelemetryReceiverCli({
+    storage,
+    env: {
+      PATH: process.env.PATH,
+      [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN,
+    },
+  });
+
+  try {
+    const { stdout } = await execFileAsync(bin, [
+      "telemetry",
+      "validate",
+      "--endpoint",
+      receiver.endpoint,
+      "--token-env",
+      TELEMETRY_TOKEN_ENV,
+      "--confirm-raw-content",
+    ], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH,
+        [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN,
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: "telemetry-ok",
+      },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.flush.sent_count, 1);
+    assert.ok(parsed.metrics.received_events >= 1);
+
+    const metrics = await fetchJson(receiver.endpoint.replace(/\/ingest$/, "/metrics"), {
+      token: TELEMETRY_TOKEN,
+    });
+    assert.ok(metrics.received_events >= 1);
   } finally {
     await receiver.close();
   }
