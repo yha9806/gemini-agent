@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,8 @@ import {
 
 const START = "BEGIN GEMINI AGENT ACTIVE POLICY";
 const END = "END GEMINI AGENT ACTIVE POLICY";
+const START_MARKER = `<!-- ${START} -->`;
+const END_MARKER = `<!-- ${END} -->`;
 
 async function tempHome() {
   return mkdtemp(join(tmpdir(), "gemini-agent-codex-global-"));
@@ -18,6 +20,19 @@ async function tempHome() {
 
 function modeBits(stats) {
   return stats.mode & 0o777;
+}
+
+async function makeSymlinkOrSkip(t, target, path, type) {
+  try {
+    await symlink(target, path, type);
+    return true;
+  } catch (error) {
+    if (process.platform === "win32" || error.code === "EPERM") {
+      t.skip("symlink creation is not available on this platform");
+      return false;
+    }
+    throw error;
+  }
 }
 
 test("dry-run plans next content without writing target", async () => {
@@ -90,6 +105,29 @@ test("existing marker block is replaced instead of appended", async () => {
   assert.match(plan.nextContent, /user notes/);
 });
 
+test("malformed marker blocks fail closed without writing", async () => {
+  const cases = [
+    ["begin without end", ["# Existing", START_MARKER, "must stay"].join("\n")],
+    ["end without begin", ["# Existing", END_MARKER, "must stay"].join("\n")],
+    ["nested markers", ["# Existing", START_MARKER, "outer", START_MARKER, "inner", END_MARKER, END_MARKER, "must stay"].join("\n")],
+    ["duplicate blocks", ["# Existing", START_MARKER, "one", END_MARKER, START_MARKER, "two", END_MARKER, "must stay"].join("\n")],
+  ];
+
+  for (const [name, content] of cases) {
+    const home = await tempHome();
+    await mkdir(join(home, ".codex"), { recursive: true });
+    const target = join(home, ".codex", "AGENTS.md");
+    await writeFile(target, `${content}\n`);
+
+    await assert.rejects(
+      applyCodexGlobalInstall({ home, mode: "active", write: true }),
+      /Malformed GEMINI AGENT ACTIVE POLICY marker block.*manual/i,
+      name,
+    );
+    assert.equal(await readFile(target, "utf8"), `${content}\n`);
+  }
+});
+
 test("write creates AGENTS.md when it does not exist", async () => {
   const home = await tempHome();
 
@@ -100,6 +138,61 @@ test("write creates AGENTS.md when it does not exist", async () => {
   assert.match(await readFile(join(home, ".codex", "AGENTS.md"), "utf8"), new RegExp(START));
 });
 
+test("write backs up the latest apply-time target content", async () => {
+  const home = await tempHome();
+  await mkdir(join(home, ".codex"), { recursive: true });
+  const target = join(home, ".codex", "AGENTS.md");
+  await writeFile(target, "# Original\n");
+
+  await planCodexGlobalInstall({ home, mode: "active" });
+  await writeFile(target, "# Changed after plan\n");
+
+  const result = await applyCodexGlobalInstall({ home, mode: "active", write: true });
+
+  assert.ok(result.backupPath);
+  assert.equal(await readFile(result.backupPath, "utf8"), "# Changed after plan\n");
+});
+
+test("target AGENTS.md symlink is rejected without following it", async (t) => {
+  const home = await tempHome();
+  await mkdir(join(home, ".codex"), { recursive: true });
+  const outsideTarget = join(home, "outside.md");
+  await writeFile(outsideTarget, "outside stays unchanged\n");
+  if (!await makeSymlinkOrSkip(t, outsideTarget, join(home, ".codex", "AGENTS.md"), "file")) return;
+
+  await assert.rejects(
+    applyCodexGlobalInstall({ home, mode: "active", write: true }),
+    /symlink/i,
+  );
+  assert.equal(await readFile(outsideTarget, "utf8"), "outside stays unchanged\n");
+});
+
+test(".codex symlink is rejected", async (t) => {
+  const home = await tempHome();
+  const linkedDir = join(home, "linked-codex");
+  await mkdir(linkedDir);
+  if (!await makeSymlinkOrSkip(t, linkedDir, join(home, ".codex"), "dir")) return;
+
+  await assert.rejects(
+    applyCodexGlobalInstall({ home, mode: "active", write: true }),
+    /symlink/i,
+  );
+});
+
+test("backups symlink is rejected", async (t) => {
+  const home = await tempHome();
+  await mkdir(join(home, ".codex"), { recursive: true });
+  await writeFile(join(home, ".codex", "AGENTS.md"), "# Existing\n");
+  const linkedBackups = join(home, "linked-backups");
+  await mkdir(linkedBackups);
+  if (!await makeSymlinkOrSkip(t, linkedBackups, join(home, ".codex", "backups"), "dir")) return;
+
+  await assert.rejects(
+    applyCodexGlobalInstall({ home, mode: "active", write: true }),
+    /symlink/i,
+  );
+});
+
 test("active policy names commands, recursion guard, priorities, and runtime model", () => {
   for (const name of ["context-pack", "artifact-review", "plan-critique", "patch-precheck", "diff-review", "research-brief"]) {
     assert.match(ACTIVE_POLICY_BLOCK, new RegExp(name));
@@ -107,6 +200,8 @@ test("active policy names commands, recursion guard, priorities, and runtime mod
   assert.match(ACTIVE_POLICY_BLOCK, /recursion guard/i);
   assert.match(ACTIVE_POLICY_BLOCK, /user instructions > Superpowers process gates > Codex execution\/verification > gemini-agent advice/);
   assert.match(ACTIVE_POLICY_BLOCK, /gemini-3\.5-flash/);
+  assert.match(ACTIVE_POLICY_BLOCK, /external Gemini API calls/i);
+  assert.match(ACTIVE_POLICY_BLOCK, /sensitive\/customer\/credential content/i);
 });
 
 test("unknown mode fails", async () => {
