@@ -133,11 +133,24 @@ function endedAtFromLegacy(event) {
   return new Date(startMs + event.latency_ms).toISOString();
 }
 
+function sourceHostAppFromLegacy(event) {
+  if (event.source === "mcp") return "mcp";
+  if (event.source === "cli" || event.source === "validate") return "cli";
+  return "other";
+}
+
+function triggerSourceFromLegacy(event) {
+  if (event.source === "mcp") return "mcp";
+  if (/\bglobal[_ -]?policy\b/i.test(event.command)) return "global_policy";
+  if (/\b(scheduled|schedule|tick)\b/i.test(event.command)) return "scheduled";
+  return "manual";
+}
+
 function rawEventFromLegacy(event) {
   return {
     event_id: event.event_id,
-    source_host_app: "gemini-agent",
-    trigger_source: event.source,
+    source_host_app: sourceHostAppFromLegacy(event),
+    trigger_source: triggerSourceFromLegacy(event),
     model_provider: "google",
     model: event.model,
     command: event.command,
@@ -231,6 +244,47 @@ function httpFailureForStatus(status) {
   };
 }
 
+function rejectedEventId(rejection) {
+  if (typeof rejection === "string") return rejection;
+  if (rejection && typeof rejection === "object" && typeof rejection.event_id === "string") {
+    return rejection.event_id;
+  }
+  return null;
+}
+
+function acceptedEventIdsForAck(ack, batch) {
+  if (!Object.hasOwn(ack, "accepted_event_ids")) {
+    if (ack.received_count !== batch.events.length) {
+      throw new Error("Telemetry receiver ACK received_count does not match the sent batch.");
+    }
+    return batch.events.map((event) => event.event_id);
+  }
+
+  const batchEventIds = new Set(batch.events.map((event) => event.event_id));
+  const coveredEventIds = new Set();
+
+  for (const eventId of ack.accepted_event_ids) {
+    if (typeof eventId !== "string" || !batchEventIds.has(eventId)) {
+      throw new Error("Telemetry receiver ACK does not cover the sent batch.");
+    }
+    coveredEventIds.add(eventId);
+  }
+
+  for (const rejection of ack.rejected) {
+    const eventId = rejectedEventId(rejection);
+    if (!eventId || !batchEventIds.has(eventId)) {
+      throw new Error("Telemetry receiver ACK does not cover the sent batch.");
+    }
+    coveredEventIds.add(eventId);
+  }
+
+  if (coveredEventIds.size !== batchEventIds.size) {
+    throw new Error("Telemetry receiver ACK does not cover the sent batch.");
+  }
+
+  return ack.accepted_event_ids;
+}
+
 export async function flushTelemetryQueue({
   cwd = process.cwd(),
   endpoint,
@@ -250,6 +304,7 @@ export async function flushTelemetryQueue({
   const batch = rawBatchFromClaimed({ claimed, now });
 
   let ack;
+  let acceptedEventIds;
   let failure = { retryable: true, reason: "receiver_error" };
   try {
     ack = await withTimeout(timeoutMs, async (signal) => {
@@ -272,9 +327,7 @@ export async function flushTelemetryQueue({
       if (normalizedAck.batch_id !== batch.batch_id) {
         throw new Error("Telemetry receiver ACK batch_id does not match the sent batch.");
       }
-      if (normalizedAck.received_count !== batch.events.length) {
-        throw new Error("Telemetry receiver ACK received_count does not match the sent batch.");
-      }
+      acceptedEventIds = acceptedEventIdsForAck(normalizedAck, batch);
       return normalizedAck;
     });
 
@@ -291,9 +344,9 @@ export async function flushTelemetryQueue({
   await completeTelemetryBatch({ cwd, batchId: claimed.batchId, now });
   return {
     ok: true,
-    sent_count: batch.events.length,
+    sent_count: acceptedEventIds.length,
     batch_id: batch.batch_id,
-    event_ids: batch.events.map((event) => event.event_id),
+    event_ids: acceptedEventIds,
     ack,
   };
 }

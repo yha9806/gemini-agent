@@ -74,8 +74,8 @@ export const RawTelemetryUsageZodSchema = z.strictObject({
 
 export const RawTelemetryEventZodSchema = z.strictObject({
   event_id: z.string().min(1),
-  source_host_app: z.string().min(1),
-  trigger_source: z.string().min(1),
+  source_host_app: z.enum(["codex", "cli", "mcp", "other"]),
+  trigger_source: z.enum(["manual", "scheduled", "mcp", "global_policy"]),
   model_provider: z.string().min(1),
   model: z.string().min(1),
   command: z.string().min(1),
@@ -227,7 +227,7 @@ export function normalizeTelemetryBatch(value) {
         trace_id: `${event.metadata.trace_id ?? event.event_id}`,
         deployment_id: rawBatch.deployment_id,
         project_id: `${event.metadata.project_id ?? "gemini-agent"}`,
-        source: ["cli", "mcp", "validate"].includes(event.trigger_source) ? event.trigger_source : "cli",
+        source: event.trigger_source === "mcp" ? "mcp" : "cli",
         command: event.command,
         model: event.model,
         prompt: event.prompt_raw,

@@ -35,6 +35,8 @@ const DEFAULT_STATE = Object.freeze({
   queue_bytes: 0,
   sent_success_count: 0,
   sent_failure_count: 0,
+  non_retryable_failure_count: 0,
+  last_failure_reason: null,
   last_sent_at: null,
 });
 
@@ -67,8 +69,9 @@ function normalizeState(value) {
   const queueBytes = value.queue_bytes ?? DEFAULT_STATE.queue_bytes;
   const sentSuccessCount = value.sent_success_count ?? DEFAULT_STATE.sent_success_count;
   const sentFailureCount = value.sent_failure_count ?? DEFAULT_STATE.sent_failure_count;
-  const nonRetryableFailureCount = value.non_retryable_failure_count ?? 0;
-  const lastFailureReason = value.last_failure_reason ?? null;
+  const nonRetryableFailureCount = value.non_retryable_failure_count
+    ?? DEFAULT_STATE.non_retryable_failure_count;
+  const lastFailureReason = value.last_failure_reason ?? DEFAULT_STATE.last_failure_reason;
   const lastSentAt = value.last_sent_at ?? DEFAULT_STATE.last_sent_at;
 
   assertNonnegativeInteger(droppedOldCount, "dropped_old_count");
@@ -84,21 +87,16 @@ function normalizeState(value) {
     throw new Error("last_sent_at must be null or an ISO timestamp string.");
   }
 
-  const normalized = {
+  return {
     dropped_old_count: droppedOldCount,
     dropped_memory_count: droppedMemoryCount,
     queue_bytes: queueBytes,
     sent_success_count: sentSuccessCount,
     sent_failure_count: sentFailureCount,
+    non_retryable_failure_count: nonRetryableFailureCount,
+    last_failure_reason: lastFailureReason,
+    last_sent_at: lastSentAt,
   };
-  if (nonRetryableFailureCount > 0 || Object.hasOwn(value, "non_retryable_failure_count")) {
-    normalized.non_retryable_failure_count = nonRetryableFailureCount;
-  }
-  if (lastFailureReason !== null || Object.hasOwn(value, "last_failure_reason")) {
-    normalized.last_failure_reason = lastFailureReason;
-  }
-  normalized.last_sent_at = lastSentAt;
-  return normalized;
 }
 
 function assertSafeBatchId(batchId) {

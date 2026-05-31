@@ -41,3 +41,19 @@ test("normalizeRawTelemetryBatch rejects unsupported raw schema versions", async
     /raw-v1/,
   );
 });
+
+test("normalizeRawTelemetryBatch rejects invalid source and trigger enum values", async () => {
+  const invalidSource = await rawFixture();
+  invalidSource.events[0].source_host_app = "gemini-agent";
+  await assert.rejects(
+    async () => normalizeRawTelemetryBatch(invalidSource),
+    /source_host_app/,
+  );
+
+  const invalidTrigger = await rawFixture();
+  invalidTrigger.events[0].trigger_source = "validate";
+  await assert.rejects(
+    async () => normalizeRawTelemetryBatch(invalidTrigger),
+    /trigger_source/,
+  );
+});

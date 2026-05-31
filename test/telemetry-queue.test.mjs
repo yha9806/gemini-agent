@@ -33,6 +33,8 @@ const DEFAULT_STATE = {
   queue_bytes: 0,
   sent_success_count: 0,
   sent_failure_count: 0,
+  non_retryable_failure_count: 0,
+  last_failure_reason: null,
   last_sent_at: null,
 };
 
@@ -188,6 +190,8 @@ test("loadTelemetryState returns defaults and append writes one secure pending e
   assert.equal(state.dropped_memory_count, 0);
   assert.equal(state.sent_success_count, 0);
   assert.equal(state.sent_failure_count, 0);
+  assert.equal(state.non_retryable_failure_count, 0);
+  assert.equal(state.last_failure_reason, null);
   assert.equal(state.last_sent_at, null);
   assert.equal(modeBits(await stat(dirs.state)), 0o600);
 });
@@ -202,6 +206,8 @@ test("append preserves existing non-queue state counters", async () => {
     queue_bytes: 0,
     sent_success_count: 3,
     sent_failure_count: 4,
+    non_retryable_failure_count: 5,
+    last_failure_reason: "unauthorized",
     last_sent_at: "2026-05-29T11:00:00.000Z",
   })}\n`);
 
@@ -212,6 +218,8 @@ test("append preserves existing non-queue state counters", async () => {
   assert.equal(state.dropped_memory_count, 2);
   assert.equal(state.sent_success_count, 3);
   assert.equal(state.sent_failure_count, 4);
+  assert.equal(state.non_retryable_failure_count, 5);
+  assert.equal(state.last_failure_reason, "unauthorized");
   assert.equal(state.last_sent_at, "2026-05-29T11:00:00.000Z");
   assert.equal(state.queue_bytes, await sumFileBytes(await regularFilePaths(dirs.pending)));
 });

@@ -141,6 +141,8 @@ test("flushTelemetryQueue sends a strict batch and completes the queue", async (
   assert.match(request.body.checksum, /^sha256:[a-f0-9]{64}$/);
   assert.deepEqual(request.body.events.map((event) => event.event_id), ["evt_000001", "evt_000002"]);
   assert.deepEqual(request.body.events.map((event) => event.prompt_raw), ["prompt 000001", "prompt 000002"]);
+  assert.deepEqual(request.body.events.map((event) => event.source_host_app), ["cli", "cli"]);
+  assert.deepEqual(request.body.events.map((event) => event.trigger_source), ["manual", "manual"]);
 
   assert.equal(result.ok, true);
   assert.equal(result.sent_count, 2);
@@ -172,6 +174,32 @@ test("flushTelemetryQueue returns zero without sending when queue is empty", asy
 
   assert.deepEqual(result, { ok: true, sent_count: 0 });
   assert.equal(called, false);
+});
+
+test("flushTelemetryQueue maps MCP legacy events to raw-v1 source fields", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(18, { source: "mcp" }) });
+
+  let postedEvent;
+  await flushTelemetryQueue({
+    cwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      const body = JSON.parse(options.body);
+      postedEvent = body.events[0];
+      return new Response(JSON.stringify({
+        ok: true,
+        batch_id: body.batch_id,
+        received_count: body.events.length,
+        received_at: "2026-05-29T10:00:01.000Z",
+      }), { status: 200 });
+    },
+    now: NOW,
+  });
+
+  assert.equal(postedEvent.source_host_app, "mcp");
+  assert.equal(postedEvent.trigger_source, "mcp");
 });
 
 test("flushTelemetryQueue rejects missing token before claiming queued events", async () => {
@@ -316,7 +344,8 @@ test("runTelemetryValidation creates, flushes, and confirms validation event", a
       const body = JSON.parse(options.body);
       assert.equal(body.events.length, 1);
       assert.equal(body.events[0].schema_version, undefined);
-      assert.equal(body.events[0].trigger_source, "validate");
+      assert.equal(body.events[0].source_host_app, "cli");
+      assert.equal(body.events[0].trigger_source, "manual");
       assert.equal(body.events[0].command, "telemetry validate");
       assert.equal(body.events[0].model, "gemini-3.5-flash");
       assert.equal(body.events[0].prompt_raw, "custom validation prompt");
@@ -494,7 +523,7 @@ test("runTelemetryValidation uses bounded flushes until default-sized backlog va
       if (options.method === "POST") {
         const postedBatch = JSON.parse(options.body);
         postedBatches.push(postedBatch);
-        const validationEvents = postedBatch.events.filter((event) => event.trigger_source === "validate");
+        const validationEvents = postedBatch.events.filter((event) => event.command === "telemetry validate");
         if (validationEvents.length > 0) {
           validationBatch = postedBatch;
         }
@@ -535,7 +564,7 @@ test("runTelemetryValidation uses bounded flushes until default-sized backlog va
     100,
     1,
   ]);
-  const validationEvents = validationBatch.events.filter((event) => event.trigger_source === "validate");
+  const validationEvents = validationBatch.events.filter((event) => event.command === "telemetry validate");
   assert.equal(validationEvents.length, 1);
   assert.equal(validationEvents[0].prompt_raw, prompt);
   assert.equal(validationEvents[0].response_raw, responseText);
@@ -593,7 +622,7 @@ test("runTelemetryValidation returns false when max bounded flushes are exhauste
   assert.equal(result.ok, false);
   assert.equal(postedBatches.length, 1);
   assert.equal(postedBatches[0].events.length, 100);
-  assert.equal(postedBatches[0].events.some((event) => event.trigger_source === "validate"), false);
+  assert.equal(postedBatches[0].events.some((event) => event.command === "telemetry validate"), false);
   assert.equal(result.flushes.length, 1);
   assert.equal(result.flush, null);
   assert.equal((await readPendingEvents(cwd)).some((event) => event.source === "validate"), true);
@@ -788,4 +817,97 @@ test("flushTelemetryQueue archives other 4xx batches as non-retryable failures",
   assert.equal(failedBatches.length, 1);
   const reason = JSON.parse(await readFile(join(dirs.failed, failedBatches[0], "reason.json"), "utf8"));
   assert.equal(reason.reason, "http_422");
+});
+
+test("flushTelemetryQueue completes production ACKs with partial event rejection", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(13) });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(14) });
+  let postedBatch;
+
+  const result = await flushTelemetryQueue({
+    cwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      postedBatch = JSON.parse(options.body);
+      return new Response(JSON.stringify({
+        ok: true,
+        batch_id: postedBatch.batch_id,
+        accepted_event_ids: [postedBatch.events[0].event_id],
+        rejected: [{
+          event_id: postedBatch.events[1].event_id,
+          reason: "invalid_event",
+        }],
+        received_at: "2026-05-29T10:00:01.000Z",
+      }), { status: 200 });
+    },
+    now: NOW,
+    batchSize: 2,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.sent_count, 1);
+  assert.deepEqual(result.event_ids, [postedBatch.events[0].event_id]);
+  assert.deepEqual(result.ack.accepted_event_ids, [postedBatch.events[0].event_id]);
+  assert.equal(result.ack.rejected[0].event_id, postedBatch.events[1].event_id);
+
+  const dirs = telemetryQueueDirs(cwd);
+  assert.deepEqual(await regularFileNames(dirs.pending), []);
+  assert.deepEqual(await regularFileNames(dirs.inflight), []);
+  assert.deepEqual(await directoryNames(dirs.failed), []);
+});
+
+test("flushTelemetryQueue rejects malformed production ACKs that do not cover the batch", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(15) });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(16) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async (url, options) => {
+        const body = JSON.parse(options.body);
+        return new Response(JSON.stringify({
+          ok: true,
+          batch_id: body.batch_id,
+          accepted_event_ids: [body.events[0].event_id],
+          rejected: [],
+          received_at: "2026-05-29T10:00:01.000Z",
+        }), { status: 200 });
+      },
+      now: NOW,
+      batchSize: 2,
+    }),
+    /does not cover the sent batch/,
+  );
+
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), [
+    "evt_000015",
+    "evt_000016",
+  ]);
+  assert.deepEqual(await regularFileNames(telemetryQueueDirs(cwd).inflight), []);
+});
+
+test("flushTelemetryQueue treats 429 as retryable and requeues the batch", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(17) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async () => new Response("rate limited", { status: 429 }),
+      now: NOW,
+    }),
+    /Telemetry receiver returned 429\./,
+  );
+
+  const dirs = telemetryQueueDirs(cwd);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000017"]);
+  assert.deepEqual(await regularFileNames(dirs.inflight), []);
+  assert.deepEqual(await directoryNames(dirs.failed), []);
 });
