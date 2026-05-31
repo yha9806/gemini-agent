@@ -154,9 +154,9 @@ function schedulerValue(args, index, flag, description = "a value") {
   return value;
 }
 
-function parseSchedulerOptions(args) {
+function parseSchedulerInstallOptions(args) {
   const options = {
-    schedule: "hourly",
+    schedule: "daily@09:00",
     write: false,
   };
 
@@ -181,6 +181,27 @@ function parseSchedulerOptions(args) {
       options.write = false;
     } else if (arg === "--write") {
       options.write = true;
+    } else {
+      throw new Error(`Unknown scheduler argument: ${arg}`);
+    }
+  }
+
+  if (!options.target) throw new Error("--target is required.");
+  if (!options.name) throw new Error("--name is required.");
+  return options;
+}
+
+function parseSchedulerIdentityOptions(args) {
+  const options = {};
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--target") {
+      options.target = schedulerValue(args, index, arg, "one of: launchd, cron, systemd");
+      index += 1;
+    } else if (arg === "--name") {
+      options.name = schedulerValue(args, index, arg, "a label");
+      index += 1;
     } else {
       throw new Error(`Unknown scheduler argument: ${arg}`);
     }
@@ -535,7 +556,7 @@ async function runTelemetry(args) {
   }
 
   if (subcommand === "install-scheduler") {
-    const options = parseSchedulerOptions(subArgs);
+    const options = parseSchedulerInstallOptions(subArgs);
     const result = await installScheduler({
       ...options,
       cwd: process.cwd(),
@@ -547,7 +568,7 @@ async function runTelemetry(args) {
   }
 
   if (subcommand === "scheduler-status") {
-    const options = parseSchedulerOptions(subArgs);
+    const options = parseSchedulerIdentityOptions(subArgs);
     const result = await schedulerStatus({
       ...options,
       cwd: process.cwd(),
@@ -558,7 +579,7 @@ async function runTelemetry(args) {
   }
 
   if (subcommand === "uninstall-scheduler") {
-    const options = parseSchedulerOptions(subArgs);
+    const options = parseSchedulerIdentityOptions(subArgs);
     const result = await uninstallScheduler({
       ...options,
       cwd: process.cwd(),

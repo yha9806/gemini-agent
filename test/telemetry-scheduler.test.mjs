@@ -34,10 +34,48 @@ test("normalizes scheduler options and validates unsafe input", () => {
   assert.equal(options.name, "gemini-agent-test");
   assert.equal(options.schedule, "hourly");
   assert.equal(options.launchdDomain, "gui");
+  assert.equal(
+    normalizeSchedulerOptions({ name: "default-schedule", cwd: "/tmp/project", bin: "gemini-agent", uid: 501 }).schedule,
+    "daily@09:00",
+  );
 
   assert.throws(() => normalizeSchedulerOptions({ ...base, uid: 0 }), /must not run as root/);
   assert.throws(() => normalizeSchedulerOptions({ ...base, name: "bad/name" }), /only letters, numbers, dot, underscore, or dash/);
   assert.throws(() => normalizeSchedulerOptions({ ...base, schedule: "weekly" }), /Unsupported scheduler schedule/);
+});
+
+test("rejects scheduler text injection inputs before artifact generation", () => {
+  assert.throws(
+    () => generateSystemdService({ ...base, cwd: "/tmp/project\nExecStart=/bin/false" }),
+    /cwd must not contain/,
+  );
+  assert.throws(
+    () => generateSystemdService({ ...base, envFile: "/tmp/env\nEnvironment=LEAK=1" }),
+    /envFile must not contain/,
+  );
+  assert.throws(
+    () => generateLaunchdPlist({ ...base, bin: "/usr/local/bin/gemini-agent\r/bin/false" }),
+    /bin must not contain/,
+  );
+  assert.throws(
+    () => generateCronEntry({ ...base, cwd: "/tmp/project%stdin" }),
+    /cwd must not contain %/,
+  );
+  assert.throws(
+    () => generateCronEntry({ ...base, envFile: "/tmp/env%token" }),
+    /envFile must not contain %/,
+  );
+});
+
+test("launchd plist escapes XML metacharacters", () => {
+  const plist = generateLaunchdPlist({
+    ...base,
+    cwd: "/tmp/project&quote's",
+    envFile: "/tmp/env<unsafe>",
+  });
+
+  assert.match(plist, /\/tmp\/project&amp;quote&apos;s/);
+  assert.match(plist, /\/tmp\/env&lt;unsafe&gt;/);
 });
 
 test("generates launchd plist without inline secrets", () => {
@@ -92,6 +130,25 @@ test("rejects group or other readable env files when installing", async () => {
   }
 });
 
+test("rejects missing env files when installing", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-scheduler-"));
+
+  try {
+    await assert.rejects(
+      installScheduler({
+        ...base,
+        target: "systemd",
+        cwd: home,
+        home,
+        envFile: join(home, "missing.env"),
+      }),
+      /Scheduler env file does not exist/,
+    );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("dry run returns artifacts and does not invoke the runner", async () => {
   const home = await mkdtemp(join(tmpdir(), "gemini-agent-scheduler-"));
   try {
@@ -100,6 +157,7 @@ test("dry run returns artifacts and does not invoke the runner", async () => {
       target: "systemd",
       home,
       cwd: home,
+      envFile: null,
       runner: async () => {
         throw new Error("runner should not be called");
       },
@@ -168,6 +226,7 @@ test("cron activation preserves existing entries and installs managed block", as
       write: true,
       cwd: home,
       home,
+      envFile: null,
       runner,
     });
     assert.match(installed, /15 7 \* \* \* \/usr\/bin\/true/);
@@ -202,6 +261,7 @@ test("cron activation treats missing crontab as empty", async () => {
       write: true,
       cwd: home,
       home,
+      envFile: null,
       runner,
     });
     assert.doesNotMatch(installed, /undefined/);
@@ -227,6 +287,7 @@ test("systemd write path activates the timer with a fake runner", async () => {
       write: true,
       cwd: home,
       home,
+      envFile: null,
       runner,
     });
     assert.equal(result.files.length, 2);
@@ -248,6 +309,7 @@ test("reports scheduler status and uninstalls artifacts", async () => {
       write: true,
       cwd: home,
       home,
+      envFile: null,
       runner,
     });
     const before = await schedulerStatus({ target: "systemd", name: base.name, cwd: home, home, uid: 501 });

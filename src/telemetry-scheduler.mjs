@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
 const NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+const DEFAULT_SCHEDULE = "daily@09:00";
 const MANAGED_START_PREFIX = "# BEGIN gemini-agent:";
 const MANAGED_END_PREFIX = "# END gemini-agent:";
 
@@ -57,6 +58,21 @@ function parseSchedule(schedule) {
 
 function schedulerHome() {
   return process.env.HOME || homedir();
+}
+
+function assertSchedulerText(value, field, { required = false, rejectPercent = false } = {}) {
+  if (value == null || value === "") {
+    if (required) throw new Error(`Scheduler ${field} is required.`);
+    return null;
+  }
+  if (typeof value !== "string") throw new Error(`Scheduler ${field} must be a string.`);
+  if (/[\0\r\n]/.test(value)) {
+    throw new Error(`${field} must not contain NUL, carriage return, or newline.`);
+  }
+  if (rejectPercent && value.includes("%")) {
+    throw new Error(`${field} must not contain %.`);
+  }
+  return value;
 }
 
 function shellWord(value) {
@@ -117,7 +133,7 @@ function currentUid() {
 
 export function normalizeSchedulerOptions({
   name,
-  schedule = "hourly",
+  schedule = DEFAULT_SCHEDULE,
   cwd = process.cwd(),
   bin = "gemini-agent",
   envFile = null,
@@ -127,9 +143,10 @@ export function normalizeSchedulerOptions({
 } = {}) {
   assertName(name);
   parseSchedule(schedule);
-  if (!home) throw new Error("Scheduler home directory is required.");
-  if (!cwd) throw new Error("Scheduler cwd is required.");
-  if (!bin) throw new Error("Scheduler bin is required.");
+  const safeHome = assertSchedulerText(home, "home directory", { required: true });
+  const safeCwd = assertSchedulerText(cwd, "cwd", { required: true, rejectPercent: true });
+  const safeBin = assertSchedulerText(bin, "bin", { required: true, rejectPercent: true });
+  const safeEnvFile = assertSchedulerText(envFile, "envFile", { rejectPercent: true });
   if (uid === 0) throw new Error("Scheduler must not run as root.");
   if (!["gui", "user"].includes(launchdDomain)) {
     throw new Error("launchdDomain must be gui or user.");
@@ -137,10 +154,10 @@ export function normalizeSchedulerOptions({
   return {
     name,
     schedule,
-    cwd,
-    bin,
-    envFile: envFile || null,
-    home,
+    cwd: safeCwd,
+    bin: safeBin,
+    envFile: safeEnvFile,
+    home: safeHome,
     uid,
     launchdDomain,
   };
@@ -256,9 +273,10 @@ async function assertEnvFileSecure(path) {
   try {
     info = await stat(path);
   } catch (error) {
-    if (error.code === "ENOENT") return;
+    if (error.code === "ENOENT") throw new Error(`Scheduler env file does not exist: ${path}`);
     throw error;
   }
+  if (!info.isFile()) throw new Error("Scheduler env file must be a regular file.");
   if ((info.mode & 0o077) !== 0) {
     throw new Error("Scheduler env file must not be readable by group or others.");
   }
@@ -422,7 +440,7 @@ export async function schedulerStatus({
   const options = normalizeSchedulerOptions({
     target,
     name,
-    schedule: "hourly",
+    schedule: DEFAULT_SCHEDULE,
     cwd,
     bin: "gemini-agent",
     home,
@@ -470,7 +488,7 @@ export async function uninstallScheduler({
   const options = normalizeSchedulerOptions({
     target,
     name,
-    schedule: "hourly",
+    schedule: DEFAULT_SCHEDULE,
     cwd,
     bin: "gemini-agent",
     home,

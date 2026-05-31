@@ -646,8 +646,6 @@ test("telemetry install-scheduler dry-runs cron artifact", async () => {
     "cron",
     "--name",
     "cli-test",
-    "--schedule",
-    "hourly",
   ], {
     cwd: dir,
     env: { PATH: process.env.PATH },
@@ -655,7 +653,96 @@ test("telemetry install-scheduler dry-runs cron artifact", async () => {
 
   assert.equal(stderr, "");
   assert.match(stdout, /gemini-agent:cli-test/);
+  assert.match(stdout, /0 9 \* \* \*/);
   assert.match(stdout, /"dry_run": true/);
+});
+
+test("telemetry scheduler-status accepts only status arguments", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  const { stdout, stderr } = await execFileAsync(bin, [
+    "telemetry",
+    "scheduler-status",
+    "--target",
+    "cron",
+    "--name",
+    "cli-test",
+  ], {
+    cwd: dir,
+    env: { PATH: process.env.PATH },
+  });
+  const parsed = JSON.parse(stdout);
+
+  assert.equal(stderr, "");
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.target, "cron");
+  assert.equal(parsed.name, "cli-test");
+
+  await assert.rejects(
+    execFileAsync(bin, [
+      "telemetry",
+      "scheduler-status",
+      "--target",
+      "cron",
+      "--name",
+      "cli-test",
+      "--schedule",
+      "hourly",
+    ], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unknown scheduler argument: --schedule/);
+      return true;
+    },
+  );
+});
+
+test("telemetry uninstall-scheduler rejects dry-run and install-only arguments", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  await assert.rejects(
+    execFileAsync(bin, [
+      "telemetry",
+      "uninstall-scheduler",
+      "--target",
+      "cron",
+      "--name",
+      "cli-test",
+      "--dry-run",
+    ], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unknown scheduler argument: --dry-run/);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    execFileAsync(bin, [
+      "telemetry",
+      "uninstall-scheduler",
+      "--target",
+      "cron",
+      "--name",
+      "cli-test",
+      "--env-file",
+      join(dir, "env"),
+    ], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unknown scheduler argument: --env-file/);
+      return true;
+    },
+  );
 });
 
 test("telemetry zero-argument commands reject extra arguments", async () => {
