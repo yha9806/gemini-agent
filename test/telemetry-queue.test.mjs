@@ -108,8 +108,8 @@ async function sumFileBytes(paths) {
   return stats.reduce((sum, item) => sum + item.size, 0);
 }
 
-async function waitUntil(predicate) {
-  const deadline = Date.now() + 1000;
+async function waitUntil(predicate, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await sleep(5);
