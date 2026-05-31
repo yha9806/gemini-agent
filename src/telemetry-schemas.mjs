@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const TELEMETRY_SCHEMA_VERSION = 1;
+export const RAW_TELEMETRY_SCHEMA_VERSION = "raw-v1";
 export const DEFAULT_MAX_EVENT_BYTES = 1024 * 1024;
 export const DEFAULT_MAX_QUEUE_BYTES = 50 * 1024 * 1024;
 export const CREDENTIAL_MASK_VERSION = 1;
@@ -63,6 +64,44 @@ export const TelemetryBatchZodSchema = z.strictObject({
   scheduled_for: IsoString,
   sent_at: IsoString,
   events: z.array(TelemetryEventZodSchema).min(1),
+});
+
+export const RawTelemetryUsageZodSchema = z.strictObject({
+  input_tokens: z.number().int().nonnegative().nullable().default(null),
+  output_tokens: z.number().int().nonnegative().nullable().default(null),
+  total_tokens: z.number().int().nonnegative().nullable().default(null),
+});
+
+export const RawTelemetryEventZodSchema = z.strictObject({
+  event_id: z.string().min(1),
+  source_host_app: z.string().min(1),
+  trigger_source: z.string().min(1),
+  model_provider: z.string().min(1),
+  model: z.string().min(1),
+  command: z.string().min(1),
+  started_at: IsoString,
+  ended_at: IsoString,
+  latency_ms: z.number().int().nonnegative(),
+  status: z.enum(["success", "error"]),
+  usage: RawTelemetryUsageZodSchema.nullable().default(null),
+  request_raw: z.unknown().default(null),
+  prompt_raw: z.string().default(""),
+  response_raw: z.string().default(""),
+  response_candidates_raw: z.array(z.unknown()).default(() => []),
+  tool_calls_raw: z.array(z.unknown()).default(() => []),
+  media_manifest: z.array(z.unknown()).default(() => []),
+  error: z.unknown().nullable().default(null),
+  metadata: z.record(z.string(), z.unknown()).default(() => ({})),
+});
+
+export const RawTelemetryBatchZodSchema = z.strictObject({
+  schema_version: z.literal(RAW_TELEMETRY_SCHEMA_VERSION),
+  batch_id: z.string().min(1),
+  deployment_id: z.string().min(1),
+  agent_version: z.string().min(1),
+  generated_at: IsoString,
+  checksum: z.string().min(1),
+  events: z.array(RawTelemetryEventZodSchema).min(1),
 });
 
 const TelemetryReceiverLatestEventZodSchema = z.strictObject({
@@ -174,10 +213,55 @@ export function normalizeTelemetryEvent(value) {
 }
 
 export function normalizeTelemetryBatch(value) {
+  if (value?.schema_version === RAW_TELEMETRY_SCHEMA_VERSION) {
+    const rawBatch = normalizeRawTelemetryBatch(value);
+    return {
+      schema_version: TELEMETRY_SCHEMA_VERSION,
+      batch_id: rawBatch.batch_id,
+      deployment_id: rawBatch.deployment_id,
+      scheduled_for: rawBatch.generated_at,
+      sent_at: rawBatch.generated_at,
+      events: rawBatch.events.map((event) => normalizeTelemetryEvent({
+        schema_version: TELEMETRY_SCHEMA_VERSION,
+        event_id: event.event_id,
+        trace_id: `${event.metadata.trace_id ?? event.event_id}`,
+        deployment_id: rawBatch.deployment_id,
+        project_id: `${event.metadata.project_id ?? "gemini-agent"}`,
+        source: ["cli", "mcp", "validate"].includes(event.trigger_source) ? event.trigger_source : "cli",
+        command: event.command,
+        model: event.model,
+        prompt: event.prompt_raw,
+        response: event.response_raw,
+        status: event.status,
+        error_type: event.error && typeof event.error === "object" && "type" in event.error
+          ? `${event.error.type}`
+          : null,
+        latency_ms: event.latency_ms,
+        created_at: event.started_at,
+        payload: {
+          prompt_truncated: Boolean(event.metadata.prompt_truncated),
+          response_truncated: Boolean(event.metadata.response_truncated),
+          multimodal: event.media_manifest,
+        },
+      })),
+    };
+  }
   const parsed = TelemetryBatchZodSchema.parse(value);
   return {
     ...parsed,
     events: parsed.events.map((event) => normalizeTelemetryEvent(event)),
+  };
+}
+
+export function normalizeRawTelemetryBatch(value) {
+  const parsed = RawTelemetryBatchZodSchema.parse(value);
+  return {
+    ...parsed,
+    events: parsed.events.map((event) => ({
+      ...event,
+      prompt_raw: maskCredentialText(event.prompt_raw),
+      response_raw: maskCredentialText(event.response_raw),
+    })),
   };
 }
 

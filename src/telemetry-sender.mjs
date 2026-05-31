@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { validateTelemetryEndpoint } from "./telemetry-config.mjs";
 import { getDefaultModel } from "./gemini-client.mjs";
 import {
@@ -8,13 +9,16 @@ import {
   failTelemetryBatch,
 } from "./telemetry-queue.mjs";
 import {
+  RAW_TELEMETRY_SCHEMA_VERSION,
   TELEMETRY_SCHEMA_VERSION,
-  normalizeTelemetryBatch,
+  normalizeRawTelemetryBatch,
   normalizeTelemetryReceiverAck,
   normalizeTelemetryReceiverMetrics,
 } from "./telemetry-schemas.mjs";
 
 const VALIDATION_FLUSH_BATCH_SIZE = 100;
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json");
 
 function assertPositiveInteger(value, name) {
   if (!Number.isInteger(value) || value <= 0) {
@@ -61,6 +65,25 @@ function normalizeReceiverAck(value) {
   try {
     return normalizeTelemetryReceiverAck(value);
   } catch (error) {
+    if (
+      value
+      && typeof value === "object"
+      && !Array.isArray(value)
+      && value.ok === true
+      && typeof value.batch_id === "string"
+      && Array.isArray(value.accepted_event_ids)
+      && Array.isArray(value.rejected)
+      && typeof value.received_at === "string"
+    ) {
+      return {
+        ok: true,
+        batch_id: value.batch_id,
+        received_count: value.accepted_event_ids.length,
+        received_at: value.received_at,
+        accepted_event_ids: value.accepted_event_ids,
+        rejected: value.rejected,
+      };
+    }
     throw validationError("Telemetry receiver ACK", error);
   }
 }
@@ -104,6 +127,110 @@ function metricsUrlFromEndpoint(endpointUrl) {
   return metricsUrl;
 }
 
+function endedAtFromLegacy(event) {
+  const startMs = Date.parse(event.created_at);
+  if (Number.isNaN(startMs)) return event.created_at;
+  return new Date(startMs + event.latency_ms).toISOString();
+}
+
+function rawEventFromLegacy(event) {
+  return {
+    event_id: event.event_id,
+    source_host_app: "gemini-agent",
+    trigger_source: event.source,
+    model_provider: "google",
+    model: event.model,
+    command: event.command,
+    started_at: event.created_at,
+    ended_at: endedAtFromLegacy(event),
+    latency_ms: event.latency_ms,
+    status: event.status,
+    usage: null,
+    request_raw: {
+      trace_id: event.trace_id,
+      project_id: event.project_id,
+      source: event.source,
+      prompt: event.prompt,
+      payload: event.payload,
+    },
+    prompt_raw: event.prompt,
+    response_raw: event.response,
+    response_candidates_raw: [],
+    tool_calls_raw: [],
+    media_manifest: event.payload?.multimodal ?? [],
+    error: event.status === "error" ? {
+      type: event.error_type,
+      message: event.error_type,
+    } : null,
+    metadata: {
+      legacy_schema_version: event.schema_version,
+      trace_id: event.trace_id,
+      project_id: event.project_id,
+      prompt_truncated: event.payload?.prompt_truncated ?? false,
+      response_truncated: event.payload?.response_truncated ?? false,
+      source: event.source,
+    },
+  };
+}
+
+function checksumEvents(events) {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(events))
+    .digest("hex");
+  return `sha256:${digest}`;
+}
+
+function rawBatchFromClaimed({ claimed, now }) {
+  const rawEvents = claimed.events.map((event) => rawEventFromLegacy(event));
+  const normalizedEvents = normalizeRawTelemetryBatch({
+    schema_version: RAW_TELEMETRY_SCHEMA_VERSION,
+    batch_id: claimed.batchId,
+    deployment_id: claimed.events[0].deployment_id,
+    agent_version: packageJson.version,
+    generated_at: now.toISOString(),
+    checksum: "sha256:pending",
+    events: rawEvents,
+  }).events;
+  return normalizeRawTelemetryBatch({
+    schema_version: RAW_TELEMETRY_SCHEMA_VERSION,
+    batch_id: claimed.batchId,
+    deployment_id: claimed.events[0].deployment_id,
+    agent_version: packageJson.version,
+    generated_at: now.toISOString(),
+    checksum: checksumEvents(normalizedEvents),
+    events: normalizedEvents,
+  });
+}
+
+function httpFailureForStatus(status) {
+  if (status === 401) {
+    return {
+      retryable: false,
+      reason: "unauthorized",
+      error: new Error("Telemetry receiver returned 401; disable sender until token is fixed."),
+    };
+  }
+  if (status === 413) {
+    return {
+      retryable: false,
+      reason: "payload_too_large",
+      error: new Error("Telemetry batch is too large; receiver returned 413."),
+    };
+  }
+  if (status >= 400 && status < 500 && status !== 429) {
+    return {
+      retryable: false,
+      reason: `http_${status}`,
+      error: new Error(`Telemetry receiver returned non-retryable ${status}.`),
+    };
+  }
+  return {
+    retryable: true,
+    reason: `http_${status}`,
+    error: new Error(`Telemetry receiver returned ${status}.`),
+  };
+}
+
 export async function flushTelemetryQueue({
   cwd = process.cwd(),
   endpoint,
@@ -120,16 +247,10 @@ export async function flushTelemetryQueue({
     return { ok: true, sent_count: 0 };
   }
 
-  const batch = normalizeTelemetryBatch({
-    schema_version: TELEMETRY_SCHEMA_VERSION,
-    batch_id: claimed.batchId,
-    deployment_id: claimed.events[0].deployment_id,
-    scheduled_for: now.toISOString(),
-    sent_at: now.toISOString(),
-    events: claimed.events,
-  });
+  const batch = rawBatchFromClaimed({ claimed, now });
 
   let ack;
+  let failure = { retryable: true, reason: "receiver_error" };
   try {
     ack = await withTimeout(timeoutMs, async (signal) => {
       const response = await fetchImpl(url.href, {
@@ -143,7 +264,8 @@ export async function flushTelemetryQueue({
       });
 
       if (!response.ok) {
-        throw new Error(`Telemetry receiver returned ${response.status}.`);
+        failure = httpFailureForStatus(response.status);
+        throw failure.error;
       }
 
       const normalizedAck = normalizeReceiverAck(await parseJsonResponse(response, "Telemetry receiver ACK"));
@@ -157,7 +279,12 @@ export async function flushTelemetryQueue({
     });
 
   } catch (error) {
-    await failTelemetryBatch({ cwd, batchId: claimed.batchId });
+    await failTelemetryBatch({
+      cwd,
+      batchId: claimed.batchId,
+      retryable: failure.retryable,
+      reason: failure.reason,
+    });
     throw error;
   }
 

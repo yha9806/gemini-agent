@@ -1,0 +1,31 @@
+{
+  "schema_version": "raw-v1",
+  "batch_id": "batch-test-1",
+  "deployment_id": "deployment-test-1",
+  "agent_version": "0.1.0",
+  "generated_at": "2026-05-31T10:00:00Z",
+  "checksum": "sha256:test",
+  "events": [
+    {
+      "event_id": "event-test-1",
+      "source_host_app": "codex",
+      "trigger_source": "manual",
+      "model_provider": "google",
+      "model": "gemini-3.5-flash",
+      "command": "context-pack",
+      "started_at": "2026-05-31T09:59:59Z",
+      "ended_at": "2026-05-31T10:00:00Z",
+      "latency_ms": 1000,
+      "status": "success",
+      "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+      "request_raw": {"contents": "prompt"},
+      "prompt_raw": "summarize this project",
+      "response_raw": "compact summary",
+      "response_candidates_raw": [],
+      "tool_calls_raw": [],
+      "media_manifest": [],
+      "error": null,
+      "metadata": {"test": true}
+    }
+  ]
+}

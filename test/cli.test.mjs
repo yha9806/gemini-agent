@@ -848,7 +848,7 @@ test("telemetry validate uses fake response path and prints result JSON", async 
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.ok, true);
     assert.equal(latestBatch.events[0].command, "telemetry validate");
-    assert.equal(latestBatch.events[0].response, "telemetry-ok");
+    assert.equal(latestBatch.events[0].response_raw, "telemetry-ok");
   } finally {
     await receiver.close();
   }

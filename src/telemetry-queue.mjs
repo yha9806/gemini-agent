@@ -67,6 +67,8 @@ function normalizeState(value) {
   const queueBytes = value.queue_bytes ?? DEFAULT_STATE.queue_bytes;
   const sentSuccessCount = value.sent_success_count ?? DEFAULT_STATE.sent_success_count;
   const sentFailureCount = value.sent_failure_count ?? DEFAULT_STATE.sent_failure_count;
+  const nonRetryableFailureCount = value.non_retryable_failure_count ?? 0;
+  const lastFailureReason = value.last_failure_reason ?? null;
   const lastSentAt = value.last_sent_at ?? DEFAULT_STATE.last_sent_at;
 
   assertNonnegativeInteger(droppedOldCount, "dropped_old_count");
@@ -74,18 +76,29 @@ function normalizeState(value) {
   assertNonnegativeInteger(queueBytes, "queue_bytes");
   assertNonnegativeInteger(sentSuccessCount, "sent_success_count");
   assertNonnegativeInteger(sentFailureCount, "sent_failure_count");
+  assertNonnegativeInteger(nonRetryableFailureCount, "non_retryable_failure_count");
+  if (lastFailureReason !== null && typeof lastFailureReason !== "string") {
+    throw new Error("last_failure_reason must be null or a string.");
+  }
   if (lastSentAt !== null && typeof lastSentAt !== "string") {
     throw new Error("last_sent_at must be null or an ISO timestamp string.");
   }
 
-  return {
+  const normalized = {
     dropped_old_count: droppedOldCount,
     dropped_memory_count: droppedMemoryCount,
     queue_bytes: queueBytes,
     sent_success_count: sentSuccessCount,
     sent_failure_count: sentFailureCount,
-    last_sent_at: lastSentAt,
   };
+  if (nonRetryableFailureCount > 0 || Object.hasOwn(value, "non_retryable_failure_count")) {
+    normalized.non_retryable_failure_count = nonRetryableFailureCount;
+  }
+  if (lastFailureReason !== null || Object.hasOwn(value, "last_failure_reason")) {
+    normalized.last_failure_reason = lastFailureReason;
+  }
+  normalized.last_sent_at = lastSentAt;
+  return normalized;
 }
 
 function assertSafeBatchId(batchId) {
@@ -109,6 +122,7 @@ export function telemetryQueueDirs(cwd = process.cwd()) {
     pending: join(queue, "pending"),
     inflight: join(queue, "inflight"),
     sent: join(queue, "sent"),
+    failed: join(queue, "failed"),
     tmp: join(queue, "tmp"),
     lock: join(queue, LOCK_FILE),
     state: join(queue, STATE_FILE),
@@ -122,7 +136,7 @@ async function secureMkdir(path) {
 
 async function ensureQueueDirs(cwd) {
   const dirs = telemetryQueueDirs(cwd);
-  for (const dir of [dirs.root, dirs.queue, dirs.pending, dirs.inflight, dirs.sent, dirs.tmp]) {
+  for (const dir of [dirs.root, dirs.queue, dirs.pending, dirs.inflight, dirs.sent, dirs.failed, dirs.tmp]) {
     await secureMkdir(dir);
   }
   return dirs;
@@ -596,8 +610,16 @@ export async function completeTelemetryBatch({
 export async function failTelemetryBatch({
   cwd = process.cwd(),
   batchId,
+  retryable = true,
+  reason = "receiver_error",
 } = {}) {
   assertSafeBatchId(batchId);
+  if (typeof retryable !== "boolean") {
+    throw new TypeError("retryable must be a boolean.");
+  }
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new Error("Telemetry failure reason must be a non-empty string.");
+  }
 
   return withTelemetryQueueLock({ cwd }, async () => {
     const dirs = await ensureQueueDirs(cwd);
@@ -606,19 +628,41 @@ export async function failTelemetryBatch({
 
     const files = await regularFiles(batchDir);
     let moved = 0;
-    for (const file of files) {
-      const destination = join(dirs.pending, file.name);
-      await rename(file.path, destination);
-      await chmod(destination, SECURE_FILE_MODE);
-      moved += 1;
+    if (retryable) {
+      for (const file of files) {
+        const destination = join(dirs.pending, file.name);
+        await rename(file.path, destination);
+        await chmod(destination, SECURE_FILE_MODE);
+        moved += 1;
+      }
+      await rm(batchDir, { recursive: true, force: true });
+    } else {
+      const failedBatchDir = join(dirs.failed, batchId);
+      await secureMkdir(failedBatchDir);
+      for (const file of files) {
+        const destination = join(failedBatchDir, file.name);
+        await rename(file.path, destination);
+        await chmod(destination, SECURE_FILE_MODE);
+        moved += 1;
+      }
+      await writeSecureJsonFile(cwd, join(failedBatchDir, "reason.json"), {
+        batch_id: batchId,
+        reason,
+        retryable: false,
+        failed_at: new Date().toISOString(),
+      });
+      await rm(batchDir, { recursive: true, force: true });
     }
-    await rm(batchDir, { recursive: true, force: true });
 
     const state = await loadStateFromPath(dirs.state);
     await saveState(cwd, {
       ...state,
       queue_bytes: await pendingQueueBytes(cwd),
       sent_failure_count: state.sent_failure_count + moved,
+      non_retryable_failure_count: retryable
+        ? (state.non_retryable_failure_count ?? 0)
+        : (state.non_retryable_failure_count ?? 0) + moved,
+      last_failure_reason: reason,
     });
     return moved;
   });

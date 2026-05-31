@@ -133,12 +133,14 @@ test("flushTelemetryQueue sends a strict batch and completes the queue", async (
   assert.equal(request.method, "POST");
   assert.equal(request.headers["Content-Type"], "application/json");
   assert.equal(request.headers.Authorization, `Bearer ${TOKEN}`);
-  assert.equal(request.body.schema_version, 1);
+  assert.equal(request.body.schema_version, "raw-v1");
   assert.match(request.body.batch_id, /^batch_/);
   assert.equal(request.body.deployment_id, "dep_test");
-  assert.equal(request.body.scheduled_for, NOW.toISOString());
-  assert.equal(request.body.sent_at, NOW.toISOString());
+  assert.equal(request.body.agent_version, "0.1.0");
+  assert.equal(request.body.generated_at, NOW.toISOString());
+  assert.match(request.body.checksum, /^sha256:[a-f0-9]{64}$/);
   assert.deepEqual(request.body.events.map((event) => event.event_id), ["evt_000001", "evt_000002"]);
+  assert.deepEqual(request.body.events.map((event) => event.prompt_raw), ["prompt 000001", "prompt 000002"]);
 
   assert.equal(result.ok, true);
   assert.equal(result.sent_count, 2);
@@ -313,12 +315,13 @@ test("runTelemetryValidation creates, flushes, and confirms validation event", a
     if (options.method === "POST") {
       const body = JSON.parse(options.body);
       assert.equal(body.events.length, 1);
-      assert.equal(body.events[0].source, "validate");
+      assert.equal(body.events[0].schema_version, undefined);
+      assert.equal(body.events[0].trigger_source, "validate");
       assert.equal(body.events[0].command, "telemetry validate");
       assert.equal(body.events[0].model, "gemini-3.5-flash");
-      assert.equal(body.events[0].prompt, "custom validation prompt");
-      assert.equal(body.events[0].response, responseText);
-      assert.equal(body.events[0].created_at, NOW.toISOString());
+      assert.equal(body.events[0].prompt_raw, "custom validation prompt");
+      assert.equal(body.events[0].response_raw, responseText);
+      assert.equal(body.events[0].started_at, NOW.toISOString());
       assert.equal(Number.isInteger(body.events[0].latency_ms), true);
       validationBatchId = body.batch_id;
       return new Response(JSON.stringify({
@@ -491,7 +494,7 @@ test("runTelemetryValidation uses bounded flushes until default-sized backlog va
       if (options.method === "POST") {
         const postedBatch = JSON.parse(options.body);
         postedBatches.push(postedBatch);
-        const validationEvents = postedBatch.events.filter((event) => event.source === "validate");
+        const validationEvents = postedBatch.events.filter((event) => event.trigger_source === "validate");
         if (validationEvents.length > 0) {
           validationBatch = postedBatch;
         }
@@ -532,10 +535,10 @@ test("runTelemetryValidation uses bounded flushes until default-sized backlog va
     100,
     1,
   ]);
-  const validationEvents = validationBatch.events.filter((event) => event.source === "validate");
+  const validationEvents = validationBatch.events.filter((event) => event.trigger_source === "validate");
   assert.equal(validationEvents.length, 1);
-  assert.equal(validationEvents[0].prompt, prompt);
-  assert.equal(validationEvents[0].response, responseText);
+  assert.equal(validationEvents[0].prompt_raw, prompt);
+  assert.equal(validationEvents[0].response_raw, responseText);
   assert.equal(result.ok, true);
   assert.equal(result.flush.batch_id, validationBatch.batch_id);
   assert.deepEqual(result.flush.event_ids, [validationEvents[0].event_id]);
@@ -590,7 +593,7 @@ test("runTelemetryValidation returns false when max bounded flushes are exhauste
   assert.equal(result.ok, false);
   assert.equal(postedBatches.length, 1);
   assert.equal(postedBatches[0].events.length, 100);
-  assert.equal(postedBatches[0].events.some((event) => event.source === "validate"), false);
+  assert.equal(postedBatches[0].events.some((event) => event.trigger_source === "validate"), false);
   assert.equal(result.flushes.length, 1);
   assert.equal(result.flush, null);
   assert.equal((await readPendingEvents(cwd)).some((event) => event.source === "validate"), true);
@@ -709,4 +712,80 @@ test("receiverMetrics rejects invalid metrics response", async () => {
     }),
     /status_counts/,
   );
+});
+
+test("flushTelemetryQueue archives 401 batches as non-retryable unauthorized failures", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(10) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async () => new Response("unauthorized", { status: 401 }),
+      now: NOW,
+    }),
+    /disable sender until token is fixed/,
+  );
+
+  const dirs = telemetryQueueDirs(cwd);
+  assert.deepEqual(await regularFileNames(dirs.pending), []);
+  assert.deepEqual(await regularFileNames(dirs.inflight), []);
+  const failedBatches = await directoryNames(dirs.failed);
+  assert.equal(failedBatches.length, 1);
+  const reason = JSON.parse(await readFile(join(dirs.failed, failedBatches[0], "reason.json"), "utf8"));
+  assert.equal(reason.reason, "unauthorized");
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_failure_count, 1);
+  assert.equal(state.non_retryable_failure_count, 1);
+  assert.equal(state.last_failure_reason, "unauthorized");
+});
+
+test("flushTelemetryQueue archives 413 batches as non-retryable payload failures", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(11) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async () => new Response("too large", { status: 413 }),
+      now: NOW,
+    }),
+    /Telemetry batch is too large/,
+  );
+
+  const dirs = telemetryQueueDirs(cwd);
+  assert.deepEqual(await regularFileNames(dirs.pending), []);
+  assert.deepEqual(await regularFileNames(dirs.inflight), []);
+  const failedBatches = await directoryNames(dirs.failed);
+  assert.equal(failedBatches.length, 1);
+  const reason = JSON.parse(await readFile(join(dirs.failed, failedBatches[0], "reason.json"), "utf8"));
+  assert.equal(reason.reason, "payload_too_large");
+});
+
+test("flushTelemetryQueue archives other 4xx batches as non-retryable failures", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(12) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async () => new Response("unprocessable", { status: 422 }),
+      now: NOW,
+    }),
+    /non-retryable 422/,
+  );
+
+  const dirs = telemetryQueueDirs(cwd);
+  assert.deepEqual(await regularFileNames(dirs.pending), []);
+  assert.deepEqual(await regularFileNames(dirs.inflight), []);
+  const failedBatches = await directoryNames(dirs.failed);
+  assert.equal(failedBatches.length, 1);
+  const reason = JSON.parse(await readFile(join(dirs.failed, failedBatches[0], "reason.json"), "utf8"));
+  assert.equal(reason.reason, "http_422");
 });
