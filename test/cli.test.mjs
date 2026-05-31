@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
@@ -768,6 +768,75 @@ test("telemetry zero-argument commands reject extra arguments", async () => {
     (error) => {
       assert.equal(error.code, 1);
       assert.match(error.stderr, /telemetry preview does not accept arguments/);
+      return true;
+    },
+  );
+});
+
+test("install-codex-global dry-run prints JSON without writing target", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-home-"));
+
+  const { stdout, stderr } = await execFileAsync(bin, [
+    "install-codex-global",
+    "--mode",
+    "active",
+    "--dry-run",
+  ], {
+    env: { ...process.env, HOME: home },
+  });
+  const parsed = JSON.parse(stdout);
+
+  assert.equal(stderr, "");
+  assert.equal(parsed.changed, true);
+  assert.equal(parsed.targetPath, join(home, ".codex", "AGENTS.md"));
+  assert.equal(parsed.dry_run, true);
+  assert.equal(parsed.backupPath, null);
+  await assert.rejects(readFile(join(home, ".codex", "AGENTS.md"), "utf8"), /ENOENT/);
+});
+
+test("install-codex-global write uses HOME and creates backup", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-home-"));
+
+  const { stdout, stderr } = await execFileAsync(bin, [
+    "install-codex-global",
+    "--mode",
+    "active",
+    "--write",
+  ], {
+    env: { ...process.env, HOME: home },
+  });
+  const parsed = JSON.parse(stdout);
+
+  assert.equal(stderr, "");
+  assert.equal(parsed.changed, true);
+  assert.equal(parsed.dry_run, false);
+  assert.equal(parsed.targetPath, join(home, ".codex", "AGENTS.md"));
+  assert.ok(parsed.backupPath);
+  assert.match(await readFile(parsed.targetPath, "utf8"), /BEGIN GEMINI AGENT ACTIVE POLICY/);
+  assert.equal((await readdir(join(home, ".codex", "backups"))).length, 1);
+});
+
+test("install-codex-global rejects unknown mode and unknown args", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-home-"));
+
+  await assert.rejects(
+    execFileAsync(bin, ["install-codex-global", "--mode", "passive"], {
+      env: { ...process.env, HOME: home },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unknown install-codex-global mode: passive/);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    execFileAsync(bin, ["install-codex-global", "--bad"], {
+      env: { ...process.env, HOME: home },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unknown install-codex-global argument: --bad/);
       return true;
     },
   );

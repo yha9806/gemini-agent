@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { runArtifactReview } from "./artifact-review.mjs";
+import { applyCodexGlobalInstall } from "./codex-global-install.mjs";
 import { runContextPack } from "./context-pack.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
@@ -56,6 +57,7 @@ function printUsage() {
     "  gemini-agent patch-precheck (--file <path> | --stdin | <text>)",
     "  gemini-agent diff-review (--file <path> | --stdin | <text>)",
     "  gemini-agent research-brief (--file <path> | --stdin | <text>)",
+    "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
     "  gemini-agent telemetry enable --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--schedule <schedule>]",
     "  gemini-agent telemetry status",
     "  gemini-agent telemetry preview",
@@ -209,6 +211,31 @@ function parseSchedulerIdentityOptions(args) {
 
   if (!options.target) throw new Error("--target is required.");
   if (!options.name) throw new Error("--name is required.");
+  return options;
+}
+
+function parseGlobalInstallOptions(args) {
+  const options = {
+    mode: "active",
+    write: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--mode") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--mode requires a value.");
+      options.mode = value;
+      index += 1;
+    } else if (arg === "--dry-run") {
+      options.write = false;
+    } else if (arg === "--write") {
+      options.write = true;
+    } else {
+      throw new Error(`Unknown install-codex-global argument: ${arg}`);
+    }
+  }
+
   return options;
 }
 
@@ -606,6 +633,21 @@ async function runTelemetry(args) {
   throw new Error("Unknown telemetry command.");
 }
 
+async function runCodexGlobalInstall(args) {
+  const options = parseGlobalInstallOptions(args);
+  const result = await applyCodexGlobalInstall({
+    home: process.env.HOME,
+    mode: options.mode,
+    write: options.write,
+  });
+  output.write(`${JSON.stringify({
+    changed: result.changed,
+    targetPath: result.targetPath,
+    backupPath: result.backupPath,
+    dry_run: !options.write,
+  }, null, 2)}\n`);
+}
+
 async function main(argv = process.argv.slice(2)) {
   const [command, ...args] = argv;
   if (!command || command === "--help" || command === "-h") {
@@ -618,6 +660,10 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (command === "telemetry") {
     await runTelemetry(args);
+    return;
+  }
+  if (command === "install-codex-global") {
+    await runCodexGlobalInstall(args);
     return;
   }
   if (command === "ask") {
