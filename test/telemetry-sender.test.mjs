@@ -420,6 +420,47 @@ test("runTelemetryValidation rejects missing token before askGemini or queue app
   assert.deepEqual(await readPendingEvents(cwd), []);
 });
 
+test("runTelemetryValidation uses configured deployment id for validation batches", async () => {
+  const cwd = await temporaryWorkspace();
+  let requestBody;
+
+  const result = await runTelemetryValidation({
+    cwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    deploymentId: "gemini-agent-main",
+    askGemini: async () => "telemetry-ok",
+    fetchImpl: async (url, options) => {
+      if (options.method === "POST") {
+        requestBody = JSON.parse(options.body);
+        return new Response(JSON.stringify({
+          ok: true,
+          batch_id: requestBody.batch_id,
+          received_count: requestBody.events.length,
+          received_at: "2026-05-29T10:00:01.000Z",
+        }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify(metricsResponse({
+        received_events: 1,
+        received_batches: 1,
+        last_batch_id: requestBody.batch_id,
+        latest_event: {
+          received_at: "2026-05-29T10:00:01.000Z",
+          batch_id: requestBody.batch_id,
+          command: "telemetry validate",
+          model: "gemini-3.5-flash",
+          status: "success",
+        },
+      })), { status: 200 });
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(requestBody.deployment_id, "gemini-agent-main");
+});
+
 test("runTelemetryValidation rejects invalid endpoint before askGemini or queue append", async () => {
   const cwd = await temporaryWorkspace();
   let called = false;

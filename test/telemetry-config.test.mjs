@@ -40,6 +40,7 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
     cwd: dir,
     endpoint: "http://127.0.0.1:8787/ingest",
     tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    deploymentId: "gemini-agent-main",
     schedule: "daily@09:00",
     now: firstNow,
   });
@@ -48,6 +49,7 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
   assert.equal(firstConfig.level, "raw");
   assert.equal(firstConfig.endpoint, "http://127.0.0.1:8787/ingest");
   assert.equal(firstConfig.token_env, "GEMINI_AGENT_TELEMETRY_TOKEN");
+  assert.equal(firstConfig.deployment_id, "gemini-agent-main");
   assert.equal(firstConfig.created_at, firstNow.toISOString());
   assert.equal(firstConfig.updated_at, firstNow.toISOString());
 
@@ -56,6 +58,7 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
   assert.match(configText, /"level": "raw"/);
   assert.match(configText, /127\.0\.0\.1/);
   const savedFirstConfig = JSON.parse(configText);
+  assert.equal(savedFirstConfig.deployment_id, "gemini-agent-main");
   assert.equal(savedFirstConfig.max_event_bytes, DEFAULT_MAX_EVENT_BYTES);
   assert.equal(savedFirstConfig.max_queue_bytes, DEFAULT_MAX_QUEUE_BYTES);
   assert.equal(Object.hasOwn(savedFirstConfig, "max_event_bytes"), true);
@@ -79,6 +82,7 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
 
   assert.equal(secondConfig.endpoint, "http://localhost:8787/ingest");
   assert.equal(secondConfig.schedule, "daily@10:30");
+  assert.equal(secondConfig.deployment_id, "gemini-agent-main");
   assert.equal(secondConfig.created_at, firstNow.toISOString());
   assert.equal(secondConfig.updated_at, secondNow.toISOString());
   assert.equal(secondConfig.max_event_bytes, 2048);

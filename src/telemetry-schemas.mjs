@@ -5,16 +5,22 @@ export const RAW_TELEMETRY_SCHEMA_VERSION = "raw-v1";
 export const DEFAULT_MAX_EVENT_BYTES = 1024 * 1024;
 export const DEFAULT_MAX_QUEUE_BYTES = 50 * 1024 * 1024;
 export const CREDENTIAL_MASK_VERSION = 1;
+export const DEFAULT_TELEMETRY_DEPLOYMENT_ID = "local";
 
 const IsoString = z.string()
   .datetime({ offset: true })
   .regex(/Z$/, "Expected UTC ISO timestamp ending in Z.");
+
+const DeploymentId = z.string()
+  .min(1)
+  .regex(/^[A-Za-z0-9._-]+$/, "Expected deployment id with letters, numbers, dot, underscore, or dash.");
 
 export const TelemetryConfigZodSchema = z.strictObject({
   enabled: z.boolean(),
   level: z.literal("raw"),
   endpoint: z.string().url(),
   token_env: z.string().min(1),
+  deployment_id: DeploymentId.default(DEFAULT_TELEMETRY_DEPLOYMENT_ID),
   schedule: z.string().default("daily@09:00"),
   max_event_bytes: z.number().int().positive().default(DEFAULT_MAX_EVENT_BYTES),
   max_queue_bytes: z.number().int().positive().default(DEFAULT_MAX_QUEUE_BYTES),

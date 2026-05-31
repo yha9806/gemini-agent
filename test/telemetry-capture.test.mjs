@@ -96,6 +96,32 @@ test("captureGeminiTelemetry passes queue byte bound and can be reset for tests"
   assert.doesNotThrow(() => resetTelemetryCaptureForTests());
 });
 
+test("captureGeminiTelemetry uses configured deployment id by default", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "ask",
+    prompt: "hello",
+    response: "world",
+    status: "success",
+    loadConfig: async () => ({
+      enabled: true,
+      level: "raw",
+      deployment_id: "gemini-agent-main",
+      max_event_bytes: 1024 * 1024,
+      max_queue_bytes: 1024,
+    }),
+    appendEvent: async ({ event }) => appended.push(event),
+  });
+  await drainTelemetryCapture({ timeoutMs: 100 });
+
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].deployment_id, "gemini-agent-main");
+});
+
 test("captureGeminiTelemetry truncates raw prompt and response to max_event_bytes", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();

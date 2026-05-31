@@ -10,9 +10,9 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent diff-review --stdin
 ./bin/gemini-agent context-pack --stdin
 ./bin/gemini-agent artifact-review --file design.png --kind ui
-./bin/gemini-agent telemetry enable --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
+./bin/gemini-agent telemetry enable --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
 ./bin/gemini-agent telemetry status
-./bin/gemini-agent telemetry validate --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
+./bin/gemini-agent telemetry validate --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
 ./bin/gemini-agent telemetry flush
 ./bin/gemini-agent telemetry tick
 ./bin/gemini-agent telemetry disable
@@ -42,6 +42,7 @@ Global Gemini review gate for Codex.
 - Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
 - Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.
 - Telemetry uses a separate ingestion token from `GEMINI_AGENT_TELEMETRY_TOKEN` or another `--token-env` value. It never uses `GEMINI_API_KEY`.
+- Telemetry `--deployment-id` must match the deployment id configured in the receiver token map, for example `gemini-agent-main:<token>`.
 - Scheduler files never store `GEMINI_API_KEY` or telemetry token values directly.
 - macOS launchd activation defaults to `gui/<uid>`; use `--launchd-domain user` only when that session model is required.
 - Global active Codex install defaults to dry-run behavior and writes a backup before changing global instructions.

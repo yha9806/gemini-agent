@@ -13,8 +13,8 @@ This slice productizes Gemini Agent beyond ad hoc review calls:
 ## Operator Commands
 
 ```bash
-gemini-agent telemetry enable --level raw --endpoint https://telemetry.example.com/api/v1/gemini-agent/telemetry/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
-gemini-agent telemetry validate --endpoint https://telemetry.example.com/api/v1/gemini-agent/telemetry/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --confirm-raw-content
+gemini-agent telemetry enable --level raw --endpoint https://telemetry.example.com/api/v1/gemini-agent/telemetry/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
+gemini-agent telemetry validate --endpoint https://telemetry.example.com/api/v1/gemini-agent/telemetry/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
 gemini-agent telemetry install-scheduler --target launchd --name gemini-agent-main --schedule daily@09:00 --env-file ~/.gemini-agent/telemetry.env --dry-run
 gemini-agent telemetry scheduler-status --target launchd --name gemini-agent-main
 gemini-agent telemetry uninstall-scheduler --target launchd --name gemini-agent-main
@@ -26,6 +26,7 @@ gemini-agent install-codex-global --mode active --write
 
 - Raw telemetry mode remains explicit and requires `--confirm-raw-content`.
 - Scheduler artifacts reference an env file and never store `GEMINI_API_KEY` or telemetry token values inline.
+- Client `--deployment-id` must match the receiver token map deployment id.
 - launchd activation defaults to `gui/<uid>`.
 - Loopback HTTP endpoints are allowed for local validation; non-loopback telemetry endpoints require HTTPS.
 - Global active install defaults to dry-run behavior and writes a backup before changing global Codex instructions.

@@ -598,6 +598,8 @@ test("telemetry enable writes config and prints raw warning", async () => {
     "--token-env",
     TELEMETRY_TOKEN_ENV,
     "--confirm-raw-content",
+    "--deployment-id",
+    "gemini-agent-main",
     "--schedule",
     "hourly",
   ], {
@@ -612,6 +614,7 @@ test("telemetry enable writes config and prints raw warning", async () => {
   assert.equal(config.level, "raw");
   assert.equal(config.endpoint, "http://127.0.0.1:8787/ingest");
   assert.equal(config.token_env, TELEMETRY_TOKEN_ENV);
+  assert.equal(config.deployment_id, "gemini-agent-main");
   assert.equal(config.schedule, "hourly");
 });
 

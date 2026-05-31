@@ -58,12 +58,12 @@ function printUsage() {
     "  gemini-agent diff-review (--file <path> | --stdin | <text>)",
     "  gemini-agent research-brief (--file <path> | --stdin | <text>)",
     "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
-    "  gemini-agent telemetry enable --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--schedule <schedule>]",
+    "  gemini-agent telemetry enable --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--schedule <schedule>]",
     "  gemini-agent telemetry status",
     "  gemini-agent telemetry preview",
     "  gemini-agent telemetry flush",
     "  gemini-agent telemetry tick",
-    "  gemini-agent telemetry validate [--endpoint <url>] [--token-env <env>] --confirm-raw-content",
+    "  gemini-agent telemetry validate [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
     "  gemini-agent telemetry install-scheduler --target launchd|cron|systemd --name <label> [--schedule hourly|daily@HH:MM] [--env-file <path>] [--launchd-domain gui|user] [--dry-run|--write]",
     "  gemini-agent telemetry scheduler-status --target launchd|cron|systemd --name <label>",
     "  gemini-agent telemetry uninstall-scheduler --target launchd|cron|systemd --name <label>",
@@ -130,6 +130,11 @@ function parseTelemetryOptions(args) {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new Error("--token-env requires an environment variable name.");
       options.tokenEnv = value;
+      index += 1;
+    } else if (arg === "--deployment-id") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--deployment-id requires an id.");
+      options.deploymentId = value;
       index += 1;
     } else if (arg === "--schedule") {
       const value = args[index + 1];
@@ -520,11 +525,13 @@ async function runTelemetryValidate(args) {
   const enabledConfig = config?.enabled ? config : null;
   const endpoint = options.endpoint ?? enabledConfig?.endpoint ?? DEFAULT_TELEMETRY_ENDPOINT;
   const tokenEnv = options.tokenEnv ?? enabledConfig?.token_env ?? DEFAULT_TELEMETRY_TOKEN_ENV;
+  const deploymentId = options.deploymentId ?? enabledConfig?.deployment_id;
   const token = resolveTelemetryToken({ tokenEnv, env: process.env });
   const result = await runTelemetryValidation({
     cwd: process.cwd(),
     endpoint,
     token,
+    deploymentId,
     askGemini: askGeminiForTelemetryValidation,
   });
   output.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -543,6 +550,7 @@ async function runTelemetry(args) {
       cwd: process.cwd(),
       endpoint: options.endpoint,
       tokenEnv: options.tokenEnv,
+      deploymentId: options.deploymentId,
       schedule: options.schedule,
     });
     output.write(`${rawTelemetryWarning()}\n`);

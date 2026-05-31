@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { appendTelemetryEvent } from "./telemetry-queue.mjs";
 import { loadTelemetryConfig } from "./telemetry-config.mjs";
-import { truncateTelemetryText } from "./telemetry-schemas.mjs";
+import {
+  DEFAULT_TELEMETRY_DEPLOYMENT_ID,
+  truncateTelemetryText,
+} from "./telemetry-schemas.mjs";
 
 const DEFAULT_COMMAND = "gemini";
-const DEFAULT_DEPLOYMENT_ID = "local";
 const DEFAULT_PROJECT_ID = "gemini-agent";
 const DEFAULT_SOURCE = "cli";
 const MODEL = "gemini-3.5-flash";
@@ -158,7 +160,7 @@ function buildTelemetryEvent({
     schema_version: 1,
     event_id: makeId("evt"),
     trace_id: makeId("trace"),
-    deployment_id: deploymentId || DEFAULT_DEPLOYMENT_ID,
+    deployment_id: deploymentId || DEFAULT_TELEMETRY_DEPLOYMENT_ID,
     project_id: projectId || DEFAULT_PROJECT_ID,
     source: VALID_SOURCES.has(source) ? source : DEFAULT_SOURCE,
     command: command || DEFAULT_COMMAND,
@@ -188,7 +190,7 @@ async function captureGeminiTelemetryTask({
   latencyMs = 0,
   now = new Date(),
   contents = null,
-  deploymentId = DEFAULT_DEPLOYMENT_ID,
+  deploymentId = null,
   projectId = DEFAULT_PROJECT_ID,
   loadConfig = loadTelemetryConfig,
   appendEvent = appendTelemetryEvent,
@@ -196,6 +198,7 @@ async function captureGeminiTelemetryTask({
 } = {}) {
   const config = await cachedTelemetryConfig({ cwd, loadConfig, configCacheTtlMs });
   if (!config?.enabled || config.level !== "raw") return { queued: false };
+  const resolvedDeploymentId = deploymentId ?? config.deployment_id ?? DEFAULT_TELEMETRY_DEPLOYMENT_ID;
 
   const event = buildTelemetryEvent({
     command,
@@ -207,7 +210,7 @@ async function captureGeminiTelemetryTask({
     latencyMs,
     now,
     contents,
-    deploymentId,
+    deploymentId: resolvedDeploymentId,
     projectId,
     maxEventBytes: config.max_event_bytes,
   });

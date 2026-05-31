@@ -1,6 +1,9 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { normalizeTelemetryConfig } from "./telemetry-schemas.mjs";
+import {
+  DEFAULT_TELEMETRY_DEPLOYMENT_ID,
+  normalizeTelemetryConfig,
+} from "./telemetry-schemas.mjs";
 
 const TELEMETRY_ROOT = ".gemini-agent/telemetry";
 const CONFIG_FILE = "config.json";
@@ -63,6 +66,15 @@ function validateTelemetrySchedule(schedule) {
   throw new Error(`Unsupported telemetry schedule: ${schedule}`);
 }
 
+function assertTelemetryDeploymentId(deploymentId) {
+  if (typeof deploymentId !== "string" || deploymentId.length === 0) {
+    throw new Error("Telemetry deployment id must be a non-empty string.");
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(deploymentId)) {
+    throw new Error("Telemetry deployment id must contain only letters, numbers, dot, underscore, or dash.");
+  }
+}
+
 export function validateTelemetryEndpoint(endpoint) {
   const url = new URL(endpoint);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -116,6 +128,7 @@ export async function saveTelemetryConfig({
   cwd = process.cwd(),
   endpoint,
   tokenEnv,
+  deploymentId,
   schedule = "daily@09:00",
   now = new Date(),
 } = {}) {
@@ -129,11 +142,14 @@ export async function saveTelemetryConfig({
 
   const previousRaw = await readTelemetryConfigJson(cwd);
   const previous = previousRaw ? normalizeTelemetryConfig(previousRaw.value) : null;
+  const resolvedDeploymentId = deploymentId ?? previous?.deployment_id ?? DEFAULT_TELEMETRY_DEPLOYMENT_ID;
+  assertTelemetryDeploymentId(resolvedDeploymentId);
   const configInput = {
     enabled: true,
     level: "raw",
     endpoint: url.href,
     token_env: tokenEnv,
+    deployment_id: resolvedDeploymentId,
     schedule,
     created_at: previous?.created_at ?? now.toISOString(),
     updated_at: now.toISOString(),
