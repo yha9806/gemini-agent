@@ -35,6 +35,8 @@ const GATE_COMMANDS = new Map([
 const ARTIFACT_KINDS = new Set(["image", "ui", "design", "architecture", "research"]);
 const DEFAULT_TELEMETRY_ENDPOINT = "http://127.0.0.1:8787/ingest";
 const DEFAULT_TELEMETRY_TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 function allowFakeResponse(env = process.env) {
   return env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE === "1";
@@ -140,6 +142,45 @@ function assertNoTelemetryOptions(subcommand, args) {
   if (args.length === 0) return;
   parseTelemetryOptions(args);
   throw new Error(`telemetry ${subcommand} does not accept arguments.`);
+}
+
+function parseTimestamp(value) {
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function dailyScheduleWindow(schedule, now) {
+  const match = /^daily@([01]\d|2[0-3]):([0-5]\d)$/.exec(schedule);
+  if (!match) return null;
+  const scheduled = new Date(now);
+  scheduled.setHours(Number(match[1]), Number(match[2]), 0, 0);
+  const reached = scheduled <= now;
+  const nextDue = scheduled > now ? scheduled : new Date(scheduled.getTime() + DAY_MS);
+  return { reached, scheduled, nextDue };
+}
+
+function telemetryTickDecision({ schedule, lastSentAt, now = new Date() }) {
+  const lastSent = parseTimestamp(lastSentAt);
+  if (schedule === "hourly") {
+    if (!lastSent) return { due: true, next_due_at: now.toISOString() };
+    const nextDue = new Date(lastSent.getTime() + HOUR_MS);
+    return {
+      due: now >= nextDue,
+      next_due_at: nextDue.toISOString(),
+    };
+  }
+
+  const daily = dailyScheduleWindow(schedule, now);
+  if (daily) {
+    const due = daily.reached && (!lastSent || lastSent < daily.scheduled);
+    return {
+      due,
+      next_due_at: daily.nextDue.toISOString(),
+    };
+  }
+
+  throw new Error(`Unsupported telemetry schedule: ${schedule}`);
 }
 
 async function readGateInput(args) {
@@ -275,7 +316,7 @@ async function runGate(command, args) {
     prompt,
     allowFakeResponse: fakeAllowed,
     env: process.env,
-    telemetry: { cwd: process.cwd(), source: "cli", command, awaitCapture: true },
+    telemetry: { cwd: process.cwd(), source: "cli", command },
   });
   output.write(reviewToPrettyJson(review));
 }
@@ -297,7 +338,7 @@ async function runContextPackCommand(args) {
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,
-    telemetry: { cwd, source: "cli", command: "context-pack", awaitCapture: true },
+    telemetry: { cwd, source: "cli", command: "context-pack" },
   });
   output.write(contextPackToPrettyJson(pack));
 }
@@ -320,7 +361,7 @@ async function runArtifactReviewCommand(args) {
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,
-    telemetry: { cwd, source: "cli", command: "artifact-review", awaitCapture: true },
+    telemetry: { cwd, source: "cli", command: "artifact-review" },
   });
   output.write(artifactReviewToPrettyJson(review));
 }
@@ -341,6 +382,26 @@ async function runTelemetryFlush() {
     token,
   });
   output.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+async function runTelemetryTick() {
+  const config = await requireEnabledTelemetryConfig();
+  const state = await loadTelemetryState({ cwd: process.cwd() });
+  const decision = telemetryTickDecision({
+    schedule: config.schedule,
+    lastSentAt: state.last_sent_at,
+  });
+  if (!decision.due) {
+    output.write(`${JSON.stringify({
+      ok: true,
+      skipped: true,
+      reason: "schedule_not_due",
+      schedule: config.schedule,
+      next_due_at: decision.next_due_at,
+    }, null, 2)}\n`);
+    return;
+  }
+  await runTelemetryFlush();
 }
 
 async function askGeminiForTelemetryValidation(prompt) {
@@ -409,9 +470,15 @@ async function runTelemetry(args) {
     return;
   }
 
-  if (subcommand === "flush" || subcommand === "tick") {
+  if (subcommand === "flush") {
     assertNoTelemetryOptions(subcommand, subArgs);
     await runTelemetryFlush();
+    return;
+  }
+
+  if (subcommand === "tick") {
+    assertNoTelemetryOptions(subcommand, subArgs);
+    await runTelemetryTick();
     return;
   }
 
@@ -459,7 +526,7 @@ async function main(argv = process.argv.slice(2)) {
     const text = await generateText({
       apiKey: key.key,
       prompt,
-      telemetry: { cwd: process.cwd(), source: "cli", command: "ask", awaitCapture: true },
+      telemetry: { cwd: process.cwd(), source: "cli", command: "ask" },
     });
     output.write(`${text}\n`);
     return;

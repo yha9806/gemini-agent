@@ -618,6 +618,54 @@ test("telemetry flush sends queued events with configured token", async () => {
   }
 });
 
+test("telemetry tick flushes only when the hourly schedule is due", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const receivedBatches = [];
+  const receiver = await withTelemetryReceiver(async ({ request, response, body }) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.headers.authorization, `Bearer ${TELEMETRY_TOKEN}`);
+    const batch = JSON.parse(body);
+    receivedBatches.push(batch);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      batch_id: batch.batch_id,
+      received_count: batch.events.length,
+      received_at: "2026-05-29T09:00:01.000Z",
+    }));
+  });
+
+  try {
+    await saveTelemetryConfig({
+      cwd: dir,
+      endpoint: receiver.endpoint,
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      schedule: "hourly",
+    });
+    await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(1) });
+
+    const first = await execFileAsync(bin, ["telemetry", "tick"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    });
+    assert.equal(JSON.parse(first.stdout).sent_count, 1);
+
+    await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(2) });
+    const second = await execFileAsync(bin, ["telemetry", "tick"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    });
+    const skipped = JSON.parse(second.stdout);
+
+    assert.equal(skipped.ok, true);
+    assert.equal(skipped.skipped, true);
+    assert.equal(skipped.reason, "schedule_not_due");
+    assert.equal(receivedBatches.length, 1);
+  } finally {
+    await receiver.close();
+  }
+});
+
 test("telemetry validate uses fake response path and prints result JSON", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   let latestBatch;
