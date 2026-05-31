@@ -10,6 +10,8 @@ const NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 const DEFAULT_SCHEDULE = "daily@09:00";
 const MANAGED_START_PREFIX = "# BEGIN gemini-agent:";
 const MANAGED_END_PREFIX = "# END gemini-agent:";
+const SYSTEMD_ABSOLUTE_PATH_PATTERN = /^\/[A-Za-z0-9_./:@=,-]+$/;
+const SYSTEMD_EXEC_PREFIX_PATTERN = /^[@\-:+!]/;
 
 function assertName(name) {
   if (!NAME_PATTERN.test(name || "")) {
@@ -114,6 +116,23 @@ function systemdDir(home) {
   return join(home, ".config", "systemd", "user");
 }
 
+function schedulerArtifactPaths({ target, name, home, cwd }) {
+  if (target === "launchd") {
+    return [launchdPath({ home, name })];
+  }
+  if (target === "cron") {
+    return [cronPath({ cwd, name })];
+  }
+  if (target === "systemd") {
+    return [
+      join(systemdDir(home), systemdServiceName(name)),
+      join(systemdDir(home), systemdTimerName(name)),
+    ];
+  }
+  assertTarget(target);
+  return [];
+}
+
 function managedStart(name) {
   return `${MANAGED_START_PREFIX}${name}`;
 }
@@ -129,6 +148,27 @@ function buildTickCommand({ cwd, bin, envFile }) {
 
 function currentUid() {
   return typeof process.getuid === "function" ? process.getuid() : 1;
+}
+
+function assertSystemdUnitPath(value, field, { executable = false } = {}) {
+  if (executable && SYSTEMD_EXEC_PREFIX_PATTERN.test(value)) {
+    throw new Error(`${field} must not start with a systemd ExecStart prefix.`);
+  }
+  if (!executable && value.startsWith("-")) {
+    throw new Error(`${field} must not start with -.`);
+  }
+  if (!value.startsWith("/")) {
+    throw new Error(`${field} must be an absolute path for systemd scheduler units.`);
+  }
+  if (!SYSTEMD_ABSOLUTE_PATH_PATTERN.test(value)) {
+    throw new Error(`${field} must be an absolute path without systemd parser metacharacters.`);
+  }
+}
+
+function assertSystemdServiceOptions(options) {
+  assertSystemdUnitPath(options.cwd, "cwd");
+  assertSystemdUnitPath(options.bin, "bin", { executable: true });
+  if (options.envFile) assertSystemdUnitPath(options.envFile, "envFile");
 }
 
 export function normalizeSchedulerOptions({
@@ -199,6 +239,7 @@ export function generateCronEntry(input) {
 
 export function generateSystemdService(input) {
   const options = normalizeSchedulerOptions(input);
+  assertSystemdServiceOptions(options);
   const env = options.envFile ? `EnvironmentFile=${options.envFile}\n` : "";
   return `[Unit]
 Description=Gemini Agent telemetry tick ${options.name}
@@ -228,13 +269,14 @@ WantedBy=timers.target
 export function schedulerArtifact({ target, ...input } = {}) {
   assertTarget(target);
   const options = normalizeSchedulerOptions(input);
+  const paths = schedulerArtifactPaths({ target, ...options });
 
   if (target === "launchd") {
     return {
       target,
       name: options.name,
       files: [{
-        path: launchdPath(options),
+        path: paths[0],
         content: generateLaunchdPlist(options),
       }],
     };
@@ -245,7 +287,7 @@ export function schedulerArtifact({ target, ...input } = {}) {
       target,
       name: options.name,
       files: [{
-        path: cronPath(options),
+        path: paths[0],
         content: `${generateCronEntry(options)}\n`,
       }],
     };
@@ -256,11 +298,11 @@ export function schedulerArtifact({ target, ...input } = {}) {
     name: options.name,
     files: [
       {
-        path: join(systemdDir(options.home), systemdServiceName(options.name)),
+        path: paths[0],
         content: generateSystemdService(options),
       },
       {
-        path: join(systemdDir(options.home), systemdTimerName(options.name)),
+        path: paths[1],
         content: generateSystemdTimer(options),
       },
     ],
@@ -392,8 +434,8 @@ export async function installScheduler({
 } = {}) {
   assertTarget(target);
   const options = normalizeSchedulerOptions({ ...input, home });
-  await assertEnvFileSecure(options.envFile);
   const artifact = schedulerArtifact({ target, ...options });
+  await assertEnvFileSecure(options.envFile);
 
   if (!write) {
     return {
@@ -442,12 +484,14 @@ export async function schedulerStatus({
     name,
     schedule: DEFAULT_SCHEDULE,
     cwd,
-    bin: "gemini-agent",
+    bin: "/usr/bin/gemini-agent",
     home,
     uid,
     launchdDomain,
   });
-  const artifact = schedulerArtifact({ target, ...options });
+  const artifact = {
+    files: schedulerArtifactPaths({ target, ...options }).map((path) => ({ path })),
+  };
   const files = [];
 
   for (const file of artifact.files) {
@@ -490,12 +534,14 @@ export async function uninstallScheduler({
     name,
     schedule: DEFAULT_SCHEDULE,
     cwd,
-    bin: "gemini-agent",
+    bin: "/usr/bin/gemini-agent",
     home,
     uid,
     launchdDomain,
   });
-  const artifact = schedulerArtifact({ target, ...options });
+  const artifact = {
+    files: schedulerArtifactPaths({ target, ...options }).map((path) => ({ path })),
+  };
 
   await deactivateScheduler({
     target,

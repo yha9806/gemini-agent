@@ -108,6 +108,30 @@ test("generates systemd service and timer without inline secrets", () => {
   assertNoSecrets(timer);
 });
 
+test("rejects systemd parser-sensitive service fields", () => {
+  assert.throws(
+    () => generateSystemdService({ ...base, bin: "/tmp/my agent" }),
+    /bin must be an absolute path without systemd parser metacharacters/,
+  );
+  assert.throws(
+    () => generateSystemdService({ ...base, bin: "-/tmp/gemini-agent" }),
+    /bin must not start with a systemd ExecStart prefix/,
+  );
+  assert.throws(
+    () => generateSystemdService({ ...base, bin: "+/tmp/gemini-agent" }),
+    /bin must not start with a systemd ExecStart prefix/,
+  );
+  assert.throws(
+    () => generateSystemdService({ ...base, envFile: "-/tmp/env" }),
+    /envFile must not start with -/,
+  );
+  assert.throws(
+    () => generateSystemdService({ ...base, cwd: "-/tmp/project" }),
+    /cwd must not start with -/,
+  );
+  assert.match(generateSystemdService(base), /WorkingDirectory=\/tmp\/project/);
+});
+
 test("rejects group or other readable env files when installing", async () => {
   const home = await mkdtemp(join(tmpdir(), "gemini-agent-scheduler-"));
   const envFile = join(home, "env");
