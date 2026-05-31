@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
+const rootPath = fileURLToPath(root);
 
 test("package exposes executables", async () => {
   const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
@@ -25,6 +27,19 @@ test("package exposes executables", async () => {
 test("git ignores installed dependencies", async () => {
   const gitignore = await readFile(new URL(".gitignore", root), "utf8");
   assert.match(gitignore, /^node_modules\/$/m);
+});
+
+test("public markdown does not expose local home paths", async () => {
+  const files = [
+    fileURLToPath(new URL("README.md", root)),
+    ...await markdownFiles(fileURLToPath(new URL("docs", root))),
+  ];
+
+  for (const file of files) {
+    const content = await readFile(file, "utf8");
+    const label = relative(rootPath, file);
+    assert.doesNotMatch(content, /\/Users\/[^/\s]+/u, `${label} exposes a local home path`);
+  }
 });
 
 test("wrappers fail clearly before Gemini integration is implemented", async () => {
@@ -68,4 +83,18 @@ function runNodeScript(scriptUrl, { env = {} } = {}) {
       resolve({ code, stdout, stderr });
     });
   });
+}
+
+async function markdownFiles(dir) {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await markdownFiles(path));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(path);
+    }
+  }
+  return files;
 }

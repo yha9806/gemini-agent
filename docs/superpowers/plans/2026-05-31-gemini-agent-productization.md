@@ -26,7 +26,7 @@ Path note: absolute paths in this plan are for the current local workspace. If a
 
 ## File Structure
 
-### `/Users/yhryzy/dev/vulca-platform/wenxin-backend`
+### `<vulca-platform-repo>/wenxin-backend`
 
 - Create `app/models/gemini_agent_telemetry.py`
   - SQLAlchemy models for deployments, batches, events, raw payloads, audit log.
@@ -41,7 +41,7 @@ Path note: absolute paths in this plan are for the current local workspace. If a
 - Create `tests/test_gemini_agent_telemetry_api.py`
   - API, auth, idempotency, retention, audit, and governance tests.
 
-### `/Users/yhryzy/dev/gemini-agent`
+### `<gemini-agent-repo>`
 
 - Modify `src/telemetry-schemas.mjs`
   - Add `raw-v1` payload schemas while preserving local receiver compatibility where needed.
@@ -63,7 +63,7 @@ Path note: absolute paths in this plan are for the current local workspace. If a
   - `test/codex-global-install.test.mjs`
   - Extend `test/telemetry-sender.test.mjs`, `test/telemetry-capture.test.mjs`, `test/cli.test.mjs`.
 
-### `/Users/yhryzy/dev/vulca-platform/wenxin-moyun`
+### `<vulca-platform-repo>/wenxin-moyun`
 
 - Create `src/services/geminiAgentTelemetry.service.ts`
   - Typed API client functions.
@@ -77,21 +77,21 @@ Path note: absolute paths in this plan are for the current local workspace. If a
 
 ### Documentation And Fixtures
 
-- Create `/Users/yhryzy/dev/gemini-agent/test/fixtures/telemetry/raw-v1-batch.json`.
-- Create `/Users/yhryzy/dev/vulca-platform/wenxin-backend/tests/fixtures/gemini_agent_raw_v1_batch.json`.
-- Modify `/Users/yhryzy/dev/gemini-agent/README.md`.
-- Modify `/Users/yhryzy/dev/vulca-platform/wenxin-backend/README.md`.
-- Modify `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/config/version.ts` only if release notes require a visible build version bump.
+- Create `<gemini-agent-repo>/test/fixtures/telemetry/raw-v1-batch.json`.
+- Create `<vulca-platform-repo>/wenxin-backend/tests/fixtures/gemini_agent_raw_v1_batch.json`.
+- Modify `<gemini-agent-repo>/README.md`.
+- Modify `<vulca-platform-repo>/wenxin-backend/README.md`.
+- Modify `<vulca-platform-repo>/wenxin-moyun/src/config/version.ts` only if release notes require a visible build version bump.
 
 ---
 
 ### Task 1: Backend Telemetry Models And Migration
 
 **Files:**
-- Create: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/app/models/gemini_agent_telemetry.py`
-- Modify: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/app/models/__init__.py`
-- Create: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/alembic/versions/gemini_agent_telemetry.py`
-- Test: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/tests/test_gemini_agent_telemetry_api.py`
+- Create: `<vulca-platform-repo>/wenxin-backend/app/models/gemini_agent_telemetry.py`
+- Modify: `<vulca-platform-repo>/wenxin-backend/app/models/__init__.py`
+- Create: `<vulca-platform-repo>/wenxin-backend/alembic/versions/gemini_agent_telemetry.py`
+- Test: `<vulca-platform-repo>/wenxin-backend/tests/test_gemini_agent_telemetry_api.py`
 
 - [ ] **Step 1: Write the failing model registration test**
 
@@ -120,7 +120,7 @@ def test_gemini_agent_telemetry_tables_are_registered() -> None:
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 pytest tests/test_gemini_agent_telemetry_api.py::test_gemini_agent_telemetry_tables_are_registered -q
 ```
 
@@ -128,7 +128,7 @@ Expected: FAIL because the telemetry models are not registered in `Base.metadata
 
 - [ ] **Step 3: Add SQLAlchemy models**
 
-Create `/Users/yhryzy/dev/vulca-platform/wenxin-backend/app/models/gemini_agent_telemetry.py`:
+Create `<vulca-platform-repo>/wenxin-backend/app/models/gemini_agent_telemetry.py`:
 
 ```python
 """SQLAlchemy models for gemini-agent telemetry."""
@@ -247,7 +247,7 @@ class GeminiAgentTelemetryAuditLog(Base):
 
 - [ ] **Step 4: Register the models**
 
-Modify `/Users/yhryzy/dev/vulca-platform/wenxin-backend/app/models/__init__.py`:
+Modify `<vulca-platform-repo>/wenxin-backend/app/models/__init__.py`:
 
 ```python
 from .gemini_agent_telemetry import (
@@ -266,13 +266,13 @@ Add the five names to `__all__`.
 Run first:
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 alembic heads
 ```
 
 Expected: output includes `0523013558b1`. If it does not, stop and replace only the `down_revision` value below with the single head printed by `alembic heads` before creating the file; do not create a split migration history.
 
-Create `/Users/yhryzy/dev/vulca-platform/wenxin-backend/alembic/versions/gemini_agent_telemetry.py`:
+Create `<vulca-platform-repo>/wenxin-backend/alembic/versions/gemini_agent_telemetry.py`:
 
 ```python
 """add gemini agent telemetry tables
@@ -410,7 +410,7 @@ def downgrade() -> None:
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 pytest tests/test_gemini_agent_telemetry_api.py::test_gemini_agent_telemetry_tables_are_registered -q
 alembic upgrade head
 alembic downgrade 0523013558b1
@@ -422,7 +422,7 @@ Expected: test passes; Alembic upgrade/downgrade/upgrade completes.
 - [ ] **Step 7: Commit backend model and migration**
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform
+cd <vulca-platform-repo>
 git add wenxin-backend/app/models/gemini_agent_telemetry.py wenxin-backend/app/models/__init__.py wenxin-backend/alembic/versions/gemini_agent_telemetry.py wenxin-backend/tests/test_gemini_agent_telemetry_api.py
 git commit -m "feat: add gemini agent telemetry tables"
 ```
@@ -430,14 +430,14 @@ git commit -m "feat: add gemini agent telemetry tables"
 ### Task 2: Backend Ingest Contract
 
 **Files:**
-- Create: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/app/api/v1/gemini_agent_telemetry.py`
-- Modify: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/app/api/v1/__init__.py`
-- Test: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/tests/test_gemini_agent_telemetry_api.py`
-- Fixture: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/tests/fixtures/gemini_agent_raw_v1_batch.json`
+- Create: `<vulca-platform-repo>/wenxin-backend/app/api/v1/gemini_agent_telemetry.py`
+- Modify: `<vulca-platform-repo>/wenxin-backend/app/api/v1/__init__.py`
+- Test: `<vulca-platform-repo>/wenxin-backend/tests/test_gemini_agent_telemetry_api.py`
+- Fixture: `<vulca-platform-repo>/wenxin-backend/tests/fixtures/gemini_agent_raw_v1_batch.json`
 
 - [ ] **Step 1: Add a raw-v1 fixture**
 
-Create `/Users/yhryzy/dev/vulca-platform/wenxin-backend/tests/fixtures/gemini_agent_raw_v1_batch.json`:
+Create `<vulca-platform-repo>/wenxin-backend/tests/fixtures/gemini_agent_raw_v1_batch.json`:
 
 ```json
 {
@@ -622,7 +622,7 @@ def test_require_deployment_handles_bootstrap_integrity_race(monkeypatch) -> Non
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 pytest tests/test_gemini_agent_telemetry_api.py::test_ingest_requires_bearer_token tests/test_gemini_agent_telemetry_api.py::test_ingest_rejects_malformed_authorization_header tests/test_gemini_agent_telemetry_api.py::test_ingest_rejects_empty_bearer_token tests/test_gemini_agent_telemetry_api.py::test_ingest_accepts_raw_v1_batch tests/test_gemini_agent_telemetry_api.py::test_ingest_rejects_non_flash_model_by_default tests/test_gemini_agent_telemetry_api.py::test_require_deployment_handles_bootstrap_integrity_race -q
 ```
 
@@ -630,7 +630,7 @@ Expected: FAIL because route does not exist.
 
 - [ ] **Step 4: Implement route schemas and token parsing**
 
-Create `/Users/yhryzy/dev/vulca-platform/wenxin-backend/app/api/v1/gemini_agent_telemetry.py`:
+Create `<vulca-platform-repo>/wenxin-backend/app/api/v1/gemini_agent_telemetry.py`:
 
 ```python
 """Gemini Agent telemetry ingest and operator API."""
@@ -886,7 +886,7 @@ async def ingest_telemetry(
 
 - [ ] **Step 5: Wire the router**
 
-Modify `/Users/yhryzy/dev/vulca-platform/wenxin-backend/app/api/v1/__init__.py`:
+Modify `<vulca-platform-repo>/wenxin-backend/app/api/v1/__init__.py`:
 
 ```python
 from .gemini_agent_telemetry import router as gemini_agent_telemetry_router
@@ -907,7 +907,7 @@ api_router.include_router(
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 pytest tests/test_gemini_agent_telemetry_api.py -q
 ```
 
@@ -916,7 +916,7 @@ Expected: all tests in the file pass.
 - [ ] **Step 7: Commit backend ingest contract**
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform
+cd <vulca-platform-repo>
 git add wenxin-backend/app/api/v1/gemini_agent_telemetry.py wenxin-backend/app/api/v1/__init__.py wenxin-backend/tests/test_gemini_agent_telemetry_api.py wenxin-backend/tests/fixtures/gemini_agent_raw_v1_batch.json
 git commit -m "feat: add gemini agent telemetry ingest"
 ```
@@ -924,8 +924,8 @@ git commit -m "feat: add gemini agent telemetry ingest"
 ### Task 3: Backend Operator Metrics And Governance
 
 **Files:**
-- Modify: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/app/api/v1/gemini_agent_telemetry.py`
-- Test: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/tests/test_gemini_agent_telemetry_api.py`
+- Modify: `<vulca-platform-repo>/wenxin-backend/app/api/v1/gemini_agent_telemetry.py`
+- Test: `<vulca-platform-repo>/wenxin-backend/tests/test_gemini_agent_telemetry_api.py`
 
 - [ ] **Step 1: Write failing operator route tests**
 
@@ -1068,7 +1068,7 @@ def test_purge_expired_raw_deletes_old_payload(monkeypatch) -> None:
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 pytest tests/test_gemini_agent_telemetry_api.py::test_metrics_requires_admin tests/test_gemini_agent_telemetry_api.py::test_metrics_returns_ingested_counts tests/test_gemini_agent_telemetry_api.py::test_events_list_exposes_redacted_previews tests/test_gemini_agent_telemetry_api.py::test_raw_reveal_writes_audit_log tests/test_gemini_agent_telemetry_api.py::test_retention_update_writes_audit_log tests/test_gemini_agent_telemetry_api.py::test_purge_expired_raw_deletes_old_payload -q
 ```
 
@@ -1311,7 +1311,7 @@ async def purge_expired_raw(
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 pytest tests/test_gemini_agent_telemetry_api.py -q
 ```
 
@@ -1320,7 +1320,7 @@ Expected: all tests pass.
 - [ ] **Step 6: Commit backend operator API**
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform
+cd <vulca-platform-repo>
 git add wenxin-backend/app/api/v1/gemini_agent_telemetry.py wenxin-backend/tests/test_gemini_agent_telemetry_api.py
 git commit -m "feat: add gemini agent telemetry governance api"
 ```
@@ -1328,21 +1328,21 @@ git commit -m "feat: add gemini agent telemetry governance api"
 ### Task 4: Gemini Agent Raw-v1 Contract And Sender Hardening
 
 **Files:**
-- Modify: `/Users/yhryzy/dev/gemini-agent/src/telemetry-schemas.mjs`
-- Modify: `/Users/yhryzy/dev/gemini-agent/src/telemetry-sender.mjs`
-- Modify: `/Users/yhryzy/dev/gemini-agent/src/telemetry-queue.mjs`
-- Modify: `/Users/yhryzy/dev/gemini-agent/src/telemetry-capture.mjs`
-- Test: `/Users/yhryzy/dev/gemini-agent/test/telemetry-contract.test.mjs`
-- Test: `/Users/yhryzy/dev/gemini-agent/test/telemetry-sender.test.mjs`
-- Fixture: `/Users/yhryzy/dev/gemini-agent/test/fixtures/telemetry/raw-v1-batch.json`
+- Modify: `<gemini-agent-repo>/src/telemetry-schemas.mjs`
+- Modify: `<gemini-agent-repo>/src/telemetry-sender.mjs`
+- Modify: `<gemini-agent-repo>/src/telemetry-queue.mjs`
+- Modify: `<gemini-agent-repo>/src/telemetry-capture.mjs`
+- Test: `<gemini-agent-repo>/test/telemetry-contract.test.mjs`
+- Test: `<gemini-agent-repo>/test/telemetry-sender.test.mjs`
+- Fixture: `<gemini-agent-repo>/test/fixtures/telemetry/raw-v1-batch.json`
 
 - [ ] **Step 1: Add contract fixture**
 
-Create `/Users/yhryzy/dev/gemini-agent/test/fixtures/telemetry/raw-v1-batch.json` with the same content as the backend fixture from Task 2.
+Create `<gemini-agent-repo>/test/fixtures/telemetry/raw-v1-batch.json` with the same content as the backend fixture from Task 2.
 
 - [ ] **Step 2: Write failing schema tests**
 
-Create `/Users/yhryzy/dev/gemini-agent/test/telemetry-contract.test.mjs`:
+Create `<gemini-agent-repo>/test/telemetry-contract.test.mjs`:
 
 ```js
 import assert from "node:assert/strict";
@@ -1389,7 +1389,7 @@ test("rejects unknown raw telemetry major schema", () => {
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 node --test test/telemetry-contract.test.mjs
 ```
 
@@ -1397,7 +1397,7 @@ Expected: FAIL because `normalizeRawTelemetryBatch` is not exported.
 
 - [ ] **Step 4: Add raw-v1 schemas**
 
-Modify `/Users/yhryzy/dev/gemini-agent/src/telemetry-schemas.mjs`:
+Modify `<gemini-agent-repo>/src/telemetry-schemas.mjs`:
 
 Keep the existing `z` import, existing `IsoString` validator, and existing `maskCredentialText()` helper in this file; add the raw-v1 exports below the current credential masking helpers.
 
@@ -1459,7 +1459,7 @@ export function normalizeRawTelemetryBatch(value) {
 
 - [ ] **Step 5: Write non-retryable sender tests**
 
-Append to `/Users/yhryzy/dev/gemini-agent/test/telemetry-sender.test.mjs`:
+Append to `<gemini-agent-repo>/test/telemetry-sender.test.mjs`:
 
 ```js
 test("flushTelemetryQueue archives unauthorized batches instead of retrying forever", async () => {
@@ -1528,7 +1528,7 @@ test("flushTelemetryQueue archives validation failures on 422", async () => {
 
 - [ ] **Step 6: Add non-retryable queue archiving**
 
-Modify `/Users/yhryzy/dev/gemini-agent/src/telemetry-queue.mjs`:
+Modify `<gemini-agent-repo>/src/telemetry-queue.mjs`:
 
 ```js
 export function telemetryQueueDirs(cwd = process.cwd()) {
@@ -1611,7 +1611,7 @@ export async function failTelemetryBatch({
 
 - [ ] **Step 7: Update sender to post raw-v1 and item ACK**
 
-Modify `flushTelemetryQueue()` in `/Users/yhryzy/dev/gemini-agent/src/telemetry-sender.mjs` so it maps existing queued events into raw-v1:
+Modify `flushTelemetryQueue()` in `<gemini-agent-repo>/src/telemetry-sender.mjs` so it maps existing queued events into raw-v1:
 
 ```js
 import { createHash } from "node:crypto";
@@ -1740,7 +1740,7 @@ Update the send catch block:
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 node --test test/telemetry-contract.test.mjs test/telemetry-sender.test.mjs
 ```
 
@@ -1749,7 +1749,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit client contract alignment**
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 git add src/telemetry-schemas.mjs src/telemetry-sender.mjs src/telemetry-queue.mjs src/telemetry-capture.mjs test/telemetry-contract.test.mjs test/telemetry-sender.test.mjs test/fixtures/telemetry/raw-v1-batch.json
 git commit -m "feat: send raw v1 telemetry batches"
 ```
@@ -1757,14 +1757,14 @@ git commit -m "feat: send raw v1 telemetry batches"
 ### Task 5: Gemini Agent Scheduler Installer
 
 **Files:**
-- Create: `/Users/yhryzy/dev/gemini-agent/src/telemetry-scheduler.mjs`
-- Modify: `/Users/yhryzy/dev/gemini-agent/src/cli.mjs`
-- Test: `/Users/yhryzy/dev/gemini-agent/test/telemetry-scheduler.test.mjs`
-- Extend: `/Users/yhryzy/dev/gemini-agent/test/cli.test.mjs`
+- Create: `<gemini-agent-repo>/src/telemetry-scheduler.mjs`
+- Modify: `<gemini-agent-repo>/src/cli.mjs`
+- Test: `<gemini-agent-repo>/test/telemetry-scheduler.test.mjs`
+- Extend: `<gemini-agent-repo>/test/cli.test.mjs`
 
 - [ ] **Step 1: Write scheduler generator tests**
 
-Create `/Users/yhryzy/dev/gemini-agent/test/telemetry-scheduler.test.mjs`:
+Create `<gemini-agent-repo>/test/telemetry-scheduler.test.mjs`:
 
 ```js
 import assert from "node:assert/strict";
@@ -1944,7 +1944,7 @@ test("reports scheduler status and uninstalls artifacts", async () => {
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 node --test test/telemetry-scheduler.test.mjs
 ```
 
@@ -1952,7 +1952,7 @@ Expected: FAIL because module does not exist.
 
 - [ ] **Step 3: Implement scheduler generators**
 
-Create `/Users/yhryzy/dev/gemini-agent/src/telemetry-scheduler.mjs`:
+Create `<gemini-agent-repo>/src/telemetry-scheduler.mjs`:
 
 ```js
 import { execFile as execFileCallback } from "node:child_process";
@@ -2287,7 +2287,7 @@ if (subcommand === "uninstall-scheduler") {
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 node --test test/telemetry-scheduler.test.mjs test/cli.test.mjs
 ```
 
@@ -2296,7 +2296,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit scheduler dry-run**
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 git add src/telemetry-scheduler.mjs src/cli.mjs test/telemetry-scheduler.test.mjs test/cli.test.mjs
 git commit -m "feat: add telemetry scheduler installer"
 ```
@@ -2304,14 +2304,14 @@ git commit -m "feat: add telemetry scheduler installer"
 ### Task 6: Global Active Codex Installer
 
 **Files:**
-- Create: `/Users/yhryzy/dev/gemini-agent/src/codex-global-install.mjs`
-- Modify: `/Users/yhryzy/dev/gemini-agent/src/cli.mjs`
-- Test: `/Users/yhryzy/dev/gemini-agent/test/codex-global-install.test.mjs`
-- Extend: `/Users/yhryzy/dev/gemini-agent/test/cli.test.mjs`
+- Create: `<gemini-agent-repo>/src/codex-global-install.mjs`
+- Modify: `<gemini-agent-repo>/src/cli.mjs`
+- Test: `<gemini-agent-repo>/test/codex-global-install.test.mjs`
+- Extend: `<gemini-agent-repo>/test/cli.test.mjs`
 
 - [ ] **Step 1: Write installer tests**
 
-Create `/Users/yhryzy/dev/gemini-agent/test/codex-global-install.test.mjs`:
+Create `<gemini-agent-repo>/test/codex-global-install.test.mjs`:
 
 ```js
 import assert from "node:assert/strict";
@@ -2362,7 +2362,7 @@ test("active policy block names expected tools", () => {
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 node --test test/codex-global-install.test.mjs
 ```
 
@@ -2370,7 +2370,7 @@ Expected: FAIL because module does not exist.
 
 - [ ] **Step 3: Implement installer module**
 
-Create `/Users/yhryzy/dev/gemini-agent/src/codex-global-install.mjs`:
+Create `<gemini-agent-repo>/src/codex-global-install.mjs`:
 
 ```js
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -2488,7 +2488,7 @@ if (command === "install-codex-global") {
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 node --test test/codex-global-install.test.mjs test/cli.test.mjs
 ```
 
@@ -2497,7 +2497,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit global installer**
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 git add src/codex-global-install.mjs src/cli.mjs test/codex-global-install.test.mjs test/cli.test.mjs
 git commit -m "feat: add active codex global installer"
 ```
@@ -2505,15 +2505,15 @@ git commit -m "feat: add active codex global installer"
 ### Task 7: Frontend Admin Dashboard
 
 **Files:**
-- Create: `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/services/geminiAgentTelemetry.service.ts`
-- Create: `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/pages/admin/GeminiAgentTelemetryPage.tsx`
-- Modify: `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/App.tsx`
-- Test: `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/__tests__/services/geminiAgentTelemetry.service.test.ts`
-- Test: `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/__tests__/pages/GeminiAgentTelemetryPage.test.tsx`
+- Create: `<vulca-platform-repo>/wenxin-moyun/src/services/geminiAgentTelemetry.service.ts`
+- Create: `<vulca-platform-repo>/wenxin-moyun/src/pages/admin/GeminiAgentTelemetryPage.tsx`
+- Modify: `<vulca-platform-repo>/wenxin-moyun/src/App.tsx`
+- Test: `<vulca-platform-repo>/wenxin-moyun/src/__tests__/services/geminiAgentTelemetry.service.test.ts`
+- Test: `<vulca-platform-repo>/wenxin-moyun/src/__tests__/pages/GeminiAgentTelemetryPage.test.tsx`
 
 - [ ] **Step 1: Write service tests**
 
-Create `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/__tests__/services/geminiAgentTelemetry.service.test.ts`:
+Create `<vulca-platform-repo>/wenxin-moyun/src/__tests__/services/geminiAgentTelemetry.service.test.ts`:
 
 ```ts
 import { describe, expect, it, vi } from 'vitest';
@@ -2560,7 +2560,7 @@ describe('geminiAgentTelemetry service', () => {
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform/wenxin-moyun
+cd <vulca-platform-repo>/wenxin-moyun
 npm test -- src/__tests__/services/geminiAgentTelemetry.service.test.ts
 ```
 
@@ -2568,7 +2568,7 @@ Expected: FAIL because service file does not exist.
 
 - [ ] **Step 3: Implement service**
 
-Create `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/services/geminiAgentTelemetry.service.ts`:
+Create `<vulca-platform-repo>/wenxin-moyun/src/services/geminiAgentTelemetry.service.ts`:
 
 ```ts
 import apiClient from './api';
@@ -2651,7 +2651,7 @@ export async function setTelemetryRetention(deploymentId: string, days: number):
 
 - [ ] **Step 4: Add dashboard page**
 
-Create `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/pages/admin/GeminiAgentTelemetryPage.tsx`:
+Create `<vulca-platform-repo>/wenxin-moyun/src/pages/admin/GeminiAgentTelemetryPage.tsx`:
 
 ```tsx
 import { AlertTriangle, Eye, Pause, RefreshCw, ShieldCheck } from 'lucide-react';
@@ -2876,7 +2876,7 @@ export default function GeminiAgentTelemetryPage() {
 
 - [ ] **Step 5: Add dashboard page tests**
 
-Create `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/__tests__/pages/GeminiAgentTelemetryPage.test.tsx`:
+Create `<vulca-platform-repo>/wenxin-moyun/src/__tests__/pages/GeminiAgentTelemetryPage.test.tsx`:
 
 ```tsx
 import { render, screen, waitFor } from '@testing-library/react';
@@ -2988,7 +2988,7 @@ describe('GeminiAgentTelemetryPage', () => {
 
 - [ ] **Step 6: Wire route**
 
-Modify `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/App.tsx`:
+Modify `<vulca-platform-repo>/wenxin-moyun/src/App.tsx`:
 
 ```tsx
 const GeminiAgentTelemetryPage = lazy(() => import('./pages/admin/GeminiAgentTelemetryPage'));
@@ -3018,7 +3018,7 @@ Add route inside `<Route element={<Layout />}>`:
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform/wenxin-moyun
+cd <vulca-platform-repo>/wenxin-moyun
 npm test -- src/__tests__/services/geminiAgentTelemetry.service.test.ts src/__tests__/pages/GeminiAgentTelemetryPage.test.tsx
 npm run type-check
 npm run build
@@ -3029,7 +3029,7 @@ Expected: all pass.
 - [ ] **Step 8: Commit frontend dashboard**
 
 ```bash
-cd /Users/yhryzy/dev/vulca-platform
+cd <vulca-platform-repo>
 git add wenxin-moyun/src/services/geminiAgentTelemetry.service.ts wenxin-moyun/src/pages/admin/GeminiAgentTelemetryPage.tsx wenxin-moyun/src/App.tsx wenxin-moyun/src/__tests__/services/geminiAgentTelemetry.service.test.ts wenxin-moyun/src/__tests__/pages/GeminiAgentTelemetryPage.test.tsx
 git commit -m "feat: add gemini agent telemetry dashboard"
 ```
@@ -3037,10 +3037,10 @@ git commit -m "feat: add gemini agent telemetry dashboard"
 ### Task 8: Release Validation And Documentation
 
 **Files:**
-- Modify: `/Users/yhryzy/dev/gemini-agent/README.md`
-- Modify: `/Users/yhryzy/dev/vulca-platform/wenxin-backend/README.md`
-- Modify: `/Users/yhryzy/dev/vulca-platform/wenxin-moyun/src/config/version.ts` only if the project requires a visible version bump.
-- Optional create: `/Users/yhryzy/dev/gemini-agent/docs/release/gemini-agent-productization.md`
+- Modify: `<gemini-agent-repo>/README.md`
+- Modify: `<vulca-platform-repo>/wenxin-backend/README.md`
+- Modify: `<vulca-platform-repo>/wenxin-moyun/src/config/version.ts` only if the project requires a visible version bump.
+- Optional create: `<gemini-agent-repo>/docs/release/gemini-agent-productization.md`
 
 - [ ] **Step 1: Update gemini-agent README commands**
 
@@ -3086,14 +3086,14 @@ Ingest uses deployment bearer tokens. Admin reads and governance actions use nor
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 npm test
 
-cd /Users/yhryzy/dev/vulca-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 pytest tests/test_gemini_agent_telemetry_api.py -q
 alembic upgrade head
 
-cd /Users/yhryzy/dev/vulca-platform/wenxin-moyun
+cd <vulca-platform-repo>/wenxin-moyun
 npm run type-check
 npm test -- src/__tests__/services/geminiAgentTelemetry.service.test.ts src/__tests__/pages/GeminiAgentTelemetryPage.test.tsx
 npm run build
@@ -3106,11 +3106,11 @@ Expected: all pass.
 Run from each repo:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 git diff main...HEAD | ./bin/gemini-agent diff-review --stdin
 
-cd /Users/yhryzy/dev/vulca-platform
-git diff main...HEAD | /Users/yhryzy/dev/gemini-agent/bin/gemini-agent diff-review --stdin
+cd <vulca-platform-repo>
+git diff main...HEAD | <gemini-agent-repo>/bin/gemini-agent diff-review --stdin
 ```
 
 Expected: structured JSON verdict is `pass` or `caution` with no blocking findings. Address blocking findings before release.
@@ -3118,11 +3118,11 @@ Expected: structured JSON verdict is `pass` or `caution` with no blocking findin
 - [ ] **Step 5: Commit docs and release validation notes**
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 git add README.md docs/release/gemini-agent-productization.md
 git commit -m "docs: document gemini agent productization"
 
-cd /Users/yhryzy/dev/vulca-platform
+cd <vulca-platform-repo>
 git add wenxin-backend/README.md wenxin-moyun/src/config/version.ts
 git commit -m "docs: document gemini agent telemetry operations"
 ```
@@ -3134,16 +3134,16 @@ If `docs/release/gemini-agent-productization.md` or `version.ts` was not created
 Run:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+cd <gemini-agent-repo>
 npm test
 git status --short
 
-cd /Users/yhryzy/dev/vulca-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 pytest tests/test_gemini_agent_telemetry_api.py -q
 alembic upgrade head
 git status --short
 
-cd /Users/yhryzy/dev/vulca-platform/wenxin-moyun
+cd <vulca-platform-repo>/wenxin-moyun
 npm run type-check
 npm test -- src/__tests__/services/geminiAgentTelemetry.service.test.ts src/__tests__/pages/GeminiAgentTelemetryPage.test.tsx
 npm run build

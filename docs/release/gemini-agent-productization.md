@@ -45,13 +45,13 @@ Ingest uses deployment bearer tokens. Metrics, deployment controls, event reads,
 ## Validation Commands
 
 ```bash
-cd /Users/yhryzy/.config/superpowers/worktrees/gemini-agent/gemini-agent-productization-impl
+cd <gemini-agent-repo>
 npm test
 
-cd /Users/yhryzy/.config/superpowers/worktrees/vulca-platform/gemini-agent-telemetry-platform/wenxin-backend
+cd <vulca-platform-repo>/wenxin-backend
 .venv/bin/python -m pytest tests/test_gemini_agent_telemetry_api.py -q
 
-cd /Users/yhryzy/.config/superpowers/worktrees/vulca-platform/gemini-agent-telemetry-platform/wenxin-moyun
+cd <vulca-platform-repo>/wenxin-moyun
 npm run type-check
 npm test -- src/__tests__/services/geminiAgentTelemetry.service.test.ts src/__tests__/pages/GeminiAgentTelemetryPage.test.tsx
 npm run build

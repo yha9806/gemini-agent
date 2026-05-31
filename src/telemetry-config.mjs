@@ -56,6 +56,13 @@ function assertTokenEnvName(tokenEnv) {
   }
 }
 
+function validateTelemetrySchedule(schedule) {
+  if (schedule === "hourly" || /^daily@([01]\d|2[0-3]):([0-5]\d)$/.test(schedule)) {
+    return schedule;
+  }
+  throw new Error(`Unsupported telemetry schedule: ${schedule}`);
+}
+
 export function validateTelemetryEndpoint(endpoint) {
   const url = new URL(endpoint);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -101,6 +108,7 @@ export async function loadTelemetryConfig({ cwd = process.cwd() } = {}) {
 
   const config = normalizeTelemetryConfig(rawConfig.value);
   validateTelemetryEndpoint(config.endpoint);
+  validateTelemetrySchedule(config.schedule);
   return config;
 }
 
@@ -113,6 +121,7 @@ export async function saveTelemetryConfig({
 } = {}) {
   const url = validateTelemetryEndpoint(endpoint);
   assertTokenEnvName(tokenEnv);
+  validateTelemetrySchedule(schedule);
   const dir = telemetryDir(cwd);
   const path = telemetryConfigPath(cwd);
   await mkdir(dir, { recursive: true, mode: 0o700 });
