@@ -24,6 +24,7 @@ import {
 } from "./telemetry-config.mjs";
 import { flushTelemetryQueue, runTelemetryValidation } from "./telemetry-sender.mjs";
 import { loadTelemetryState, purgeTelemetryData } from "./telemetry-queue.mjs";
+import { installScheduler, schedulerStatus, uninstallScheduler } from "./telemetry-scheduler.mjs";
 
 const GATE_COMMANDS = new Map([
   ["plan-critique", "plan_critique"],
@@ -61,6 +62,9 @@ function printUsage() {
     "  gemini-agent telemetry flush",
     "  gemini-agent telemetry tick",
     "  gemini-agent telemetry validate [--endpoint <url>] [--token-env <env>] --confirm-raw-content",
+    "  gemini-agent telemetry install-scheduler --target launchd|cron|systemd --name <label> [--schedule hourly|daily@HH:MM] [--env-file <path>] [--launchd-domain gui|user] [--dry-run|--write]",
+    "  gemini-agent telemetry scheduler-status --target launchd|cron|systemd --name <label>",
+    "  gemini-agent telemetry uninstall-scheduler --target launchd|cron|systemd --name <label>",
     "  gemini-agent telemetry disable",
     "  gemini-agent telemetry purge",
     "",
@@ -142,6 +146,49 @@ function assertNoTelemetryOptions(subcommand, args) {
   if (args.length === 0) return;
   parseTelemetryOptions(args);
   throw new Error(`telemetry ${subcommand} does not accept arguments.`);
+}
+
+function schedulerValue(args, index, flag, description = "a value") {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${flag} requires ${description}.`);
+  return value;
+}
+
+function parseSchedulerOptions(args) {
+  const options = {
+    schedule: "hourly",
+    write: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--target") {
+      options.target = schedulerValue(args, index, arg, "one of: launchd, cron, systemd");
+      index += 1;
+    } else if (arg === "--name") {
+      options.name = schedulerValue(args, index, arg, "a label");
+      index += 1;
+    } else if (arg === "--schedule") {
+      options.schedule = schedulerValue(args, index, arg, "hourly or daily@HH:MM");
+      index += 1;
+    } else if (arg === "--env-file") {
+      options.envFile = schedulerValue(args, index, arg, "a path");
+      index += 1;
+    } else if (arg === "--launchd-domain") {
+      options.launchdDomain = schedulerValue(args, index, arg, "gui or user");
+      index += 1;
+    } else if (arg === "--dry-run") {
+      options.write = false;
+    } else if (arg === "--write") {
+      options.write = true;
+    } else {
+      throw new Error(`Unknown scheduler argument: ${arg}`);
+    }
+  }
+
+  if (!options.target) throw new Error("--target is required.");
+  if (!options.name) throw new Error("--name is required.");
+  return options;
 }
 
 function parseTimestamp(value) {
@@ -484,6 +531,40 @@ async function runTelemetry(args) {
 
   if (subcommand === "validate") {
     await runTelemetryValidate(subArgs);
+    return;
+  }
+
+  if (subcommand === "install-scheduler") {
+    const options = parseSchedulerOptions(subArgs);
+    const result = await installScheduler({
+      ...options,
+      cwd: process.cwd(),
+      bin: process.argv[1],
+      home: process.env.HOME,
+    });
+    output.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "scheduler-status") {
+    const options = parseSchedulerOptions(subArgs);
+    const result = await schedulerStatus({
+      ...options,
+      cwd: process.cwd(),
+      home: process.env.HOME,
+    });
+    output.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "uninstall-scheduler") {
+    const options = parseSchedulerOptions(subArgs);
+    const result = await uninstallScheduler({
+      ...options,
+      cwd: process.cwd(),
+      home: process.env.HOME,
+    });
+    output.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
 

@@ -636,6 +636,28 @@ test("telemetry status prints config and queue state", async () => {
   assert.ok(parsed.queue.queue_bytes > 0);
 });
 
+test("telemetry install-scheduler dry-runs cron artifact", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  const { stdout, stderr } = await execFileAsync(bin, [
+    "telemetry",
+    "install-scheduler",
+    "--target",
+    "cron",
+    "--name",
+    "cli-test",
+    "--schedule",
+    "hourly",
+  ], {
+    cwd: dir,
+    env: { PATH: process.env.PATH },
+  });
+
+  assert.equal(stderr, "");
+  assert.match(stdout, /gemini-agent:cli-test/);
+  assert.match(stdout, /"dry_run": true/);
+});
+
 test("telemetry zero-argument commands reject extra arguments", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
 
