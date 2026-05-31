@@ -515,6 +515,34 @@ test("telemetry status prints config and queue state", async () => {
   assert.ok(parsed.queue.queue_bytes > 0);
 });
 
+test("telemetry zero-argument commands reject extra arguments", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  await assert.rejects(
+    execFileAsync(bin, ["telemetry", "status", "--bad"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unknown telemetry argument: --bad/);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    execFileAsync(bin, ["telemetry", "preview", "--level", "raw"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /telemetry preview does not accept arguments/);
+      return true;
+    },
+  );
+});
+
 test("telemetry flush rejects when telemetry is not enabled", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
 

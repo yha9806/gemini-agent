@@ -136,6 +136,12 @@ function parseTelemetryOptions(args) {
   return options;
 }
 
+function assertNoTelemetryOptions(subcommand, args) {
+  if (args.length === 0) return;
+  parseTelemetryOptions(args);
+  throw new Error(`telemetry ${subcommand} does not accept arguments.`);
+}
+
 async function readGateInput(args) {
   const fileIndex = args.indexOf("--file");
   if (fileIndex !== -1) {
@@ -389,6 +395,7 @@ async function runTelemetry(args) {
   }
 
   if (subcommand === "status") {
+    assertNoTelemetryOptions(subcommand, subArgs);
     const config = await loadTelemetryConfig({ cwd: process.cwd() });
     const queue = await loadTelemetryState({ cwd: process.cwd() });
     output.write(`${JSON.stringify({ config: config ?? { enabled: false }, queue }, null, 2)}\n`);
@@ -396,12 +403,14 @@ async function runTelemetry(args) {
   }
 
   if (subcommand === "preview") {
+    assertNoTelemetryOptions(subcommand, subArgs);
     const queue = await loadTelemetryState({ cwd: process.cwd() });
     output.write(`${JSON.stringify({ queue }, null, 2)}\n`);
     return;
   }
 
   if (subcommand === "flush" || subcommand === "tick") {
+    assertNoTelemetryOptions(subcommand, subArgs);
     await runTelemetryFlush();
     return;
   }
@@ -412,12 +421,14 @@ async function runTelemetry(args) {
   }
 
   if (subcommand === "disable") {
+    assertNoTelemetryOptions(subcommand, subArgs);
     const config = await disableTelemetryConfig({ cwd: process.cwd() });
     output.write(`${JSON.stringify({ config }, null, 2)}\n`);
     return;
   }
 
   if (subcommand === "purge") {
+    assertNoTelemetryOptions(subcommand, subArgs);
     const result = await purgeTelemetryData({ cwd: process.cwd() });
     output.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
