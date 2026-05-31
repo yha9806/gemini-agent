@@ -262,19 +262,29 @@ function acceptedEventIdsForAck(ack, batch) {
 
   const batchEventIds = new Set(batch.events.map((event) => event.event_id));
   const coveredEventIds = new Set();
+  const acceptedEventIds = new Set();
 
   for (const eventId of ack.accepted_event_ids) {
     if (typeof eventId !== "string" || !batchEventIds.has(eventId)) {
       throw new Error("Telemetry receiver ACK does not cover the sent batch.");
     }
+    if (acceptedEventIds.has(eventId) || coveredEventIds.has(eventId)) {
+      throw new Error("Telemetry receiver ACK must list each sent event exactly once.");
+    }
+    acceptedEventIds.add(eventId);
     coveredEventIds.add(eventId);
   }
 
+  const rejectedEventIds = new Set();
   for (const rejection of ack.rejected) {
     const eventId = rejectedEventId(rejection);
     if (!eventId || !batchEventIds.has(eventId)) {
       throw new Error("Telemetry receiver ACK does not cover the sent batch.");
     }
+    if (rejectedEventIds.has(eventId) || coveredEventIds.has(eventId)) {
+      throw new Error("Telemetry receiver ACK must list each sent event exactly once.");
+    }
+    rejectedEventIds.add(eventId);
     coveredEventIds.add(eventId);
   }
 

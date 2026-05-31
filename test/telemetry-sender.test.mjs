@@ -891,9 +891,74 @@ test("flushTelemetryQueue rejects malformed production ACKs that do not cover th
   assert.deepEqual(await regularFileNames(telemetryQueueDirs(cwd).inflight), []);
 });
 
-test("flushTelemetryQueue treats 429 as retryable and requeues the batch", async () => {
+test("flushTelemetryQueue rejects production ACKs with accepted and rejected overlap", async () => {
   const cwd = await temporaryWorkspace();
   await appendTelemetryEvent({ cwd, event: telemetryEvent(17) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async (url, options) => {
+        const body = JSON.parse(options.body);
+        const eventId = body.events[0].event_id;
+        return new Response(JSON.stringify({
+          ok: true,
+          batch_id: body.batch_id,
+          accepted_event_ids: [eventId],
+          rejected: [{ event_id: eventId, reason: "invalid_event" }],
+          received_at: "2026-05-29T10:00:01.000Z",
+        }), { status: 200 });
+      },
+      now: NOW,
+    }),
+    /exactly once/,
+  );
+
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000017"]);
+  assert.deepEqual(await regularFileNames(telemetryQueueDirs(cwd).inflight), []);
+});
+
+test("flushTelemetryQueue rejects production ACKs with duplicate accepted event ids", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(18) });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(19) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async (url, options) => {
+        const body = JSON.parse(options.body);
+        return new Response(JSON.stringify({
+          ok: true,
+          batch_id: body.batch_id,
+          accepted_event_ids: [
+            body.events[0].event_id,
+            body.events[0].event_id,
+          ],
+          rejected: [{ event_id: body.events[1].event_id, reason: "invalid_event" }],
+          received_at: "2026-05-29T10:00:01.000Z",
+        }), { status: 200 });
+      },
+      now: NOW,
+      batchSize: 2,
+    }),
+    /exactly once/,
+  );
+
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), [
+    "evt_000018",
+    "evt_000019",
+  ]);
+  assert.deepEqual(await regularFileNames(telemetryQueueDirs(cwd).inflight), []);
+});
+
+test("flushTelemetryQueue treats 429 as retryable and requeues the batch", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(20) });
 
   await assert.rejects(
     () => flushTelemetryQueue({
@@ -907,7 +972,7 @@ test("flushTelemetryQueue treats 429 as retryable and requeues the batch", async
   );
 
   const dirs = telemetryQueueDirs(cwd);
-  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000017"]);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000020"]);
   assert.deepEqual(await regularFileNames(dirs.inflight), []);
   assert.deepEqual(await directoryNames(dirs.failed), []);
 });
