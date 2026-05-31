@@ -402,6 +402,12 @@ export async function loadTelemetryState({ cwd = process.cwd() } = {}) {
   return loadStateFromPath(dirs.state);
 }
 
+export async function purgeTelemetryData({ cwd = process.cwd() } = {}) {
+  const dirs = telemetryQueueDirs(cwd);
+  await rm(dirs.root, { recursive: true, force: true });
+  return { purged: true };
+}
+
 export async function withTelemetryQueueLock({
   cwd = process.cwd(),
   staleMs = 30_000,

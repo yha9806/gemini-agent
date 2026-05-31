@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
+import { appendTelemetryEvent } from "../src/telemetry-queue.mjs";
 
 const execFileAsync = promisify(execFile);
 const bin = new URL("../bin/gemini-agent", import.meta.url).pathname;
+const TELEMETRY_TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
+const TELEMETRY_TOKEN = "telemetry-token";
 const fakeReview = JSON.stringify({
   verdict: "pass",
   top_risks: [],
@@ -16,6 +21,53 @@ const fakeReview = JSON.stringify({
   suggested_changes: [],
   notes: ["fake ok"],
 });
+
+function telemetryEvent(index, overrides = {}) {
+  return {
+    schema_version: 1,
+    event_id: `evt_cli_${index}`,
+    trace_id: `trace_cli_${index}`,
+    deployment_id: "dep_cli",
+    project_id: "gemini-agent",
+    source: "cli",
+    command: "ask",
+    model: "gemini-3.5-flash",
+    prompt: `prompt ${index}`,
+    response: `response ${index}`,
+    status: "success",
+    error_type: null,
+    latency_ms: 1,
+    created_at: "2026-05-29T09:00:00.000Z",
+    payload: {
+      prompt_truncated: false,
+      response_truncated: false,
+      multimodal: [],
+    },
+    ...overrides,
+  };
+}
+
+async function withTelemetryReceiver(handler) {
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = Buffer.concat(chunks).toString("utf8");
+    try {
+      await handler({ request, response, body });
+    } catch (error) {
+      response.writeHead(500, { "Content-Type": "text/plain" });
+      response.end(error.stack || error.message);
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  return {
+    endpoint: `http://127.0.0.1:${port}/ingest`,
+    close: () => new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    }),
+  };
+}
 
 function execBin(args, { input = "", env = process.env, cwd } = {}) {
   return new Promise((resolve, reject) => {
@@ -385,4 +437,222 @@ test("artifact-review rejects unsafe file paths before auth lookup", async () =>
       return true;
     },
   );
+});
+
+test("telemetry enable requires raw content confirmation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  await assert.rejects(
+    execFileAsync(bin, [
+      "telemetry",
+      "enable",
+      "--level",
+      "raw",
+      "--endpoint",
+      "http://127.0.0.1:8787/ingest",
+      "--token-env",
+      TELEMETRY_TOKEN_ENV,
+    ], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--confirm-raw-content is required/);
+      return true;
+    },
+  );
+});
+
+test("telemetry enable writes config and prints raw warning", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  const { stdout } = await execFileAsync(bin, [
+    "telemetry",
+    "enable",
+    "--level",
+    "raw",
+    "--endpoint",
+    "http://127.0.0.1:8787/ingest",
+    "--token-env",
+    TELEMETRY_TOKEN_ENV,
+    "--confirm-raw-content",
+    "--schedule",
+    "hourly",
+  ], {
+    cwd: dir,
+    env: { PATH: process.env.PATH },
+  });
+
+  assert.match(stdout, /Raw prompt\/response telemetry may capture/);
+  assert.match(stdout, /Telemetry enabled/);
+  const config = JSON.parse(await readFile(join(dir, ".gemini-agent/telemetry/config.json"), "utf8"));
+  assert.equal(config.enabled, true);
+  assert.equal(config.level, "raw");
+  assert.equal(config.endpoint, "http://127.0.0.1:8787/ingest");
+  assert.equal(config.token_env, TELEMETRY_TOKEN_ENV);
+  assert.equal(config.schedule, "hourly");
+});
+
+test("telemetry status prints config and queue state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+  });
+  await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(1) });
+
+  const { stdout } = await execFileAsync(bin, ["telemetry", "status"], {
+    cwd: dir,
+    env: { PATH: process.env.PATH },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.config.enabled, true);
+  assert.equal(parsed.config.level, "raw");
+  assert.equal(parsed.queue.sent_success_count, 0);
+  assert.ok(parsed.queue.queue_bytes > 0);
+});
+
+test("telemetry flush rejects when telemetry is not enabled", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  await assert.rejects(
+    execFileAsync(bin, ["telemetry", "flush"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Telemetry is not enabled/);
+      return true;
+    },
+  );
+});
+
+test("telemetry flush rejects when configured token env is missing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+  });
+
+  await assert.rejects(
+    execFileAsync(bin, ["telemetry", "flush"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Telemetry token env GEMINI_AGENT_TELEMETRY_TOKEN is not set/);
+      return true;
+    },
+  );
+});
+
+test("telemetry flush sends queued events with configured token", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  let receivedBatch;
+  const receiver = await withTelemetryReceiver(async ({ request, response, body }) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.headers.authorization, `Bearer ${TELEMETRY_TOKEN}`);
+    receivedBatch = JSON.parse(body);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      batch_id: receivedBatch.batch_id,
+      received_count: receivedBatch.events.length,
+      received_at: "2026-05-29T09:00:01.000Z",
+    }));
+  });
+
+  try {
+    await saveTelemetryConfig({
+      cwd: dir,
+      endpoint: receiver.endpoint,
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+    });
+    await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(1) });
+
+    const { stdout } = await execFileAsync(bin, ["telemetry", "flush"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.sent_count, 1);
+    assert.equal(receivedBatch.events[0].event_id, "evt_cli_1");
+  } finally {
+    await receiver.close();
+  }
+});
+
+test("telemetry validate uses fake response path and prints result JSON", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  let latestBatch;
+  const receiver = await withTelemetryReceiver(async ({ request, response, body }) => {
+    if (request.url === "/ingest") {
+      latestBatch = JSON.parse(body);
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        batch_id: latestBatch.batch_id,
+        received_count: latestBatch.events.length,
+        received_at: "2026-05-29T09:00:01.000Z",
+      }));
+      return;
+    }
+    if (request.url === "/metrics") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        received_batches: latestBatch ? 1 : 0,
+        received_events: latestBatch?.events.length ?? 0,
+        last_received_at: latestBatch ? "2026-05-29T09:00:01.000Z" : null,
+        last_batch_id: latestBatch?.batch_id ?? null,
+        latest_event: latestBatch ? {
+          batch_id: latestBatch.batch_id,
+          command: latestBatch.events.at(-1).command,
+          model: latestBatch.events.at(-1).model,
+          status: latestBatch.events.at(-1).status,
+          received_at: "2026-05-29T09:00:01.000Z",
+        } : null,
+        status_counts: { success: latestBatch?.events.length ?? 0, error: 0 },
+        clock_skew_warnings: 0,
+      }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+
+  try {
+    const { stdout } = await execFileAsync(bin, [
+      "telemetry",
+      "validate",
+      "--endpoint",
+      receiver.endpoint,
+      "--token-env",
+      TELEMETRY_TOKEN_ENV,
+      "--confirm-raw-content",
+    ], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH,
+        [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN,
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: "telemetry-ok",
+      },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, true);
+    assert.equal(latestBatch.events[0].command, "telemetry validate");
+    assert.equal(latestBatch.events[0].response, "telemetry-ok");
+  } finally {
+    await receiver.close();
+  }
 });

@@ -148,3 +148,21 @@ export async function saveTelemetryConfig({
   await chmod(path, 0o600);
   return config;
 }
+
+export async function disableTelemetryConfig({
+  cwd = process.cwd(),
+  now = new Date(),
+} = {}) {
+  const rawConfig = await readTelemetryConfigJson(cwd);
+  if (!rawConfig) return { enabled: false };
+
+  const previous = normalizeTelemetryConfig(rawConfig.value);
+  const disabled = normalizeTelemetryConfig({
+    ...previous,
+    enabled: false,
+    updated_at: now.toISOString(),
+  });
+  await writeFile(rawConfig.path, `${JSON.stringify(disabled, null, 2)}\n`, { mode: 0o600 });
+  await chmod(rawConfig.path, 0o600);
+  return disabled;
+}

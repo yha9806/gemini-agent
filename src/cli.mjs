@@ -13,6 +13,17 @@ import {
 import { loadProjectPolicy } from "./policies.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
+import { drainTelemetryCapture } from "./telemetry-capture.mjs";
+import {
+  assertRawConfirmation,
+  disableTelemetryConfig,
+  loadTelemetryConfig,
+  rawTelemetryWarning,
+  resolveTelemetryToken,
+  saveTelemetryConfig,
+} from "./telemetry-config.mjs";
+import { flushTelemetryQueue, runTelemetryValidation } from "./telemetry-sender.mjs";
+import { loadTelemetryState, purgeTelemetryData } from "./telemetry-queue.mjs";
 
 const GATE_COMMANDS = new Map([
   ["plan-critique", "plan_critique"],
@@ -22,6 +33,8 @@ const GATE_COMMANDS = new Map([
 ]);
 
 const ARTIFACT_KINDS = new Set(["image", "ui", "design", "architecture", "research"]);
+const DEFAULT_TELEMETRY_ENDPOINT = "http://127.0.0.1:8787/ingest";
+const DEFAULT_TELEMETRY_TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
 
 function allowFakeResponse(env = process.env) {
   return env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE === "1";
@@ -40,6 +53,14 @@ function printUsage() {
     "  gemini-agent patch-precheck (--file <path> | --stdin | <text>)",
     "  gemini-agent diff-review (--file <path> | --stdin | <text>)",
     "  gemini-agent research-brief (--file <path> | --stdin | <text>)",
+    "  gemini-agent telemetry enable --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--schedule <schedule>]",
+    "  gemini-agent telemetry status",
+    "  gemini-agent telemetry preview",
+    "  gemini-agent telemetry flush",
+    "  gemini-agent telemetry tick",
+    "  gemini-agent telemetry validate [--endpoint <url>] [--token-env <env>] --confirm-raw-content",
+    "  gemini-agent telemetry disable",
+    "  gemini-agent telemetry purge",
     "",
   ].join("\n"));
 }
@@ -61,7 +82,9 @@ async function readSecret(prompt) {
       if (char === "\r" || char === "\n") break;
       if (char === "\u0003") {
         output.write("\n");
-        process.exit(130);
+        const error = new Error("Interrupted.");
+        error.exitCode = 130;
+        throw error;
       }
       if (char === "\u007f") {
         value = value.slice(0, -1);
@@ -74,6 +97,43 @@ async function readSecret(prompt) {
     output.write("\n");
   }
   return value.trim();
+}
+
+function parseTelemetryOptions(args) {
+  const options = {
+    confirmRawContent: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--confirm-raw-content") {
+      options.confirmRawContent = true;
+    } else if (arg === "--level") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--level requires a value.");
+      options.level = value;
+      index += 1;
+    } else if (arg === "--endpoint") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--endpoint requires a URL.");
+      options.endpoint = value;
+      index += 1;
+    } else if (arg === "--token-env") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--token-env requires an environment variable name.");
+      options.tokenEnv = value;
+      index += 1;
+    } else if (arg === "--schedule") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--schedule requires a value.");
+      options.schedule = value;
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry argument: ${arg}`);
+    }
+  }
+
+  return options;
 }
 
 async function readGateInput(args) {
@@ -259,6 +319,113 @@ async function runArtifactReviewCommand(args) {
   output.write(artifactReviewToPrettyJson(review));
 }
 
+async function requireEnabledTelemetryConfig() {
+  const config = await loadTelemetryConfig({ cwd: process.cwd() });
+  if (!config?.enabled) throw new Error("Telemetry is not enabled.");
+  if (config.level !== "raw") throw new Error("Only raw telemetry is supported.");
+  return config;
+}
+
+async function runTelemetryFlush() {
+  const config = await requireEnabledTelemetryConfig();
+  const token = resolveTelemetryToken({ tokenEnv: config.token_env, env: process.env });
+  const result = await flushTelemetryQueue({
+    cwd: process.cwd(),
+    endpoint: config.endpoint,
+    token,
+  });
+  output.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+async function askGeminiForTelemetryValidation(prompt) {
+  if (process.env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE === "1" && process.env.GEMINI_AGENT_FAKE_RESPONSE) {
+    return process.env.GEMINI_AGENT_FAKE_RESPONSE;
+  }
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && process.env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE !== "1") {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  const key = await resolveApiKey();
+  if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+  return generateText({ apiKey: key.key, prompt });
+}
+
+async function runTelemetryValidate(args) {
+  const options = parseTelemetryOptions(args);
+  assertRawConfirmation(options.confirmRawContent);
+  if (options.level && options.level !== "raw") throw new Error("Only raw telemetry is supported.");
+
+  const config = await loadTelemetryConfig({ cwd: process.cwd() });
+  const enabledConfig = config?.enabled ? config : null;
+  const endpoint = options.endpoint ?? enabledConfig?.endpoint ?? DEFAULT_TELEMETRY_ENDPOINT;
+  const tokenEnv = options.tokenEnv ?? enabledConfig?.token_env ?? DEFAULT_TELEMETRY_TOKEN_ENV;
+  const token = resolveTelemetryToken({ tokenEnv, env: process.env });
+  const result = await runTelemetryValidation({
+    cwd: process.cwd(),
+    endpoint,
+    token,
+    askGemini: askGeminiForTelemetryValidation,
+  });
+  output.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+async function runTelemetry(args) {
+  const [subcommand, ...subArgs] = args;
+
+  if (subcommand === "enable") {
+    const options = parseTelemetryOptions(subArgs);
+    if (options.level !== "raw") throw new Error("Only raw telemetry is supported.");
+    if (!options.endpoint) throw new Error("--endpoint requires a URL.");
+    if (!options.tokenEnv) throw new Error("--token-env requires an environment variable name.");
+    assertRawConfirmation(options.confirmRawContent);
+    const config = await saveTelemetryConfig({
+      cwd: process.cwd(),
+      endpoint: options.endpoint,
+      tokenEnv: options.tokenEnv,
+      schedule: options.schedule,
+    });
+    output.write(`${rawTelemetryWarning()}\n`);
+    output.write(`Telemetry enabled: ${config.level} -> ${config.endpoint}\n`);
+    return;
+  }
+
+  if (subcommand === "status") {
+    const config = await loadTelemetryConfig({ cwd: process.cwd() });
+    const queue = await loadTelemetryState({ cwd: process.cwd() });
+    output.write(`${JSON.stringify({ config: config ?? { enabled: false }, queue }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "preview") {
+    const queue = await loadTelemetryState({ cwd: process.cwd() });
+    output.write(`${JSON.stringify({ queue }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "flush" || subcommand === "tick") {
+    await runTelemetryFlush();
+    return;
+  }
+
+  if (subcommand === "validate") {
+    await runTelemetryValidate(subArgs);
+    return;
+  }
+
+  if (subcommand === "disable") {
+    const config = await disableTelemetryConfig({ cwd: process.cwd() });
+    output.write(`${JSON.stringify({ config }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "purge") {
+    const result = await purgeTelemetryData({ cwd: process.cwd() });
+    output.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  throw new Error("Unknown telemetry command.");
+}
+
 async function main(argv = process.argv.slice(2)) {
   const [command, ...args] = argv;
   if (!command || command === "--help" || command === "-h") {
@@ -267,6 +434,10 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (command === "auth") {
     await runAuth(args);
+    return;
+  }
+  if (command === "telemetry") {
+    await runTelemetry(args);
     return;
   }
   if (command === "ask") {
@@ -297,7 +468,19 @@ async function main(argv = process.argv.slice(2)) {
   throw new Error(`Unknown command: ${command}`);
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+async function runCli() {
+  try {
+    await main();
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = error.exitCode ?? 1;
+  } finally {
+    try {
+      await drainTelemetryCapture({ timeoutMs: 2000 });
+    } catch {
+      // Telemetry drain failures must not affect command outcomes.
+    }
+  }
+}
+
+runCli();
