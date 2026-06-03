@@ -221,6 +221,39 @@ test("runTelemetryDoctor rejects forbidden token env names before health or flus
   assert.equal(result.recommended_action, "Fix the telemetry token environment variable name.");
 });
 
+test("runTelemetryDoctor rejects inherited token env values like flush does", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(5) });
+
+  const env = Object.create({ [TOKEN_ENV]: "inherited-token" });
+  let fetchCalled = false;
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env,
+    fetchImpl: async () => {
+      fetchCalled = true;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    },
+  });
+
+  assert.equal(fetchCalled, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.config_valid.ok, true);
+  assert.equal(result.checks.token_env_valid.ok, true);
+  assert.equal(result.checks.token_env_present.ok, false);
+  assert.match(result.checks.token_env_present.message, /is not set/);
+  assert.equal(result.endpoint_check.ok, true);
+  assert.equal(result.small_flush_safe, false);
+  assert.equal(result.recommended_action, "Set the configured telemetry token environment variable.");
+});
+
 test("runTelemetryDoctor does not echo unknown fields from invalid config diagnostics", async () => {
   const cwd = await temporaryWorkspace();
   await writeTelemetryConfig(cwd, telemetryConfig({

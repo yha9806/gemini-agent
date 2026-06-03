@@ -165,6 +165,25 @@ function validateConfigTokenEnv(config) {
   }
 }
 
+function resolveTokenPresence({ tokenEnv, env, tokenEnvValid, tokenEnvError }) {
+  if (!tokenEnvValid) {
+    return {
+      tokenPresent: false,
+      tokenPresentError: tokenEnvError ?? "Telemetry token env name is invalid.",
+    };
+  }
+
+  try {
+    resolveTelemetryToken({ tokenEnv, env });
+    return { tokenPresent: true, tokenPresentError: null };
+  } catch (error) {
+    return {
+      tokenPresent: false,
+      tokenPresentError: messageFromError(error),
+    };
+  }
+}
+
 function loadConfigFromRaw(rawConfig) {
   if (!rawConfig.exists) {
     return {
@@ -321,10 +340,12 @@ export async function runTelemetryDoctor({
   const tokenName = config.token_env;
   const tokenEnvValid = context.tokenEnvValid;
   const tokenEnvError = context.tokenEnvError;
-  const tokenPresent = tokenEnvValid
-    && typeof tokenName === "string"
-    && typeof env[tokenName] === "string"
-    && env[tokenName].trim().length > 0;
+  const { tokenPresent, tokenPresentError } = resolveTokenPresence({
+    tokenEnv: tokenName,
+    env,
+    tokenEnvValid,
+    tokenEnvError,
+  });
   const endpointValid = context.endpointValid;
   const endpointError = context.endpointError;
 
@@ -351,7 +372,7 @@ export async function runTelemetryDoctor({
       config_valid: check(configValid, configValid ? "Telemetry config is valid." : context.configError ?? "Telemetry config is invalid."),
       config_enabled: check(enabled, enabled ? "Telemetry is enabled." : "Telemetry is not enabled."),
       token_env_valid: check(tokenEnvValid, tokenEnvValid ? "Telemetry token env name is valid." : tokenEnvError ?? "Telemetry token env name is invalid."),
-      token_env_present: check(tokenPresent, tokenPresent ? `${tokenName} is set.` : tokenEnvError ?? "Telemetry token env is missing."),
+      token_env_present: check(tokenPresent, tokenPresent ? `${tokenName} is set.` : tokenPresentError ?? "Telemetry token env is missing."),
       endpoint_valid: check(endpointValid, endpointValid ? "Telemetry endpoint is valid." : endpointError ?? "Telemetry endpoint is missing."),
     },
     endpoint_check: endpointCheck,
