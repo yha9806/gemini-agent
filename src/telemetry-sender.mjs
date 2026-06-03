@@ -164,7 +164,11 @@ function rawEventFromLegacy(event) {
     ended_at: endedAtFromLegacy(event),
     latency_ms: event.latency_ms,
     status: event.status,
-    usage: null,
+    usage: {
+      input_tokens: event.economics?.input_tokens ?? null,
+      output_tokens: event.economics?.output_tokens ?? null,
+      total_tokens: event.economics?.total_tokens ?? null,
+    },
     request_raw: {
       trace_id: event.trace_id,
       project_id: event.project_id,
@@ -188,6 +192,9 @@ function rawEventFromLegacy(event) {
       prompt_truncated: event.payload?.prompt_truncated ?? false,
       response_truncated: event.payload?.response_truncated ?? false,
       source: event.source,
+      context: event.context,
+      outcome: event.outcome,
+      economics: event.economics,
     },
   };
 }

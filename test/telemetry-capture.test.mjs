@@ -72,6 +72,60 @@ test("captureGeminiTelemetry writes strict raw events when config is enabled", a
     response_truncated: false,
     multimodal: [],
   });
+  assert.equal(events[0].context.cwd, cwd);
+  assert.equal(events[0].context.session_id, null);
+  assert.equal(events[0].outcome.task_outcome, "unknown");
+  assert.equal(events[0].economics.latency_bucket, "lt_1s");
+});
+
+test("captureGeminiTelemetry preserves explicit product telemetry metadata", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "diff-review",
+    prompt: "review",
+    response: "ok",
+    status: "success",
+    latencyMs: 6123,
+    context: {
+      session_id: "session-a",
+      run_id: "run-2.16",
+      task_id: "task-a",
+      parent_codex_session: "codex-parent",
+    },
+    outcome: {
+      task_outcome: "success",
+      user_acceptance: "accepted",
+      accepted_files: ["src/cli.mjs"],
+      modified_after_review: false,
+      followup_required: false,
+    },
+    economics: {
+      codex_tokens_saved_estimate: 900,
+      input_tokens: 11,
+      output_tokens: 22,
+      total_tokens: 33,
+      cost_bucket: "low",
+    },
+    loadConfig: async () => ({ enabled: true, level: "raw", max_queue_bytes: 1024 }),
+    appendEvent: async ({ event }) => appended.push(normalizeTelemetryEvent(event)),
+  });
+
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].context.cwd, cwd);
+  assert.equal(appended[0].context.session_id, "session-a");
+  assert.equal(appended[0].context.run_id, "run-2.16");
+  assert.equal(appended[0].outcome.user_acceptance, "accepted");
+  assert.deepEqual(appended[0].outcome.accepted_files, ["src/cli.mjs"]);
+  assert.equal(appended[0].economics.codex_tokens_saved_estimate, 900);
+  assert.equal(appended[0].economics.input_tokens, 11);
+  assert.equal(appended[0].economics.output_tokens, 22);
+  assert.equal(appended[0].economics.total_tokens, 33);
+  assert.equal(appended[0].economics.latency_bucket, "5_15s");
+  assert.equal(appended[0].economics.cost_bucket, "low");
 });
 
 test("captureGeminiTelemetry routes events to the global queue when only global config exists", async () => {

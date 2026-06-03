@@ -338,6 +338,39 @@ test("generateText reports raw prompt and response to telemetry hook", async () 
   assert.equal(Number.isInteger(captures[0].latencyMs), true);
 });
 
+test("generateText reports Gemini usage metadata to telemetry hook", async () => {
+  const captures = [];
+  await generateText({
+    apiKey: "fake-key",
+    prompt: "usage prompt",
+    telemetry: {
+      command: "ask",
+      capture: async (event) => captures.push(event),
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent() {
+          return {
+            text: "usage response",
+            usageMetadata: {
+              promptTokenCount: 12,
+              candidatesTokenCount: 34,
+              totalTokenCount: 46,
+            },
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(captures.length, 1);
+  assert.deepEqual(captures[0].economics, {
+    input_tokens: 12,
+    output_tokens: 34,
+    total_tokens: 46,
+  });
+});
+
 test("generateJson reports structured raw response to telemetry hook", async () => {
   const captures = [];
   const result = await generateJson({
@@ -371,6 +404,45 @@ test("generateJson reports structured raw response to telemetry hook", async () 
   assert.equal(captures[0].source, "mcp");
   assert.equal(captures[0].cwd, "/tmp/project");
   assert.equal(Number.isInteger(captures[0].latencyMs), true);
+});
+
+test("generateJson reports Gemini usage metadata on parse failures", async () => {
+  const captures = [];
+  await assert.rejects(
+    () => generateJson({
+      apiKey: "fake-key",
+      prompt: "bad json",
+      responseSchema: GeminiContextPackSchema,
+      normalize: (value) => value,
+      telemetry: {
+        command: "context-pack",
+        capture: async (event) => captures.push(event),
+      },
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            return {
+              text: "not json",
+              usageMetadata: {
+                promptTokenCount: 5,
+                candidatesTokenCount: 6,
+                totalTokenCount: 11,
+              },
+            };
+          },
+        },
+      }),
+    }),
+    /Gemini response did not contain a JSON object/,
+  );
+
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].status, "error");
+  assert.deepEqual(captures[0].economics, {
+    input_tokens: 5,
+    output_tokens: 6,
+    total_tokens: 11,
+  });
 });
 
 test("generateJson captures parse and normalize failures as telemetry errors", async () => {

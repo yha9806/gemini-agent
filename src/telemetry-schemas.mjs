@@ -41,6 +41,54 @@ const TelemetryPayloadZodSchema = z.strictObject({
   multimodal: z.array(TelemetryMultimodalItemZodSchema).default(() => []),
 });
 
+const NullableText = z.string().min(1).nullable().default(null);
+const NullableBoolean = z.boolean().nullable().default(null);
+const NullableNonnegativeInteger = z.number().int().nonnegative().nullable().default(null);
+
+const TelemetryContextZodSchema = z.strictObject({
+  cwd: NullableText,
+  session_id: NullableText,
+  run_id: NullableText,
+  task_id: NullableText,
+  parent_codex_session: NullableText,
+}).default(() => ({
+  cwd: null,
+  session_id: null,
+  run_id: null,
+  task_id: null,
+  parent_codex_session: null,
+}));
+
+const TelemetryOutcomeZodSchema = z.strictObject({
+  task_outcome: z.enum(["unknown", "success", "failure", "partial", "blocked"]).default("unknown"),
+  user_acceptance: z.enum(["unknown", "accepted", "rejected", "modified", "not_applicable"]).default("unknown"),
+  accepted_files: z.array(z.string()).default(() => []),
+  modified_after_review: NullableBoolean,
+  followup_required: NullableBoolean,
+}).default(() => ({
+  task_outcome: "unknown",
+  user_acceptance: "unknown",
+  accepted_files: [],
+  modified_after_review: null,
+  followup_required: null,
+}));
+
+const TelemetryEconomicsZodSchema = z.strictObject({
+  codex_tokens_saved_estimate: NullableNonnegativeInteger,
+  input_tokens: NullableNonnegativeInteger,
+  output_tokens: NullableNonnegativeInteger,
+  total_tokens: NullableNonnegativeInteger,
+  latency_bucket: z.enum(["lt_1s", "1_5s", "5_15s", "15_60s", "gte_60s"]).nullable().default(null),
+  cost_bucket: z.enum(["free", "low", "medium", "high"]).nullable().default(null),
+}).default(() => ({
+  codex_tokens_saved_estimate: null,
+  input_tokens: null,
+  output_tokens: null,
+  total_tokens: null,
+  latency_bucket: null,
+  cost_bucket: null,
+}));
+
 export const TelemetryEventZodSchema = z.strictObject({
   schema_version: z.literal(TELEMETRY_SCHEMA_VERSION),
   event_id: z.string().min(1),
@@ -61,6 +109,9 @@ export const TelemetryEventZodSchema = z.strictObject({
     response_truncated: false,
     multimodal: [],
   })),
+  context: TelemetryContextZodSchema,
+  outcome: TelemetryOutcomeZodSchema,
+  economics: TelemetryEconomicsZodSchema,
 });
 
 export const TelemetryBatchZodSchema = z.strictObject({
@@ -248,6 +299,16 @@ export function normalizeTelemetryBatch(value) {
           prompt_truncated: Boolean(event.metadata.prompt_truncated),
           response_truncated: Boolean(event.metadata.response_truncated),
           multimodal: event.media_manifest,
+        },
+        context: event.metadata.context,
+        outcome: event.metadata.outcome,
+        economics: {
+          ...(event.metadata.economics && typeof event.metadata.economics === "object"
+            ? event.metadata.economics
+            : {}),
+          input_tokens: event.usage?.input_tokens ?? null,
+          output_tokens: event.usage?.output_tokens ?? null,
+          total_tokens: event.usage?.total_tokens ?? null,
         },
       })),
     };

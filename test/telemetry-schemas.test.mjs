@@ -115,6 +115,121 @@ test("normalizes event and masks credential-shaped raw text", () => {
   assert.equal(event.response, "GEMINI_API_KEY=[MASKED]");
 });
 
+test("normalizes product telemetry context, outcome, and economics fields", () => {
+  const event = normalizeTelemetryEvent(validTelemetryEvent({
+    context: {
+      cwd: "/Users/example/project",
+      session_id: "session-1",
+      run_id: "run-2.16",
+      task_id: "task-1",
+      parent_codex_session: "codex-session-1",
+    },
+    outcome: {
+      task_outcome: "success",
+      user_acceptance: "accepted",
+      accepted_files: ["src/telemetry-schemas.mjs"],
+      modified_after_review: false,
+      followup_required: true,
+    },
+    economics: {
+      codex_tokens_saved_estimate: 1200,
+      input_tokens: 30,
+      output_tokens: 40,
+      total_tokens: 70,
+      latency_bucket: "5_15s",
+      cost_bucket: "low",
+    },
+  }));
+
+  assert.equal(event.context.cwd, "/Users/example/project");
+  assert.equal(event.context.run_id, "run-2.16");
+  assert.equal(event.outcome.task_outcome, "success");
+  assert.deepEqual(event.outcome.accepted_files, ["src/telemetry-schemas.mjs"]);
+  assert.equal(event.economics.total_tokens, 70);
+  assert.equal(event.economics.latency_bucket, "5_15s");
+});
+
+test("defaults product telemetry fields without sharing nested values", () => {
+  const first = normalizeTelemetryEvent(validTelemetryEvent({ event_id: "evt_first" }));
+  const second = normalizeTelemetryEvent(validTelemetryEvent({ event_id: "evt_second" }));
+
+  assert.deepEqual(first.context, {
+    cwd: null,
+    session_id: null,
+    run_id: null,
+    task_id: null,
+    parent_codex_session: null,
+  });
+  assert.deepEqual(first.outcome, {
+    task_outcome: "unknown",
+    user_acceptance: "unknown",
+    accepted_files: [],
+    modified_after_review: null,
+    followup_required: null,
+  });
+  assert.deepEqual(first.economics, {
+    codex_tokens_saved_estimate: null,
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    latency_bucket: null,
+    cost_bucket: null,
+  });
+
+  first.outcome.accepted_files.push("changed.js");
+  assert.deepEqual(second.outcome.accepted_files, []);
+});
+
+test("maps raw-v1 metadata and usage into product telemetry fields", () => {
+  const batch = normalizeTelemetryBatch({
+    schema_version: "raw-v1",
+    batch_id: "batch_raw_product",
+    deployment_id: "dep_test",
+    agent_version: "0.1.0",
+    generated_at: "2026-06-03T09:00:00.000Z",
+    checksum: "sha256:test",
+    events: [{
+      event_id: "evt_raw_product",
+      source_host_app: "codex",
+      trigger_source: "manual",
+      model_provider: "google",
+      model: "gemini-3.5-flash",
+      command: "artifact-review",
+      started_at: "2026-06-03T08:59:58.000Z",
+      ended_at: "2026-06-03T09:00:00.000Z",
+      latency_ms: 2000,
+      status: "success",
+      usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
+      request_raw: {},
+      prompt_raw: "prompt",
+      response_raw: "response",
+      response_candidates_raw: [],
+      tool_calls_raw: [],
+      media_manifest: [],
+      error: null,
+      metadata: {
+        project_id: "vulca",
+        trace_id: "trace_raw_product",
+        context: { cwd: "/tmp/vulca", run_id: "run-2.16" },
+        outcome: { task_outcome: "partial", followup_required: true },
+        economics: { codex_tokens_saved_estimate: 500, latency_bucket: "1_5s" },
+      },
+    }],
+  });
+
+  assert.equal(batch.events[0].project_id, "vulca");
+  assert.equal(batch.events[0].trace_id, "trace_raw_product");
+  assert.equal(batch.events[0].context.cwd, "/tmp/vulca");
+  assert.equal(batch.events[0].context.run_id, "run-2.16");
+  assert.equal(batch.events[0].outcome.task_outcome, "partial");
+  assert.equal(batch.events[0].outcome.followup_required, true);
+  assert.equal(batch.events[0].economics.input_tokens, 10);
+  assert.equal(batch.events[0].economics.output_tokens, 20);
+  assert.equal(batch.events[0].economics.total_tokens, 30);
+  assert.equal(batch.events[0].economics.codex_tokens_saved_estimate, 500);
+  assert.equal(batch.events[0].economics.latency_bucket, "1_5s");
+});
+
 test("rejects telemetry models other than gemini 3.5 flash", () => {
   assert.throws(
     () => normalizeTelemetryEvent(validTelemetryEvent({ model: "gemini-2.5-flash" })),
@@ -239,6 +354,37 @@ test("rejects unknown telemetry contract fields", () => {
       prompt_truncated: false,
       response_truncated: false,
       multimodal: [{ mime_type: "image/png", extra: true }],
+    },
+  })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryEvent(validTelemetryEvent({
+    context: {
+      cwd: null,
+      session_id: null,
+      run_id: null,
+      task_id: null,
+      parent_codex_session: null,
+      extra: true,
+    },
+  })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryEvent(validTelemetryEvent({
+    outcome: {
+      task_outcome: "unknown",
+      user_acceptance: "unknown",
+      accepted_files: [],
+      modified_after_review: null,
+      followup_required: null,
+      extra: true,
+    },
+  })), /unrecognized/i);
+  assert.throws(() => normalizeTelemetryEvent(validTelemetryEvent({
+    economics: {
+      codex_tokens_saved_estimate: null,
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      latency_bucket: null,
+      cost_bucket: null,
+      extra: true,
     },
   })), /unrecognized/i);
   assert.throws(() => normalizeTelemetryBatch(validTelemetryBatch({ extra: true })), /unrecognized/i);

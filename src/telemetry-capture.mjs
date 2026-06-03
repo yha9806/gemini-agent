@@ -78,6 +78,15 @@ function nonnegativeInteger(value) {
   return Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
 }
 
+function latencyBucket(latencyMs) {
+  const ms = nonnegativeInteger(latencyMs);
+  if (ms < 1000) return "lt_1s";
+  if (ms < 5000) return "1_5s";
+  if (ms < 15000) return "5_15s";
+  if (ms < 60000) return "15_60s";
+  return "gte_60s";
+}
+
 function deriveBase64ByteSize(value) {
   if (typeof value !== "string" || value.length > BASE64_BYTE_SIZE_LIMIT) return undefined;
   const compact = value.replace(/\s/g, "");
@@ -155,6 +164,7 @@ function collectMultimodalMetadata(value, output = []) {
 }
 
 function buildTelemetryEvent({
+  cwd,
   command,
   source,
   prompt,
@@ -167,9 +177,18 @@ function buildTelemetryEvent({
   deploymentId,
   projectId,
   maxEventBytes,
+  context,
+  outcome,
+  economics,
 }) {
   const capturedPrompt = truncateTelemetryText(prompt, maxEventBytes);
   const capturedResponse = truncateTelemetryText(response, maxEventBytes);
+  const providedEconomics = economics && typeof economics === "object" ? economics : {};
+  const resolvedEconomics = {
+    ...providedEconomics,
+    latency_bucket: economics?.latency_bucket ?? latencyBucket(latencyMs),
+  };
+  const providedContext = context && typeof context === "object" ? context : {};
 
   return {
     schema_version: 1,
@@ -191,6 +210,12 @@ function buildTelemetryEvent({
       response_truncated: capturedResponse.truncated,
       multimodal: collectMultimodalMetadata(contents),
     },
+    context: {
+      ...providedContext,
+      cwd: context?.cwd ?? cwd ?? null,
+    },
+    outcome: outcome && typeof outcome === "object" ? outcome : undefined,
+    economics: resolvedEconomics,
   };
 }
 
@@ -208,16 +233,20 @@ async function captureGeminiTelemetryTask({
   contents = null,
   deploymentId = null,
   projectId = DEFAULT_PROJECT_ID,
+  context = null,
+  outcome = null,
+  economics = null,
   loadConfig = loadTelemetryConfigContext,
   appendEvent = appendTelemetryEvent,
   configCacheTtlMs = DEFAULT_CONFIG_CACHE_TTL_MS,
 } = {}) {
-  const context = await cachedTelemetryContext({ cwd, home, loadConfig, configCacheTtlMs });
-  const config = context.config;
+  const telemetryContext = await cachedTelemetryContext({ cwd, home, loadConfig, configCacheTtlMs });
+  const config = telemetryContext.config;
   if (!config?.enabled || config.level !== "raw") return { queued: false };
   const resolvedDeploymentId = deploymentId ?? config.deployment_id ?? DEFAULT_TELEMETRY_DEPLOYMENT_ID;
 
   const event = buildTelemetryEvent({
+    cwd,
     command,
     source,
     prompt,
@@ -230,8 +259,11 @@ async function captureGeminiTelemetryTask({
     deploymentId: resolvedDeploymentId,
     projectId,
     maxEventBytes: config.max_event_bytes,
+    context,
+    outcome,
+    economics,
   });
-  await appendEvent({ cwd: context.storageCwd, event, maxQueueBytes: config.max_queue_bytes });
+  await appendEvent({ cwd: telemetryContext.storageCwd, event, maxQueueBytes: config.max_queue_bytes });
   return { queued: true, event_id: event.event_id };
 }
 

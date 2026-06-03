@@ -49,6 +49,33 @@ function errorType(error) {
   return error instanceof Error && error.name ? error.name : "Error";
 }
 
+function nonnegativeIntegerOrNull(value) {
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function usageMetadataFromResponse(response) {
+  const usage = response?.usageMetadata ?? response?.usage_metadata;
+  if (!usage || typeof usage !== "object") return undefined;
+  const inputTokens = nonnegativeIntegerOrNull(
+    usage.promptTokenCount ?? usage.prompt_token_count ?? usage.inputTokens ?? usage.input_tokens,
+  );
+  const outputTokens = nonnegativeIntegerOrNull(
+    usage.candidatesTokenCount
+      ?? usage.candidates_token_count
+      ?? usage.outputTokens
+      ?? usage.output_tokens,
+  );
+  const totalTokens = nonnegativeIntegerOrNull(
+    usage.totalTokenCount ?? usage.total_token_count ?? usage.totalTokens ?? usage.total_tokens,
+  );
+  if (inputTokens === null && outputTokens === null && totalTokens === null) return undefined;
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+  };
+}
+
 export async function generateJson({
   apiKey,
   prompt,
@@ -107,6 +134,7 @@ export async function generateJson({
       errorType: errorType(error),
       latencyMs: Date.now() - started,
       contents,
+      economics: usageMetadataFromResponse(response),
     }, { awaitCapture: true });
     throw error;
   }
@@ -118,6 +146,7 @@ export async function generateJson({
     status: "success",
     latencyMs: Date.now() - started,
     contents,
+    economics: usageMetadataFromResponse(response),
   });
   return normalized;
 }
@@ -198,6 +227,7 @@ export async function generateText({
     status: "success",
     latencyMs: Date.now() - started,
     contents: prompt,
+    economics: usageMetadataFromResponse(response),
   });
   return `${response.text || ""}`.trim();
 }
