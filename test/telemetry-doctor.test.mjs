@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,6 +21,16 @@ async function writeTelemetryConfigText(cwd, text) {
 
 async function writeTelemetryConfig(cwd, config) {
   await writeTelemetryConfigText(cwd, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function telemetryEvent(index) {
@@ -75,6 +85,21 @@ test("runTelemetryDoctor reports disabled config without throwing", async () => 
   assert.equal(result.checks.config_enabled.ok, false);
   assert.equal(result.checks.token_env_present.ok, false);
   assert.equal(result.small_flush_safe, false);
+});
+
+test("runTelemetryDoctor does not create queue directories for empty diagnostics", async () => {
+  const cwd = await temporaryWorkspace();
+
+  await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: {},
+    fetchImpl: async () => {
+      throw new Error("fetch should not be called");
+    },
+  });
+
+  assert.equal(await pathExists(join(cwd, ".gemini-agent/telemetry/queue")), false);
 });
 
 test("runTelemetryDoctor reports token, endpoint health, queue, and recommendation", async () => {

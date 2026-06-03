@@ -333,7 +333,10 @@ export async function runTelemetryDoctor({
 } = {}) {
   const context = await loadTelemetryConfigContextTolerant({ cwd, home, scope });
   const config = context.config ?? { enabled: false };
-  const queue = await loadTelemetryQueueSnapshot({ cwd: context.storageCwd });
+  const queue = await loadTelemetryQueueSnapshot({
+    cwd: context.storageCwd,
+    createMissingDirs: false,
+  });
   const state = await loadTelemetryState({ cwd: context.storageCwd });
   const enabled = config.enabled === true;
   const configValid = context.configValid;

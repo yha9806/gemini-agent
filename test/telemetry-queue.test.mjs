@@ -463,12 +463,15 @@ test("loadTelemetryQueueSnapshot counts failed events without reason metadata", 
   const failedDir = join(telemetryQueueDirs(cwd).failed, failedBatch.batchId);
   const failedFiles = await regularFileNames(failedDir);
   assert.equal(failedFiles.length, 2);
-  assert.equal(failedFiles.some((name) => name.startsWith("event_")), true);
+  const failedEventFile = failedFiles.find((name) => name.startsWith("event_"));
+  assert.equal(typeof failedEventFile, "string");
   assert.equal(failedFiles.includes("reason.json"), true);
+  const failedEventBytes = (await stat(join(failedDir, failedEventFile))).size;
 
   const snapshot = await loadTelemetryQueueSnapshot({ cwd });
   assert.equal(snapshot.pending.count, 0);
   assert.equal(snapshot.failed.count, 1);
+  assert.equal(snapshot.failed.bytes, failedEventBytes);
 });
 
 test("lock prevents concurrent flush claims", async () => {

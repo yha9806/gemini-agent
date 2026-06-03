@@ -209,8 +209,10 @@ async function summarizeDirectory(dir, filter = () => true) {
           if (error.code === "ENOENT") continue;
           throw error;
         }
-        bytes += itemStat.size;
-        if (filter({ name: entry.name, path: child })) count += 1;
+        if (filter({ name: entry.name, path: child })) {
+          count += 1;
+          bytes += itemStat.size;
+        }
       } else if (entry.isDirectory()) {
         await walk(child);
       }
@@ -599,8 +601,11 @@ export async function appendTelemetryEvent({
   });
 }
 
-export async function loadTelemetryQueueSnapshot({ cwd = process.cwd() } = {}) {
-  const dirs = await ensureQueueDirs(cwd);
+export async function loadTelemetryQueueSnapshot({
+  cwd = process.cwd(),
+  createMissingDirs = true,
+} = {}) {
+  const dirs = createMissingDirs ? await ensureQueueDirs(cwd) : telemetryQueueDirs(cwd);
   const [pending, inflight, sent, failed, quarantine] = await Promise.all([
     directorySummary(dirs.pending),
     directorySummary(dirs.inflight),
