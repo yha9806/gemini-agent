@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
@@ -906,6 +906,41 @@ test("telemetry flush --dry-run --batch-size 1 does not move or send", async () 
   assert.equal(parsed.event_ids[0], first.event_id);
   const pendingFiles = await readdir(telemetryQueueDirs(dir).pending);
   assert.equal(pendingFiles.length, 2);
+});
+
+test("telemetry flush --dry-run previews with invalid endpoint and missing token", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const first = await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(63) });
+  const env = { ...process.env };
+  delete env[TELEMETRY_TOKEN_ENV];
+  await mkdir(join(dir, ".gemini-agent", "telemetry"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "telemetry", "config.json"), `${JSON.stringify({
+    enabled: true,
+    level: "raw",
+    endpoint: "not-a-url",
+    token_env: TELEMETRY_TOKEN_ENV,
+    deployment_id: "gemini-agent-main",
+    schedule: "daily@09:00",
+    created_at: "2026-06-03T09:00:00.000Z",
+    updated_at: "2026-06-03T09:00:00.000Z",
+  }, null, 2)}\n`);
+
+  const { stdout } = await execFileAsync(bin, [
+    "telemetry",
+    "flush",
+    "--dry-run",
+    "--batch-size",
+    "1",
+  ], {
+    cwd: dir,
+    env,
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.dry_run, true);
+  assert.deepEqual(parsed.event_ids, [first.event_id]);
+  const pendingFiles = await readdir(telemetryQueueDirs(dir).pending);
+  assert.equal(pendingFiles.length, 1);
 });
 
 test("telemetry quarantine moves pending event out of normal flush path", async () => {

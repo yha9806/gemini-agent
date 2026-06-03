@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { runArtifactReview } from "./artifact-review.mjs";
@@ -50,6 +51,7 @@ const GATE_COMMANDS = new Map([
 const ARTIFACT_KINDS = new Set(["image", "ui", "design", "architecture", "research"]);
 const DEFAULT_TELEMETRY_ENDPOINT = "http://127.0.0.1:8787/ingest";
 const DEFAULT_TELEMETRY_TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
+const TELEMETRY_CONFIG_PATH = join(".gemini-agent", "telemetry", "config.json");
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
@@ -661,13 +663,91 @@ async function requireEnabledTelemetryContext(subcommand, args = []) {
   return requireEnabledTelemetryContextForOptions(options);
 }
 
+function resolveTelemetryDryRunHome(home = process.env.HOME) {
+  const resolved = home ?? homedir();
+  if (typeof resolved !== "string" || !resolved.trim()) {
+    throw new Error("Telemetry global scope requires a home directory.");
+  }
+  return resolved;
+}
+
+async function readTelemetryDryRunConfig(cwd) {
+  const path = join(cwd, TELEMETRY_CONFIG_PATH);
+  let raw;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`Telemetry config is not valid JSON: ${path}`);
+    }
+    throw error;
+  }
+}
+
+async function loadTelemetryDryRunContext(options) {
+  const requestedScope = telemetryScope(options);
+  if (requestedScope === "local") {
+    return {
+      scope: "local",
+      storageCwd: process.cwd(),
+      config: await readTelemetryDryRunConfig(process.cwd()),
+    };
+  }
+  if (requestedScope === "global") {
+    const storageCwd = resolveTelemetryDryRunHome();
+    return {
+      scope: "global",
+      storageCwd,
+      config: await readTelemetryDryRunConfig(storageCwd),
+    };
+  }
+
+  const localConfig = await readTelemetryDryRunConfig(process.cwd());
+  if (localConfig?.enabled) {
+    return { scope: "local", storageCwd: process.cwd(), config: localConfig };
+  }
+
+  const globalCwd = resolveTelemetryDryRunHome();
+  const globalConfig = await readTelemetryDryRunConfig(globalCwd);
+  if (globalConfig?.enabled || (!localConfig && globalConfig)) {
+    return { scope: "global", storageCwd: globalCwd, config: globalConfig };
+  }
+
+  return { scope: "local", storageCwd: process.cwd(), config: localConfig };
+}
+
+async function requireTelemetryDryRunContext(options) {
+  const context = await loadTelemetryDryRunContext(options);
+  const config = context.config;
+  if (!config?.enabled) throw new Error("Telemetry is not enabled.");
+  if (config.level !== "raw") throw new Error("Only raw telemetry is supported.");
+  return context;
+}
+
 async function runTelemetryFlush(args = []) {
   const options = parseTelemetryFlushOptions(args);
+  if (options.dryRun) {
+    const context = await requireTelemetryDryRunContext(options);
+    const result = await flushTelemetryQueue({
+      cwd: context.storageCwd,
+      batchSize: options.batchSize,
+      dryRun: true,
+      maxBytes: options.maxBytes,
+    });
+    output.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
   const context = await requireEnabledTelemetryContextForOptions(options);
   const config = context.config;
-  const token = options.dryRun
-    ? undefined
-    : resolveTelemetryToken({ tokenEnv: config.token_env, env: process.env });
+  const token = resolveTelemetryToken({ tokenEnv: config.token_env, env: process.env });
   const result = await flushTelemetryQueue({
     cwd: context.storageCwd,
     endpoint: config.endpoint,
