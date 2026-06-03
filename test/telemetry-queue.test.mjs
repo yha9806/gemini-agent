@@ -447,6 +447,30 @@ test("complete and fail update send state counters", async () => {
   assert.equal(afterFailure.queue_bytes, await sumFileBytes(await regularFilePaths(telemetryQueueDirs(cwd).pending)));
 });
 
+test("loadTelemetryQueueSnapshot counts failed events without reason metadata", async () => {
+  const cwd = await temporaryWorkspace();
+  const failedAt = new Date("2026-05-29T12:00:00.000Z");
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1), maxQueueBytes: LARGE_QUEUE_LIMIT });
+
+  const failedBatch = await claimTelemetryBatch({ cwd, batchSize: 1, now: failedAt });
+  await failTelemetryBatch({
+    cwd,
+    batchId: failedBatch.batchId,
+    retryable: false,
+    reason: "payload_too_large",
+  });
+
+  const failedDir = join(telemetryQueueDirs(cwd).failed, failedBatch.batchId);
+  const failedFiles = await regularFileNames(failedDir);
+  assert.equal(failedFiles.length, 2);
+  assert.equal(failedFiles.some((name) => name.startsWith("event_")), true);
+  assert.equal(failedFiles.includes("reason.json"), true);
+
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.pending.count, 0);
+  assert.equal(snapshot.failed.count, 1);
+});
+
 test("lock prevents concurrent flush claims", async () => {
   const cwd = await temporaryWorkspace();
   const dirs = telemetryQueueDirs(cwd);

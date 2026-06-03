@@ -229,6 +229,10 @@ async function quarantineSummary(dir) {
   return summarizeDirectory(dir, (file) => file.name === "event.json");
 }
 
+async function failedSummary(dir) {
+  return summarizeDirectory(dir, (file) => file.name !== "reason.json");
+}
+
 function safeQuarantineEventDir(eventId) {
   if (typeof eventId !== "string" || !eventId.trim()) {
     throw new Error("Telemetry event id is invalid.");
@@ -601,7 +605,7 @@ export async function loadTelemetryQueueSnapshot({ cwd = process.cwd() } = {}) {
     directorySummary(dirs.pending),
     directorySummary(dirs.inflight),
     directorySummary(dirs.sent),
-    directorySummary(dirs.failed),
+    failedSummary(dirs.failed),
     quarantineSummary(dirs.quarantine),
   ]);
   return { pending, inflight, sent, failed, quarantine };

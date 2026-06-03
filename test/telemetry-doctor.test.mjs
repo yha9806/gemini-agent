@@ -273,6 +273,10 @@ test("runTelemetryDoctor does not echo unknown fields from invalid config diagno
   const serializedConfig = JSON.stringify(result.config);
   assert.equal(result.ok, false);
   assert.equal(result.checks.config_valid.ok, false);
+  assert.equal(result.checks.config_valid.message.includes("token"), false);
+  assert.equal(result.checks.config_valid.message.includes("extra"), false);
+  assert.equal(result.checks.config_valid.message.includes("secret-value"), false);
+  assert.equal(result.checks.config_valid.message.includes("hidden"), false);
   assert.equal(serializedConfig.includes("secret-value"), false);
   assert.equal(serializedConfig.includes("hidden"), false);
   assert.equal(Object.hasOwn(result.config, "token"), false);

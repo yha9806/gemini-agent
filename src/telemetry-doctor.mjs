@@ -221,7 +221,7 @@ function loadConfigFromRaw(rawConfig) {
     config = normalizeTelemetryConfig(rawConfig.value);
   } catch (error) {
     config = rawConfigFallback(rawConfig.value);
-    configError = `Telemetry config is invalid: ${messageFromError(error)}`;
+    configError = "Telemetry config is invalid.";
   }
 
   const { endpointValid, endpointError } = validateConfigEndpoint(config);
