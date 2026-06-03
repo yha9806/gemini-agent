@@ -395,6 +395,48 @@ test("runTelemetryValidation creates, flushes, and confirms validation event", a
   assert.deepEqual(await readPendingEvents(cwd), []);
 });
 
+test("runTelemetryValidation treats protected metrics as optional after ingest ACK", async () => {
+  const cwd = await temporaryWorkspace();
+  let validationBatchId;
+  const requests = [];
+
+  const result = await runTelemetryValidation({
+    cwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    prompt: "validation prompt with protected metrics",
+    askGemini: async () => "telemetry-ok",
+    fetchImpl: async (url, options) => {
+      requests.push({ url: `${url}`, method: options.method ?? "GET" });
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body);
+        validationBatchId = body.batch_id;
+        return new Response(JSON.stringify({
+          ok: true,
+          batch_id: body.batch_id,
+          accepted_event_ids: body.events.map((event) => event.event_id),
+          rejected: [],
+          received_at: "2026-05-29T10:00:01.000Z",
+        }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ detail: "Not authenticated" }), { status: 401 });
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.flush.batch_id, validationBatchId);
+  assert.equal(result.flush.sent_count, 1);
+  assert.equal(result.metrics, null);
+  assert.match(result.metrics_warning.message, /Telemetry receiver returned 401\./);
+  assert.deepEqual(requests.map((request) => request.url), [
+    ENDPOINT,
+    "http://127.0.0.1:8787/metrics",
+  ]);
+  assert.deepEqual(await readPendingEvents(cwd), []);
+});
+
 test("runTelemetryValidation rejects missing token before askGemini or queue append", async () => {
   const cwd = await temporaryWorkspace();
   let called = false;

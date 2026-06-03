@@ -33,10 +33,8 @@ function assertTelemetryToken(token) {
 }
 
 function validationBatchRecorded({ flush, metrics, validationEventId }) {
-  if (!flush?.event_ids?.includes(validationEventId)) return false;
-  const ackedBatchId = flush.ack?.batch_id;
-  if (!ackedBatchId || ackedBatchId !== flush.batch_id) return false;
-  if (flush.ack.received_count !== flush.sent_count) return false;
+  if (!validationBatchAcked({ flush, validationEventId })) return false;
+  const ackedBatchId = flush.ack.batch_id;
   if (metrics.received_events < flush.sent_count) return false;
   if (metrics.received_batches <= 0) return false;
   if (metrics.last_batch_id !== ackedBatchId) return false;
@@ -45,6 +43,14 @@ function validationBatchRecorded({ flush, metrics, validationEventId }) {
   if (metrics.latest_event.command !== "telemetry validate") return false;
   if (metrics.latest_event.model !== getDefaultModel()) return false;
   if (metrics.latest_event.status !== "success") return false;
+  return true;
+}
+
+function validationBatchAcked({ flush, validationEventId }) {
+  if (!flush?.event_ids?.includes(validationEventId)) return false;
+  const ackedBatchId = flush.ack?.batch_id;
+  if (!ackedBatchId || ackedBatchId !== flush.batch_id) return false;
+  if (flush.ack.received_count !== flush.sent_count) return false;
   return true;
 }
 
@@ -462,15 +468,27 @@ export async function runTelemetryValidation({
     if (flush.sent_count === 0) break;
   }
 
-  const metrics = await receiverMetrics({ endpoint, token, fetchImpl });
+  let metrics = null;
+  let metrics_warning = null;
+  try {
+    metrics = await receiverMetrics({ endpoint, token, fetchImpl });
+  } catch (error) {
+    metrics_warning = {
+      message: error instanceof Error ? error.message : `${error}`,
+    };
+  }
+
   return {
-    ok: validationBatchRecorded({
-      flush: validationFlush,
-      metrics,
-      validationEventId,
-    }),
+    ok: metrics
+      ? validationBatchRecorded({
+        flush: validationFlush,
+        metrics,
+        validationEventId,
+      })
+      : validationBatchAcked({ flush: validationFlush, validationEventId }),
     flush: validationFlush,
     flushes,
     metrics,
+    metrics_warning,
   };
 }

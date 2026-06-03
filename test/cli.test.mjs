@@ -1035,6 +1035,61 @@ test("telemetry validate uses fake response path and prints result JSON", async 
   }
 });
 
+test("telemetry validate exits successfully when metrics endpoint is admin protected", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  let latestBatch;
+  const receiver = await withTelemetryReceiver(async ({ request, response, body }) => {
+    if (request.url === "/ingest") {
+      latestBatch = JSON.parse(body);
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        batch_id: latestBatch.batch_id,
+        accepted_event_ids: latestBatch.events.map((event) => event.event_id),
+        rejected: [],
+        received_at: "2026-05-29T09:00:01.000Z",
+      }));
+      return;
+    }
+    if (request.url === "/metrics") {
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ detail: "Not authenticated" }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+
+  try {
+    const { stdout } = await execFileAsync(bin, [
+      "telemetry",
+      "validate",
+      "--endpoint",
+      receiver.endpoint,
+      "--token-env",
+      TELEMETRY_TOKEN_ENV,
+      "--confirm-raw-content",
+    ], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH,
+        [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN,
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: "telemetry-ok",
+      },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.flush.sent_count, 1);
+    assert.equal(parsed.metrics, null);
+    assert.match(parsed.metrics_warning.message, /Telemetry receiver returned 401\./);
+    assert.equal(latestBatch.events[0].command, "telemetry validate");
+  } finally {
+    await receiver.close();
+  }
+});
+
 test("telemetry validate posts to the real local receiver CLI", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const storage = await mkdtemp(join(tmpdir(), "gemini-agent-receiver-"));
