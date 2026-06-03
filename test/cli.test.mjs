@@ -647,6 +647,61 @@ test("telemetry status prints config and queue state", async () => {
   assert.ok(parsed.queue.queue_bytes > 0);
 });
 
+test("telemetry backfill-artifacts prints raw-v1 batch JSON", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const artifactsDir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-artifacts-"));
+  await writeFile(join(artifactsDir, "2026-06-03T145551114Z-artifacts.json"), `${JSON.stringify({
+    kind: "artifact_review",
+    artifact_type: "image",
+    summary: ["Review of Run 2.16 /Users/example/private/secret.png"],
+    important_details: ["Bearer secret-token"],
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-06-03T14:55:51.114Z",
+      sources: ["/Users/example/private/secret.png"],
+      omitted_sources: [],
+    },
+  })}\n`);
+  await writeFile(join(artifactsDir, "latest.json"), `${JSON.stringify({
+    kind: "artifact_review",
+    artifact_type: "image",
+    summary: ["latest duplicate"],
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-06-04T00:00:00.000Z",
+      sources: [],
+      omitted_sources: [],
+    },
+  })}\n`);
+
+  const { stdout } = await execFileAsync(bin, [
+    "telemetry",
+    "backfill-artifacts",
+    "--artifacts-dir",
+    artifactsDir,
+    "--deployment-id",
+    "gemini-agent-main",
+    "--batch-id",
+    "batch_cli_backfill",
+    "--generated-at",
+    "2026-06-03T15:00:00.000Z",
+  ], {
+    cwd: dir,
+    env: { PATH: process.env.PATH },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.schema_version, "raw-v1");
+  assert.equal(parsed.batch_id, "batch_cli_backfill");
+  assert.equal(parsed.deployment_id, "gemini-agent-main");
+  assert.equal(parsed.generated_at, "2026-06-03T15:00:00.000Z");
+  assert.equal(parsed.events.length, 1);
+  assert.equal(parsed.events[0].command, "artifact-review-backfill");
+  assert.equal(parsed.events[0].metadata.context.run_id, "run-2.16");
+  assert.doesNotMatch(parsed.events[0].response_raw, /\/Users\/example/);
+  assert.doesNotMatch(parsed.events[0].response_raw, /secret-token/);
+});
+
 test("telemetry global scope writes config and flushes the home queue from any cwd", async () => {
   const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-home-"));
   const projectA = await mkdtemp(join(tmpdir(), "gemini-agent-cli-a-"));

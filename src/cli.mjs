@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { runArtifactReview } from "./artifact-review.mjs";
 import { applyCodexGlobalInstall } from "./codex-global-install.mjs";
@@ -15,6 +17,7 @@ import { loadProjectPolicy } from "./policies.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 import { drainTelemetryCapture } from "./telemetry-capture.mjs";
+import { artifactReviewsToRawTelemetryBatch } from "./telemetry-backfill.mjs";
 import {
   assertRawConfirmation,
   disableTelemetryConfig,
@@ -26,6 +29,9 @@ import {
 import { flushTelemetryQueue, runTelemetryValidation } from "./telemetry-sender.mjs";
 import { loadTelemetryState, purgeTelemetryData } from "./telemetry-queue.mjs";
 import { installScheduler, schedulerStatus, uninstallScheduler } from "./telemetry-scheduler.mjs";
+
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json");
 
 const GATE_COMMANDS = new Map([
   ["plan-critique", "plan_critique"],
@@ -64,6 +70,7 @@ function printUsage() {
     "  gemini-agent telemetry flush [--global]",
     "  gemini-agent telemetry tick [--global]",
     "  gemini-agent telemetry validate [--global] [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
+    "  gemini-agent telemetry backfill-artifacts [--artifacts-dir <path>] --deployment-id <id> [--batch-id <id>] [--generated-at <iso>] [--max-files <n>] [--max-artifact-bytes <n>]",
     "  gemini-agent telemetry install-scheduler [--global] --target launchd|cron|systemd --name <label> [--schedule hourly|daily@HH:MM] [--env-file <path>] [--launchd-domain gui|user] [--dry-run|--write]",
     "  gemini-agent telemetry scheduler-status --target launchd|cron|systemd --name <label>",
     "  gemini-agent telemetry uninstall-scheduler --target launchd|cron|systemd --name <label>",
@@ -172,6 +179,61 @@ function parseTelemetryScopeOnlyOptions(subcommand, args) {
   if (hasNonScopeTelemetryOptions(options)) {
     throw new Error(`telemetry ${subcommand} does not accept arguments other than --global.`);
   }
+  return options;
+}
+
+function positiveIntegerOption(value, flag) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${flag} requires a positive integer.`);
+  }
+  return parsed;
+}
+
+function parseBackfillArtifactOptions(args) {
+  const options = {
+    artifactsDir: join(process.cwd(), ".gemini-agent", "artifacts"),
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--artifacts-dir") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--artifacts-dir requires a path.");
+      options.artifactsDir = value;
+      index += 1;
+    } else if (arg === "--deployment-id") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--deployment-id requires an id.");
+      options.deploymentId = value;
+      index += 1;
+    } else if (arg === "--batch-id") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--batch-id requires an id.");
+      options.batchId = value;
+      index += 1;
+    } else if (arg === "--generated-at") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--generated-at requires an ISO timestamp.");
+      options.generatedAt = new Date(value);
+      if (Number.isNaN(options.generatedAt.getTime())) throw new Error("--generated-at requires a valid ISO timestamp.");
+      index += 1;
+    } else if (arg === "--max-files") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--max-files requires a positive integer.");
+      options.maxFiles = positiveIntegerOption(value, "--max-files");
+      index += 1;
+    } else if (arg === "--max-artifact-bytes") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--max-artifact-bytes requires a positive integer.");
+      options.maxArtifactBytes = positiveIntegerOption(value, "--max-artifact-bytes");
+      index += 1;
+    } else {
+      throw new Error(`Unknown backfill-artifacts argument: ${arg}`);
+    }
+  }
+
+  if (!options.deploymentId) throw new Error("--deployment-id is required.");
   return options;
 }
 
@@ -636,6 +698,21 @@ async function runTelemetry(args) {
 
   if (subcommand === "validate") {
     await runTelemetryValidate(subArgs);
+    return;
+  }
+
+  if (subcommand === "backfill-artifacts") {
+    const options = parseBackfillArtifactOptions(subArgs);
+    const batch = await artifactReviewsToRawTelemetryBatch({
+      artifactsDir: options.artifactsDir,
+      deploymentId: options.deploymentId,
+      agentVersion: packageJson.version,
+      batchId: options.batchId,
+      generatedAt: options.generatedAt,
+      maxFiles: options.maxFiles,
+      maxArtifactBytes: options.maxArtifactBytes,
+    });
+    output.write(`${JSON.stringify(batch, null, 2)}\n`);
     return;
   }
 
