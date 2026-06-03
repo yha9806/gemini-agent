@@ -822,6 +822,144 @@ test("telemetry global scope writes config and flushes the home queue from any c
   }
 });
 
+test("telemetry doctor --global --json performs health GET without raw upload", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-home-"));
+  const project = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const otherCwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-other-"));
+  let healthRequests = 0;
+  let ingestRequests = 0;
+  const receiver = await withTelemetryReceiver(async ({ request, response }) => {
+    if (request.method === "GET" && request.url === "/health") {
+      healthRequests += 1;
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/ingest") {
+      ingestRequests += 1;
+      response.writeHead(500, { "Content-Type": "text/plain" });
+      response.end("unexpected raw upload");
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+
+  try {
+    await saveTelemetryConfig({
+      cwd: project,
+      home,
+      scope: "global",
+      endpoint: receiver.endpoint,
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd: home,
+      event: telemetryEvent(51, { deployment_id: "gemini-agent-main" }),
+    });
+
+    const { stdout } = await execFileAsync(bin, ["telemetry", "doctor", "--global", "--json"], {
+      cwd: otherCwd,
+      env: { ...process.env, HOME: home, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.scope, "global");
+    assert.equal(parsed.storage_cwd, home);
+    assert.equal(parsed.endpoint_check.ok, true);
+    assert.equal(parsed.queue.pending.count, 1);
+    assert.equal(parsed.small_flush_safe, true);
+    assert.equal(healthRequests, 1);
+    assert.equal(ingestRequests, 0);
+  } finally {
+    await receiver.close();
+  }
+});
+
+test("telemetry flush --dry-run --batch-size 1 does not move or send", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const first = await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(61) });
+  await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(62) });
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:9/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+  });
+
+  const { stdout } = await execFileAsync(bin, [
+    "telemetry",
+    "flush",
+    "--dry-run",
+    "--batch-size",
+    "1",
+  ], {
+    cwd: dir,
+    env: { ...process.env, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.dry_run, true);
+  assert.equal(parsed.event_ids.length, 1);
+  assert.equal(parsed.event_ids[0], first.event_id);
+  const pendingFiles = await readdir(telemetryQueueDirs(dir).pending);
+  assert.equal(pendingFiles.length, 2);
+});
+
+test("telemetry quarantine moves pending event out of normal flush path", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  let receivedBatch;
+  const receiver = await withTelemetryReceiver(async ({ request, response, body }) => {
+    assert.equal(request.method, "POST");
+    receivedBatch = JSON.parse(body);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      batch_id: receivedBatch.batch_id,
+      accepted_event_ids: receivedBatch.events.map((event) => event.event_id),
+      rejected: [],
+      received_at: "2026-06-03T09:00:01.000Z",
+    }));
+  });
+
+  try {
+    await saveTelemetryConfig({
+      cwd: dir,
+      endpoint: receiver.endpoint,
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+    });
+    const first = await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(71) });
+    const second = await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(72) });
+
+    const quarantined = JSON.parse((await execFileAsync(bin, [
+      "telemetry",
+      "quarantine",
+      "--event-id",
+      first.event_id,
+      "--reason",
+      "bad payload",
+    ], {
+      cwd: dir,
+      env: { ...process.env, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    })).stdout);
+
+    assert.equal(quarantined.quarantined, true);
+    assert.equal(quarantined.scope, "local");
+    assert.equal(quarantined.event_id, first.event_id);
+
+    const flushed = JSON.parse((await execFileAsync(bin, ["telemetry", "flush"], {
+      cwd: dir,
+      env: { ...process.env, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    })).stdout);
+
+    assert.equal(flushed.sent_count, 1);
+    assert.deepEqual(receivedBatch.events.map((event) => event.event_id), [second.event_id]);
+    assert.notEqual(receivedBatch.events[0].event_id, first.event_id);
+  } finally {
+    await receiver.close();
+  }
+});
+
 test("telemetry install-scheduler dry-runs cron artifact", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
 

@@ -19,6 +19,7 @@ import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson
 import { drainTelemetryCapture } from "./telemetry-capture.mjs";
 import { artifactReviewsToRawTelemetryBatch } from "./telemetry-backfill.mjs";
 import { normalizeTelemetryBatch } from "./telemetry-schemas.mjs";
+import { runTelemetryDoctor } from "./telemetry-doctor.mjs";
 import {
   assertRawConfirmation,
   disableTelemetryConfig,
@@ -28,7 +29,12 @@ import {
   saveTelemetryConfig,
 } from "./telemetry-config.mjs";
 import { flushTelemetryQueue, runTelemetryValidation } from "./telemetry-sender.mjs";
-import { appendTelemetryEvent, loadTelemetryState, purgeTelemetryData } from "./telemetry-queue.mjs";
+import {
+  appendTelemetryEvent,
+  loadTelemetryState,
+  purgeTelemetryData,
+  quarantineTelemetryEvent,
+} from "./telemetry-queue.mjs";
 import { installScheduler, schedulerStatus, uninstallScheduler } from "./telemetry-scheduler.mjs";
 
 const require = createRequire(import.meta.url);
@@ -68,7 +74,9 @@ function printUsage() {
     "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--schedule <schedule>]",
     "  gemini-agent telemetry status [--global]",
     "  gemini-agent telemetry preview [--global]",
-    "  gemini-agent telemetry flush [--global]",
+    "  gemini-agent telemetry doctor [--global] [--json]",
+    "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>]",
+    "  gemini-agent telemetry quarantine [--global] --event-id <id> --reason <reason>",
     "  gemini-agent telemetry tick [--global]",
     "  gemini-agent telemetry validate [--global] [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
     "  gemini-agent telemetry backfill-artifacts [--artifacts-dir <path>] --deployment-id <id> [--batch-id <id>] [--generated-at <iso>] [--max-files <n>] [--max-artifact-bytes <n>]",
@@ -180,6 +188,85 @@ function parseTelemetryScopeOnlyOptions(subcommand, args) {
   if (hasNonScopeTelemetryOptions(options)) {
     throw new Error(`telemetry ${subcommand} does not accept arguments other than --global.`);
   }
+  return options;
+}
+
+function parseTelemetryFlushOptions(args) {
+  const options = {
+    dryRun: false,
+    global: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--dry-run") {
+      options.dryRun = true;
+    } else if (arg === "--batch-size") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--batch-size requires a positive integer.");
+      options.batchSize = positiveIntegerOption(value, "--batch-size");
+      index += 1;
+    } else if (arg === "--max-bytes") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--max-bytes requires a positive integer.");
+      options.maxBytes = positiveIntegerOption(value, "--max-bytes");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry flush argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseTelemetryDoctorOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown telemetry doctor argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseTelemetryQuarantineOptions(args) {
+  const options = {
+    global: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--event-id") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--event-id requires an id.");
+      options.eventId = value;
+      index += 1;
+    } else if (arg === "--reason") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--reason requires a reason.");
+      options.reason = value;
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry quarantine argument: ${arg}`);
+    }
+  }
+
+  if (!options.eventId) throw new Error("--event-id is required.");
+  if (!options.reason) throw new Error("--reason is required.");
   return options;
 }
 
@@ -558,8 +645,7 @@ async function runArtifactReviewCommand(args) {
   output.write(artifactReviewToPrettyJson(review));
 }
 
-async function requireEnabledTelemetryContext(subcommand, args = []) {
-  const options = parseTelemetryScopeOnlyOptions(subcommand, args);
+async function requireEnabledTelemetryContextForOptions(options) {
   const context = await loadTelemetryConfigContext({
     cwd: process.cwd(),
     scope: telemetryScope(options),
@@ -570,16 +656,51 @@ async function requireEnabledTelemetryContext(subcommand, args = []) {
   return context;
 }
 
+async function requireEnabledTelemetryContext(subcommand, args = []) {
+  const options = parseTelemetryScopeOnlyOptions(subcommand, args);
+  return requireEnabledTelemetryContextForOptions(options);
+}
+
 async function runTelemetryFlush(args = []) {
-  const context = await requireEnabledTelemetryContext("flush", args);
+  const options = parseTelemetryFlushOptions(args);
+  const context = await requireEnabledTelemetryContextForOptions(options);
   const config = context.config;
   const token = resolveTelemetryToken({ tokenEnv: config.token_env, env: process.env });
   const result = await flushTelemetryQueue({
     cwd: context.storageCwd,
     endpoint: config.endpoint,
     token,
+    batchSize: options.batchSize,
+    dryRun: options.dryRun,
+    maxBytes: options.maxBytes,
   });
   output.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+async function runTelemetryDoctorCommand(args = []) {
+  const options = parseTelemetryDoctorOptions(args);
+  const result = await runTelemetryDoctor({
+    cwd: process.cwd(),
+    home: process.env.HOME,
+    scope: telemetryScope(options),
+    env: process.env,
+  });
+  output.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+async function runTelemetryQuarantine(args = []) {
+  const options = parseTelemetryQuarantineOptions(args);
+  const context = await requireEnabledTelemetryContextForOptions(options);
+  const result = await quarantineTelemetryEvent({
+    cwd: context.storageCwd,
+    eventId: options.eventId,
+    reason: options.reason,
+  });
+  output.write(`${JSON.stringify({
+    scope: context.scope,
+    storage_cwd: context.storageCwd,
+    ...result,
+  }, null, 2)}\n`);
 }
 
 async function runTelemetryTick(args = []) {
@@ -693,8 +814,18 @@ async function runTelemetry(args) {
     return;
   }
 
+  if (subcommand === "doctor") {
+    await runTelemetryDoctorCommand(subArgs);
+    return;
+  }
+
   if (subcommand === "flush") {
     await runTelemetryFlush(subArgs);
+    return;
+  }
+
+  if (subcommand === "quarantine") {
+    await runTelemetryQuarantine(subArgs);
     return;
   }
 
