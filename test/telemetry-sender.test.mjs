@@ -10,6 +10,7 @@ import {
 } from "../src/telemetry-queue.mjs";
 import {
   flushTelemetryQueue,
+  previewTelemetryFlush,
   receiverMetrics,
   runTelemetryValidation,
 } from "../src/telemetry-sender.mjs";
@@ -174,6 +175,76 @@ test("flushTelemetryQueue returns zero without sending when queue is empty", asy
 
   assert.deepEqual(result, { ok: true, sent_count: 0 });
   assert.equal(called, false);
+});
+
+test("previewTelemetryFlush returns planned batch without moving files", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1) });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(2) });
+
+  const preview = await previewTelemetryFlush({
+    cwd,
+    batchSize: 1,
+    now: NOW,
+  });
+
+  assert.equal(preview.ok, true);
+  assert.equal(preview.dry_run, true);
+  assert.equal(preview.would_send_count, 1);
+  assert.deepEqual(preview.event_ids, ["evt_000001"]);
+  assert.equal(Number.isInteger(preview.batch_bytes), true);
+  assert.equal(preview.exceeds_max_bytes, false);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), [
+    "evt_000001",
+    "evt_000002",
+  ]);
+});
+
+test("flushTelemetryQueue dry run does not send or move files", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1) });
+  let called = false;
+
+  const result = await flushTelemetryQueue({
+    cwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    dryRun: true,
+    fetchImpl: async () => {
+      called = true;
+      throw new Error("fetch should not be called");
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.dry_run, true);
+  assert.equal(result.would_send_count, 1);
+  assert.equal(called, false);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000001"]);
+});
+
+test("flushTelemetryQueue rejects oversized maxBytes before sending", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1) });
+  let called = false;
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      maxBytes: 10,
+      fetchImpl: async () => {
+        called = true;
+        throw new Error("fetch should not be called");
+      },
+      now: NOW,
+    }),
+    /Telemetry batch exceeds maxBytes before send\./,
+  );
+
+  assert.equal(called, false);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000001"]);
 });
 
 test("flushTelemetryQueue maps MCP legacy events to raw-v1 source fields", async () => {

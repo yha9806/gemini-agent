@@ -7,6 +7,7 @@ import {
   claimTelemetryBatch,
   completeTelemetryBatch,
   failTelemetryBatch,
+  peekTelemetryEvents,
 } from "./telemetry-queue.mjs";
 import {
   RAW_TELEMETRY_SCHEMA_VERSION,
@@ -206,12 +207,12 @@ function checksumEvents(events) {
   return `sha256:${digest}`;
 }
 
-function rawBatchFromClaimed({ claimed, now }) {
-  const rawEvents = claimed.events.map((event) => rawEventFromLegacy(event));
+function rawBatchFromEvents({ events, batchId, now }) {
+  const rawEvents = events.map((event) => rawEventFromLegacy(event));
   const normalizedEvents = normalizeRawTelemetryBatch({
     schema_version: RAW_TELEMETRY_SCHEMA_VERSION,
-    batch_id: claimed.batchId,
-    deployment_id: claimed.events[0].deployment_id,
+    batch_id: batchId,
+    deployment_id: events[0].deployment_id,
     agent_version: packageJson.version,
     generated_at: now.toISOString(),
     checksum: "sha256:pending",
@@ -219,13 +220,30 @@ function rawBatchFromClaimed({ claimed, now }) {
   }).events;
   return normalizeRawTelemetryBatch({
     schema_version: RAW_TELEMETRY_SCHEMA_VERSION,
-    batch_id: claimed.batchId,
-    deployment_id: claimed.events[0].deployment_id,
+    batch_id: batchId,
+    deployment_id: events[0].deployment_id,
     agent_version: packageJson.version,
     generated_at: now.toISOString(),
     checksum: checksumEvents(normalizedEvents),
     events: normalizedEvents,
   });
+}
+
+function rawBatchFromClaimed({ claimed, now }) {
+  return rawBatchFromEvents({
+    events: claimed.events,
+    batchId: claimed.batchId,
+    now,
+  });
+}
+
+function byteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function previewBatchId(now) {
+  const day = now.toISOString().slice(0, 10).replaceAll("-", "");
+  return `batch_${day}_${now.getTime()}_00000000-0000-4000-8000-000000000000`;
 }
 
 function httpFailureForStatus(status) {
@@ -308,6 +326,36 @@ function acceptedEventIdsForAck(ack, batch) {
   return ack.accepted_event_ids;
 }
 
+export async function previewTelemetryFlush({
+  cwd = process.cwd(),
+  now = new Date(),
+  batchSize = 100,
+  maxBytes,
+} = {}) {
+  assertPositiveInteger(batchSize, "batchSize");
+  if (maxBytes !== undefined) assertPositiveInteger(maxBytes, "maxBytes");
+
+  const peeked = await peekTelemetryEvents({ cwd, batchSize });
+  if (peeked.events.length === 0) {
+    return { ok: true, dry_run: true, would_send_count: 0 };
+  }
+
+  const batch = rawBatchFromEvents({
+    events: peeked.events,
+    batchId: previewBatchId(now),
+    now,
+  });
+  const batchBytes = byteLength(batch);
+  return {
+    ok: true,
+    dry_run: true,
+    would_send_count: batch.events.length,
+    event_ids: batch.events.map((event) => event.event_id),
+    batch_bytes: batchBytes,
+    exceeds_max_bytes: maxBytes !== undefined && batchBytes > maxBytes,
+  };
+}
+
 export async function flushTelemetryQueue({
   cwd = process.cwd(),
   endpoint,
@@ -316,9 +364,22 @@ export async function flushTelemetryQueue({
   now = new Date(),
   timeoutMs = 5000,
   batchSize = 100,
+  dryRun = false,
+  maxBytes,
 } = {}) {
   const url = validateTelemetryEndpoint(endpoint);
   assertTelemetryToken(token);
+  if (dryRun) {
+    return previewTelemetryFlush({ cwd, now, batchSize, maxBytes });
+  }
+  if (maxBytes !== undefined) {
+    assertPositiveInteger(maxBytes, "maxBytes");
+    const preview = await previewTelemetryFlush({ cwd, now, batchSize, maxBytes });
+    if (preview.would_send_count > 0 && preview.exceeds_max_bytes) {
+      throw new Error("Telemetry batch exceeds maxBytes before send.");
+    }
+  }
+
   const claimed = await claimTelemetryBatch({ cwd, batchSize, now });
   if (claimed.events.length === 0) {
     return { ok: true, sent_count: 0 };
