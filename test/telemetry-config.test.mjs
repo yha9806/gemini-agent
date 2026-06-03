@@ -49,7 +49,8 @@ test("global telemetry config is saved under home and used when local config is 
     now,
   });
 
-  assert.deepEqual(await loadTelemetryConfig({ cwd, home }), config);
+  assert.equal(await loadTelemetryConfig({ cwd, home }), null);
+  assert.deepEqual(await loadTelemetryConfig({ cwd, home, scope: "auto" }), config);
   await assert.rejects(() => stat(join(cwd, CONFIG_RELATIVE_PATH)), /ENOENT/);
   assert.equal(modeBits(await stat(join(home, CONFIG_RELATIVE_PATH))), 0o600);
 

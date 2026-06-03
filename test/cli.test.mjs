@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
@@ -21,6 +21,10 @@ const fakeReview = JSON.stringify({
   unsafe_claims: [],
   suggested_changes: [],
   notes: ["fake ok"],
+});
+const CLI_TEST_HOME = await mkdtemp(join(tmpdir(), "gemini-agent-cli-home-"));
+after(async () => {
+  await rm(CLI_TEST_HOME, { recursive: true, force: true });
 });
 
 function telemetryEvent(index, overrides = {}) {
@@ -267,6 +271,7 @@ test("diff-review accepts file input and prints JSON", async () => {
     cwd: dir,
     env: {
       ...process.env,
+      HOME: CLI_TEST_HOME,
       GEMINI_API_KEY: "fake-key",
       GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
       GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
@@ -366,6 +371,7 @@ test("context-pack accepts stdin and prints JSON", async () => {
     input: "project notes",
     env: {
       ...process.env,
+      HOME: CLI_TEST_HOME,
       GEMINI_API_KEY: "fake-key",
       GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
       GEMINI_AGENT_FAKE_RESPONSE: fakeContextPack,
@@ -444,6 +450,7 @@ test("context-pack accepts direct text args and prints JSON", async () => {
   const { stdout } = await execFileAsync(bin, ["context-pack", "project", "notes"], {
     env: {
       ...process.env,
+      HOME: CLI_TEST_HOME,
       GEMINI_API_KEY: "fake-key",
       GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
       GEMINI_AGENT_FAKE_RESPONSE: fakeContextPack,
@@ -464,6 +471,7 @@ test("artifact-review accepts image file and prints JSON", async () => {
     cwd: dir,
     env: {
       ...process.env,
+      HOME: CLI_TEST_HOME,
       GEMINI_API_KEY: "fake-key",
       GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
       GEMINI_AGENT_FAKE_RESPONSE: fakeArtifactReview,
@@ -678,7 +686,7 @@ test("telemetry global scope writes config and flushes the home queue from any c
     });
     await appendTelemetryEvent({ cwd: home, event: telemetryEvent(42, { deployment_id: "gemini-agent-main" }) });
 
-    const status = JSON.parse((await execFileAsync(bin, ["telemetry", "status", "--global"], {
+    const status = JSON.parse((await execFileAsync(bin, ["telemetry", "status"], {
       cwd: projectB,
       env: { ...process.env, HOME: home },
     })).stdout);
@@ -687,7 +695,7 @@ test("telemetry global scope writes config and flushes the home queue from any c
     assert.equal(status.config.deployment_id, "gemini-agent-main");
     assert.ok(status.queue.queue_bytes > 0);
 
-    const flushed = JSON.parse((await execFileAsync(bin, ["telemetry", "flush", "--global"], {
+    const flushed = JSON.parse((await execFileAsync(bin, ["telemetry", "flush"], {
       cwd: projectB,
       env: { ...process.env, HOME: home, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
     })).stdout);
@@ -913,7 +921,7 @@ test("telemetry flush rejects when telemetry is not enabled", async () => {
   await assert.rejects(
     execFileAsync(bin, ["telemetry", "flush"], {
       cwd: dir,
-      env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+      env: { HOME: dir, PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
     }),
     (error) => {
       assert.equal(error.code, 1);
@@ -1081,6 +1089,7 @@ test("telemetry validate uses fake response path and prints result JSON", async 
     ], {
       cwd: dir,
       env: {
+        HOME: CLI_TEST_HOME,
         PATH: process.env.PATH,
         [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN,
         GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
@@ -1134,6 +1143,7 @@ test("telemetry validate exits successfully when metrics endpoint is admin prote
     ], {
       cwd: dir,
       env: {
+        HOME: CLI_TEST_HOME,
         PATH: process.env.PATH,
         [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN,
         GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
@@ -1175,6 +1185,7 @@ test("telemetry validate posts to the real local receiver CLI", async () => {
     ], {
       cwd: dir,
       env: {
+        HOME: CLI_TEST_HOME,
         PATH: process.env.PATH,
         [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN,
         GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",

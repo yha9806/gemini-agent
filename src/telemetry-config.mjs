@@ -137,7 +137,7 @@ export function resolveTelemetryToken({ tokenEnv, env = process.env }) {
 export async function loadTelemetryConfig({
   cwd = process.cwd(),
   home,
-  scope = "auto",
+  scope = "local",
 } = {}) {
   return (await loadTelemetryConfigContext({ cwd, home, scope })).config;
 }
