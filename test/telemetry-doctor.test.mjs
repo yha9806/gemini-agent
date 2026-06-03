@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,9 +8,19 @@ import { appendTelemetryEvent } from "../src/telemetry-queue.mjs";
 import { runTelemetryDoctor } from "../src/telemetry-doctor.mjs";
 
 const TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
+const CONFIG_RELATIVE_PATH = ".gemini-agent/telemetry/config.json";
 
 async function temporaryWorkspace() {
   return mkdtemp(join(tmpdir(), "gemini-agent-telemetry-doctor-"));
+}
+
+async function writeTelemetryConfigText(cwd, text) {
+  await mkdir(join(cwd, ".gemini-agent/telemetry"), { recursive: true });
+  await writeFile(join(cwd, CONFIG_RELATIVE_PATH), text);
+}
+
+async function writeTelemetryConfig(cwd, config) {
+  await writeTelemetryConfigText(cwd, `${JSON.stringify(config, null, 2)}\n`);
 }
 
 function telemetryEvent(index) {
@@ -31,6 +41,20 @@ function telemetryEvent(index) {
     latency_ms: index,
     created_at: "2026-06-03T09:00:00.000Z",
     payload: { prompt_truncated: false, response_truncated: false, multimodal: [] },
+  };
+}
+
+function telemetryConfig(overrides = {}) {
+  return {
+    enabled: true,
+    level: "raw",
+    endpoint: "http://127.0.0.1:8787/ingest",
+    token_env: TOKEN_ENV,
+    deployment_id: "gemini-agent-main",
+    schedule: "daily@09:00",
+    created_at: "2026-06-03T09:00:00.000Z",
+    updated_at: "2026-06-03T09:00:00.000Z",
+    ...overrides,
   };
 }
 
@@ -64,17 +88,22 @@ test("runTelemetryDoctor reports token, endpoint health, queue, and recommendati
   await appendTelemetryEvent({ cwd, event: telemetryEvent(1) });
 
   let requestedUrl;
+  let requestOptions;
   const result = await runTelemetryDoctor({
     cwd,
     scope: "local",
     env: { [TOKEN_ENV]: "telemetry-token" },
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, options) => {
       requestedUrl = `${url}`;
+      requestOptions = options;
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     },
   });
 
   assert.equal(requestedUrl, "http://127.0.0.1:8787/health");
+  assert.equal(requestOptions.method, "GET");
+  assert.equal(Object.hasOwn(requestOptions, "body"), false);
+  assert.ok(requestOptions.signal instanceof AbortSignal);
   assert.equal(result.ok, true);
   assert.equal(result.config.enabled, true);
   assert.equal(result.checks.token_env_present.ok, true);
@@ -106,4 +135,150 @@ test("runTelemetryDoctor treats health endpoint failure as diagnostic only", asy
   assert.equal(result.endpoint_check.ok, false);
   assert.equal(result.endpoint_check.status, 405);
   assert.equal(result.small_flush_safe, true);
+});
+
+test("runTelemetryDoctor reports invalid endpoint config without throwing or fetching", async () => {
+  const cwd = await temporaryWorkspace();
+  await writeTelemetryConfig(cwd, telemetryConfig({
+    endpoint: "http://example.com/ingest",
+  }));
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(3) });
+
+  let fetchCalled = false;
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    fetchImpl: async () => {
+      fetchCalled = true;
+      throw new Error("fetch should not be called");
+    },
+  });
+
+  assert.equal(fetchCalled, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.config.enabled, true);
+  assert.equal(result.checks.config_valid.ok, false);
+  assert.equal(result.checks.endpoint_valid.ok, false);
+  assert.match(result.checks.endpoint_valid.message, /Non-loopback telemetry endpoints must use HTTPS/);
+  assert.equal(result.endpoint_check.skipped, true);
+  assert.equal(result.small_flush_safe, false);
+  assert.equal(result.recommended_action, "Fix the telemetry endpoint URL.");
+});
+
+test("runTelemetryDoctor reports malformed config JSON without throwing or fetching", async () => {
+  const cwd = await temporaryWorkspace();
+  await writeTelemetryConfigText(cwd, "{ this is not json\n");
+
+  let fetchCalled = false;
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    fetchImpl: async () => {
+      fetchCalled = true;
+      throw new Error("fetch should not be called");
+    },
+  });
+
+  assert.equal(fetchCalled, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.config.enabled, false);
+  assert.equal(result.checks.config_valid.ok, false);
+  assert.match(result.checks.config_valid.message, /Telemetry config is not valid JSON/);
+  assert.equal(result.checks.endpoint_valid.ok, false);
+  assert.equal(result.endpoint_check.skipped, true);
+  assert.equal(result.small_flush_safe, false);
+  assert.equal(result.recommended_action, "Fix the telemetry config.");
+});
+
+test("runTelemetryDoctor uses supplied home for global config lookup", async () => {
+  const cwd = await temporaryWorkspace();
+  const home = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    home,
+    scope: "global",
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({ cwd: home, event: telemetryEvent(4) });
+
+  const result = await runTelemetryDoctor({
+    cwd,
+    home,
+    scope: "global",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  });
+
+  assert.equal(result.scope, "global");
+  assert.equal(result.storage_cwd, home);
+  assert.equal(result.ok, true);
+  assert.equal(result.queue.pending.count, 1);
+});
+
+test("runTelemetryDoctor auto scope keeps enabled local config ahead of invalid global config", async () => {
+  const cwd = await temporaryWorkspace();
+  const home = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    home,
+    scope: "local",
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "local-telemetry",
+  });
+  await writeTelemetryConfig(home, telemetryConfig({
+    endpoint: "http://example.com/ingest",
+    deployment_id: "global-telemetry",
+  }));
+
+  let requestedUrl;
+  const result = await runTelemetryDoctor({
+    cwd,
+    home,
+    scope: "auto",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    fetchImpl: async (url) => {
+      requestedUrl = `${url}`;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    },
+  });
+
+  assert.equal(requestedUrl, "http://127.0.0.1:8787/health");
+  assert.equal(result.scope, "local");
+  assert.equal(result.storage_cwd, cwd);
+  assert.equal(result.config.deployment_id, "local-telemetry");
+  assert.equal(result.ok, true);
+});
+
+test("runTelemetryDoctor aborts stalled endpoint health checks", { timeout: 1000 }, async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  let observedAbort = false;
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    timeoutMs: 5,
+    fetchImpl: async (url, { signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        observedAbort = true;
+        reject(signal.reason);
+      }, { once: true });
+    }),
+  });
+
+  assert.equal(observedAbort, true);
+  assert.equal(result.ok, true);
+  assert.equal(result.endpoint_check.ok, false);
+  assert.match(result.endpoint_check.error, /timed out/);
 });
