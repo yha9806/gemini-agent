@@ -881,6 +881,8 @@ test("telemetry flush --dry-run --batch-size 1 does not move or send", async () 
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const first = await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(61) });
   await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(62) });
+  const env = { ...process.env };
+  delete env[TELEMETRY_TOKEN_ENV];
   await saveTelemetryConfig({
     cwd: dir,
     endpoint: "http://127.0.0.1:9/ingest",
@@ -895,7 +897,7 @@ test("telemetry flush --dry-run --batch-size 1 does not move or send", async () 
     "1",
   ], {
     cwd: dir,
-    env: { ...process.env, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    env,
   });
 
   const parsed = JSON.parse(stdout);

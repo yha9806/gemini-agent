@@ -219,15 +219,13 @@ test("previewTelemetryFlush returns planned batch without moving files", async (
   ]);
 });
 
-test("flushTelemetryQueue dry run does not send or move files", async () => {
+test("flushTelemetryQueue dry run does not require endpoint or token and does not send or move files", async () => {
   const cwd = await temporaryWorkspace();
   await appendTelemetryEvent({ cwd, event: telemetryEvent(1) });
   let called = false;
 
   const result = await flushTelemetryQueue({
     cwd,
-    endpoint: ENDPOINT,
-    token: TOKEN,
     dryRun: true,
     fetchImpl: async () => {
       called = true;

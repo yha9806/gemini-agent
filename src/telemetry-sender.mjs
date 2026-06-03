@@ -374,11 +374,12 @@ export async function flushTelemetryQueue({
   dryRun = false,
   maxBytes,
 } = {}) {
-  const url = validateTelemetryEndpoint(endpoint);
-  assertTelemetryToken(token);
   if (dryRun) {
     return previewTelemetryFlush({ cwd, now, batchSize, maxBytes });
   }
+
+  const url = validateTelemetryEndpoint(endpoint);
+  assertTelemetryToken(token);
   if (maxBytes !== undefined) {
     assertPositiveInteger(maxBytes, "maxBytes");
   }

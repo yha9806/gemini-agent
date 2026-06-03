@@ -665,7 +665,9 @@ async function runTelemetryFlush(args = []) {
   const options = parseTelemetryFlushOptions(args);
   const context = await requireEnabledTelemetryContextForOptions(options);
   const config = context.config;
-  const token = resolveTelemetryToken({ tokenEnv: config.token_env, env: process.env });
+  const token = options.dryRun
+    ? undefined
+    : resolveTelemetryToken({ tokenEnv: config.token_env, env: process.env });
   const result = await flushTelemetryQueue({
     cwd: context.storageCwd,
     endpoint: config.endpoint,
