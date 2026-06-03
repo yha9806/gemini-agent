@@ -121,6 +121,7 @@ export function telemetryQueueDirs(cwd = process.cwd()) {
     inflight: join(queue, "inflight"),
     sent: join(queue, "sent"),
     failed: join(queue, "failed"),
+    quarantine: join(queue, "quarantine"),
     tmp: join(queue, "tmp"),
     lock: join(queue, LOCK_FILE),
     state: join(queue, STATE_FILE),
@@ -134,7 +135,16 @@ async function secureMkdir(path) {
 
 async function ensureQueueDirs(cwd) {
   const dirs = telemetryQueueDirs(cwd);
-  for (const dir of [dirs.root, dirs.queue, dirs.pending, dirs.inflight, dirs.sent, dirs.failed, dirs.tmp]) {
+  for (const dir of [
+    dirs.root,
+    dirs.queue,
+    dirs.pending,
+    dirs.inflight,
+    dirs.sent,
+    dirs.failed,
+    dirs.quarantine,
+    dirs.tmp,
+  ]) {
     await secureMkdir(dir);
   }
   return dirs;
@@ -174,6 +184,50 @@ async function regularFiles(dir) {
   return files.sort((left, right) => (
     left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name)
   ));
+}
+
+async function summarizeDirectory(dir, filter = () => true) {
+  let count = 0;
+  let bytes = 0;
+
+  async function walk(path) {
+    let entries;
+    try {
+      entries = await readdir(path, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+
+    for (const entry of entries) {
+      const child = join(path, entry.name);
+      if (entry.isFile()) {
+        const itemStat = await stat(child);
+        bytes += itemStat.size;
+        if (filter({ name: entry.name, path: child })) count += 1;
+      } else if (entry.isDirectory()) {
+        await walk(child);
+      }
+    }
+  }
+
+  await walk(dir);
+  return { count, bytes };
+}
+
+async function directorySummary(dir) {
+  return summarizeDirectory(dir);
+}
+
+async function quarantineSummary(dir) {
+  return summarizeDirectory(dir, (file) => file.name === "event.json");
+}
+
+function safeQuarantineEventDir(eventId) {
+  if (typeof eventId !== "string" || !/^[A-Za-z0-9_.:-]+$/.test(eventId)) {
+    throw new Error("Telemetry event id is invalid.");
+  }
+  return eventId.replaceAll(":", "_");
 }
 
 async function sumFileSizes(files) {
@@ -515,6 +569,83 @@ export async function appendTelemetryEvent({
     const nextState = await enforceQueueLimit(cwd, state, maxQueueBytes);
     await saveState(cwd, nextState);
     return normalizedEvent;
+  });
+}
+
+export async function loadTelemetryQueueSnapshot({ cwd = process.cwd() } = {}) {
+  const dirs = await ensureQueueDirs(cwd);
+  const [pending, inflight, sent, failed, quarantine] = await Promise.all([
+    directorySummary(dirs.pending),
+    directorySummary(dirs.inflight),
+    directorySummary(dirs.sent),
+    directorySummary(dirs.failed),
+    quarantineSummary(dirs.quarantine),
+  ]);
+  return { pending, inflight, sent, failed, quarantine };
+}
+
+export async function peekTelemetryEvents({
+  cwd = process.cwd(),
+  batchSize,
+} = {}) {
+  assertPositiveInteger(batchSize, "batchSize");
+  const dirs = await ensureQueueDirs(cwd);
+  const files = (await regularFiles(dirs.pending)).slice(0, batchSize);
+  const events = [];
+  for (const file of files) {
+    events.push(normalizeTelemetryEvent(await readJsonFile(file.path, "Telemetry queue event")));
+  }
+  return { files, events };
+}
+
+export async function quarantineTelemetryEvent({
+  cwd = process.cwd(),
+  eventId,
+  reason,
+  now = new Date(),
+} = {}) {
+  if (typeof eventId !== "string" || !eventId.trim()) {
+    throw new Error("Telemetry event id is required.");
+  }
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new Error("Telemetry quarantine reason is required.");
+  }
+
+  return withTelemetryQueueLock({ cwd }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const files = await regularFiles(dirs.pending);
+    for (const file of files) {
+      const event = normalizeTelemetryEvent(await readJsonFile(file.path, "Telemetry queue event"));
+      if (event.event_id !== eventId) continue;
+
+      const eventDir = join(dirs.quarantine, safeQuarantineEventDir(eventId));
+      await secureMkdir(eventDir);
+      const eventPath = join(eventDir, "event.json");
+      const reasonPath = join(eventDir, "reason.json");
+      await rename(file.path, eventPath);
+      await chmod(eventPath, SECURE_FILE_MODE);
+      await writeSecureJsonFile(cwd, reasonPath, {
+        event_id: eventId,
+        reason,
+        quarantined_at: now.toISOString(),
+      });
+
+      const state = await loadStateFromPath(dirs.state);
+      await saveState(cwd, {
+        ...state,
+        queue_bytes: await pendingQueueBytes(cwd),
+        last_failure_reason: `quarantined:${reason}`,
+      });
+
+      return {
+        quarantined: true,
+        event_id: eventId,
+        event_path: eventPath,
+        reason_path: reasonPath,
+      };
+    }
+
+    return { quarantined: false, event_id: eventId };
   });
 }
 
