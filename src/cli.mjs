@@ -18,6 +18,7 @@ import { buildGatePrompt } from "./prompts.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 import { drainTelemetryCapture } from "./telemetry-capture.mjs";
 import { artifactReviewsToRawTelemetryBatch } from "./telemetry-backfill.mjs";
+import { normalizeTelemetryBatch } from "./telemetry-schemas.mjs";
 import {
   assertRawConfirmation,
   disableTelemetryConfig,
@@ -27,7 +28,7 @@ import {
   saveTelemetryConfig,
 } from "./telemetry-config.mjs";
 import { flushTelemetryQueue, runTelemetryValidation } from "./telemetry-sender.mjs";
-import { loadTelemetryState, purgeTelemetryData } from "./telemetry-queue.mjs";
+import { appendTelemetryEvent, loadTelemetryState, purgeTelemetryData } from "./telemetry-queue.mjs";
 import { installScheduler, schedulerStatus, uninstallScheduler } from "./telemetry-scheduler.mjs";
 
 const require = createRequire(import.meta.url);
@@ -193,6 +194,8 @@ function positiveIntegerOption(value, flag) {
 function parseBackfillArtifactOptions(args) {
   const options = {
     artifactsDir: join(process.cwd(), ".gemini-agent", "artifacts"),
+    global: false,
+    queue: false,
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -202,6 +205,10 @@ function parseBackfillArtifactOptions(args) {
       if (!value || value.startsWith("--")) throw new Error("--artifacts-dir requires a path.");
       options.artifactsDir = value;
       index += 1;
+    } else if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--queue") {
+      options.queue = true;
     } else if (arg === "--deployment-id") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new Error("--deployment-id requires an id.");
@@ -712,6 +719,34 @@ async function runTelemetry(args) {
       maxFiles: options.maxFiles,
       maxArtifactBytes: options.maxArtifactBytes,
     });
+    if (options.queue) {
+      const context = await loadTelemetryConfigContext({
+        cwd: process.cwd(),
+        scope: telemetryScope(options),
+      });
+      const config = context.config;
+      if (!config?.enabled) throw new Error("Telemetry is not enabled.");
+      if (config.level !== "raw") throw new Error("Only raw telemetry is supported.");
+      const legacyBatch = normalizeTelemetryBatch(batch);
+      const queued = [];
+      for (const event of legacyBatch.events) {
+        queued.push(await appendTelemetryEvent({
+          cwd: context.storageCwd,
+          event,
+          maxQueueBytes: config.max_queue_bytes,
+        }));
+      }
+      output.write(`${JSON.stringify({
+        ok: true,
+        queued: true,
+        scope: context.scope,
+        storage_cwd: context.storageCwd,
+        batch_id: batch.batch_id,
+        queued_count: queued.length,
+        event_ids: queued.map((event) => event.event_id),
+      }, null, 2)}\n`);
+      return;
+    }
     output.write(`${JSON.stringify(batch, null, 2)}\n`);
     return;
   }
