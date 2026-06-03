@@ -10,14 +10,14 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent diff-review --stdin
 ./bin/gemini-agent context-pack --stdin
 ./bin/gemini-agent artifact-review --file design.png --kind ui
-./bin/gemini-agent telemetry enable --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
-./bin/gemini-agent telemetry status
-./bin/gemini-agent telemetry validate --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
-./bin/gemini-agent telemetry flush
-./bin/gemini-agent telemetry tick
-./bin/gemini-agent telemetry disable
-./bin/gemini-agent telemetry purge
-./bin/gemini-agent telemetry install-scheduler --target launchd --name gemini-agent-main --schedule daily@09:00 --env-file ~/.gemini-agent/telemetry.env --dry-run
+./bin/gemini-agent telemetry enable --global --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
+./bin/gemini-agent telemetry status --global
+./bin/gemini-agent telemetry validate --global --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
+./bin/gemini-agent telemetry flush --global
+./bin/gemini-agent telemetry tick --global
+./bin/gemini-agent telemetry disable --global
+./bin/gemini-agent telemetry purge --global
+./bin/gemini-agent telemetry install-scheduler --global --target launchd --name gemini-agent-main --schedule daily@09:00 --env-file ~/.gemini-agent/telemetry.env --dry-run
 ./bin/gemini-agent telemetry scheduler-status --target launchd --name gemini-agent-main
 ./bin/gemini-agent telemetry uninstall-scheduler --target launchd --name gemini-agent-main
 ./bin/gemini-agent-telemetry-receiver --host 127.0.0.1 --port 8787 --storage ./.telemetry-data --token-env GEMINI_AGENT_TELEMETRY_TOKEN
@@ -39,6 +39,7 @@ Global Gemini review gate for Codex.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1.
 - Generated local artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - Telemetry raw mode is explicit and requires `--confirm-raw-content`.
+- Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.
 - Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
 - Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.
 - Telemetry uses a separate ingestion token from `GEMINI_AGENT_TELEMETRY_TOKEN` or another `--token-env` value. It never uses `GEMINI_API_KEY`.

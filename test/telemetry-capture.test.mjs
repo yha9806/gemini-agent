@@ -74,6 +74,40 @@ test("captureGeminiTelemetry writes strict raw events when config is enabled", a
   });
 });
 
+test("captureGeminiTelemetry routes events to the global queue when only global config exists", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const home = await tempDir();
+  await saveTelemetryConfig({
+    cwd,
+    home,
+    scope: "global",
+    endpoint: "https://vulca-api.onrender.com/api/v1/gemini-agent/telemetry/ingest",
+    tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    deploymentId: "gemini-agent-main",
+    now: new Date("2026-06-03T09:00:00.000Z"),
+  });
+
+  await captureGeminiTelemetry({
+    cwd,
+    home,
+    command: "ask",
+    prompt: "global prompt",
+    response: "global response",
+    status: "success",
+    latencyMs: 1,
+    now: new Date("2026-06-03T09:00:01.000Z"),
+  });
+  await drainTelemetryCapture({ timeoutMs: 1000 });
+
+  await assert.rejects(() => readdir(telemetryQueueDirs(cwd).pending), /ENOENT/);
+  const events = await readPendingEvents(home);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].deployment_id, "gemini-agent-main");
+  assert.equal(events[0].prompt, "global prompt");
+  assert.equal(events[0].response, "global response");
+});
+
 test("captureGeminiTelemetry passes queue byte bound and can be reset for tests", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();

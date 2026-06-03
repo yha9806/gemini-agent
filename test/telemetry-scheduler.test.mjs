@@ -108,6 +108,14 @@ test("generates systemd service and timer without inline secrets", () => {
   assertNoSecrets(timer);
 });
 
+test("scheduler artifacts can pin global telemetry scope", () => {
+  const input = { ...base, global: true };
+
+  assert.match(generateLaunchdPlist(input), /telemetry tick --global/);
+  assert.match(generateCronEntry(input), /telemetry tick --global/);
+  assert.match(generateSystemdService(input), /ExecStart=\/usr\/local\/bin\/gemini-agent telemetry tick --global/);
+});
+
 test("rejects systemd parser-sensitive service fields", () => {
   assert.throws(
     () => generateSystemdService({ ...base, bin: "/tmp/my agent" }),

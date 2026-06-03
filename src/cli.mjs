@@ -18,7 +18,7 @@ import { drainTelemetryCapture } from "./telemetry-capture.mjs";
 import {
   assertRawConfirmation,
   disableTelemetryConfig,
-  loadTelemetryConfig,
+  loadTelemetryConfigContext,
   rawTelemetryWarning,
   resolveTelemetryToken,
   saveTelemetryConfig,
@@ -58,13 +58,13 @@ function printUsage() {
     "  gemini-agent diff-review (--file <path> | --stdin | <text>)",
     "  gemini-agent research-brief (--file <path> | --stdin | <text>)",
     "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
-    "  gemini-agent telemetry enable --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--schedule <schedule>]",
-    "  gemini-agent telemetry status",
-    "  gemini-agent telemetry preview",
-    "  gemini-agent telemetry flush",
-    "  gemini-agent telemetry tick",
-    "  gemini-agent telemetry validate [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
-    "  gemini-agent telemetry install-scheduler --target launchd|cron|systemd --name <label> [--schedule hourly|daily@HH:MM] [--env-file <path>] [--launchd-domain gui|user] [--dry-run|--write]",
+    "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--schedule <schedule>]",
+    "  gemini-agent telemetry status [--global]",
+    "  gemini-agent telemetry preview [--global]",
+    "  gemini-agent telemetry flush [--global]",
+    "  gemini-agent telemetry tick [--global]",
+    "  gemini-agent telemetry validate [--global] [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
+    "  gemini-agent telemetry install-scheduler [--global] --target launchd|cron|systemd --name <label> [--schedule hourly|daily@HH:MM] [--env-file <path>] [--launchd-domain gui|user] [--dry-run|--write]",
     "  gemini-agent telemetry scheduler-status --target launchd|cron|systemd --name <label>",
     "  gemini-agent telemetry uninstall-scheduler --target launchd|cron|systemd --name <label>",
     "  gemini-agent telemetry disable",
@@ -110,12 +110,15 @@ async function readSecret(prompt) {
 function parseTelemetryOptions(args) {
   const options = {
     confirmRawContent: false,
+    global: false,
   };
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--confirm-raw-content") {
       options.confirmRawContent = true;
+    } else if (arg === "--global") {
+      options.global = true;
     } else if (arg === "--level") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new Error("--level requires a value.");
@@ -149,10 +152,27 @@ function parseTelemetryOptions(args) {
   return options;
 }
 
-function assertNoTelemetryOptions(subcommand, args) {
-  if (args.length === 0) return;
-  parseTelemetryOptions(args);
-  throw new Error(`telemetry ${subcommand} does not accept arguments.`);
+function telemetryScope(options, defaultScope = "auto") {
+  return options.global ? "global" : defaultScope;
+}
+
+function hasNonScopeTelemetryOptions(options) {
+  return Boolean(
+    options.confirmRawContent
+      || options.level
+      || options.endpoint
+      || options.tokenEnv
+      || options.deploymentId
+      || options.schedule
+  );
+}
+
+function parseTelemetryScopeOnlyOptions(subcommand, args) {
+  const options = parseTelemetryOptions(args);
+  if (hasNonScopeTelemetryOptions(options)) {
+    throw new Error(`telemetry ${subcommand} does not accept arguments other than --global.`);
+  }
+  return options;
 }
 
 function schedulerValue(args, index, flag, description = "a value") {
@@ -165,6 +185,7 @@ function parseSchedulerInstallOptions(args) {
   const options = {
     schedule: "daily@09:00",
     write: false,
+    global: false,
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -188,6 +209,8 @@ function parseSchedulerInstallOptions(args) {
       options.write = false;
     } else if (arg === "--write") {
       options.write = true;
+    } else if (arg === "--global") {
+      options.global = true;
     } else {
       throw new Error(`Unknown scheduler argument: ${arg}`);
     }
@@ -466,27 +489,34 @@ async function runArtifactReviewCommand(args) {
   output.write(artifactReviewToPrettyJson(review));
 }
 
-async function requireEnabledTelemetryConfig() {
-  const config = await loadTelemetryConfig({ cwd: process.cwd() });
+async function requireEnabledTelemetryContext(subcommand, args = []) {
+  const options = parseTelemetryScopeOnlyOptions(subcommand, args);
+  const context = await loadTelemetryConfigContext({
+    cwd: process.cwd(),
+    scope: telemetryScope(options),
+  });
+  const config = context.config;
   if (!config?.enabled) throw new Error("Telemetry is not enabled.");
   if (config.level !== "raw") throw new Error("Only raw telemetry is supported.");
-  return config;
+  return context;
 }
 
-async function runTelemetryFlush() {
-  const config = await requireEnabledTelemetryConfig();
+async function runTelemetryFlush(args = []) {
+  const context = await requireEnabledTelemetryContext("flush", args);
+  const config = context.config;
   const token = resolveTelemetryToken({ tokenEnv: config.token_env, env: process.env });
   const result = await flushTelemetryQueue({
-    cwd: process.cwd(),
+    cwd: context.storageCwd,
     endpoint: config.endpoint,
     token,
   });
   output.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-async function runTelemetryTick() {
-  const config = await requireEnabledTelemetryConfig();
-  const state = await loadTelemetryState({ cwd: process.cwd() });
+async function runTelemetryTick(args = []) {
+  const context = await requireEnabledTelemetryContext("tick", args);
+  const config = context.config;
+  const state = await loadTelemetryState({ cwd: context.storageCwd });
   const decision = telemetryTickDecision({
     schedule: config.schedule,
     lastSentAt: state.last_sent_at,
@@ -501,7 +531,7 @@ async function runTelemetryTick() {
     }, null, 2)}\n`);
     return;
   }
-  await runTelemetryFlush();
+  await runTelemetryFlush(args);
 }
 
 async function askGeminiForTelemetryValidation(prompt) {
@@ -521,14 +551,18 @@ async function runTelemetryValidate(args) {
   assertRawConfirmation(options.confirmRawContent);
   if (options.level && options.level !== "raw") throw new Error("Only raw telemetry is supported.");
 
-  const config = await loadTelemetryConfig({ cwd: process.cwd() });
+  const context = await loadTelemetryConfigContext({
+    cwd: process.cwd(),
+    scope: telemetryScope(options),
+  });
+  const config = context.config;
   const enabledConfig = config?.enabled ? config : null;
   const endpoint = options.endpoint ?? enabledConfig?.endpoint ?? DEFAULT_TELEMETRY_ENDPOINT;
   const tokenEnv = options.tokenEnv ?? enabledConfig?.token_env ?? DEFAULT_TELEMETRY_TOKEN_ENV;
   const deploymentId = options.deploymentId ?? enabledConfig?.deployment_id;
   const token = resolveTelemetryToken({ tokenEnv, env: process.env });
   const result = await runTelemetryValidation({
-    cwd: process.cwd(),
+    cwd: context.storageCwd,
     endpoint,
     token,
     deploymentId,
@@ -548,6 +582,7 @@ async function runTelemetry(args) {
     assertRawConfirmation(options.confirmRawContent);
     const config = await saveTelemetryConfig({
       cwd: process.cwd(),
+      scope: telemetryScope(options, "local"),
       endpoint: options.endpoint,
       tokenEnv: options.tokenEnv,
       deploymentId: options.deploymentId,
@@ -559,29 +594,43 @@ async function runTelemetry(args) {
   }
 
   if (subcommand === "status") {
-    assertNoTelemetryOptions(subcommand, subArgs);
-    const config = await loadTelemetryConfig({ cwd: process.cwd() });
-    const queue = await loadTelemetryState({ cwd: process.cwd() });
-    output.write(`${JSON.stringify({ config: config ?? { enabled: false }, queue }, null, 2)}\n`);
+    const options = parseTelemetryScopeOnlyOptions(subcommand, subArgs);
+    const context = await loadTelemetryConfigContext({
+      cwd: process.cwd(),
+      scope: telemetryScope(options),
+    });
+    const queue = await loadTelemetryState({ cwd: context.storageCwd });
+    output.write(`${JSON.stringify({
+      scope: context.scope,
+      storage_cwd: context.storageCwd,
+      config: context.config ?? { enabled: false },
+      queue,
+    }, null, 2)}\n`);
     return;
   }
 
   if (subcommand === "preview") {
-    assertNoTelemetryOptions(subcommand, subArgs);
-    const queue = await loadTelemetryState({ cwd: process.cwd() });
-    output.write(`${JSON.stringify({ queue }, null, 2)}\n`);
+    const options = parseTelemetryScopeOnlyOptions(subcommand, subArgs);
+    const context = await loadTelemetryConfigContext({
+      cwd: process.cwd(),
+      scope: telemetryScope(options),
+    });
+    const queue = await loadTelemetryState({ cwd: context.storageCwd });
+    output.write(`${JSON.stringify({
+      scope: context.scope,
+      storage_cwd: context.storageCwd,
+      queue,
+    }, null, 2)}\n`);
     return;
   }
 
   if (subcommand === "flush") {
-    assertNoTelemetryOptions(subcommand, subArgs);
-    await runTelemetryFlush();
+    await runTelemetryFlush(subArgs);
     return;
   }
 
   if (subcommand === "tick") {
-    assertNoTelemetryOptions(subcommand, subArgs);
-    await runTelemetryTick();
+    await runTelemetryTick(subArgs);
     return;
   }
 
@@ -625,15 +674,22 @@ async function runTelemetry(args) {
   }
 
   if (subcommand === "disable") {
-    assertNoTelemetryOptions(subcommand, subArgs);
-    const config = await disableTelemetryConfig({ cwd: process.cwd() });
+    const options = parseTelemetryScopeOnlyOptions(subcommand, subArgs);
+    const config = await disableTelemetryConfig({
+      cwd: process.cwd(),
+      scope: telemetryScope(options, "local"),
+    });
     output.write(`${JSON.stringify({ config }, null, 2)}\n`);
     return;
   }
 
   if (subcommand === "purge") {
-    assertNoTelemetryOptions(subcommand, subArgs);
-    const result = await purgeTelemetryData({ cwd: process.cwd() });
+    const options = parseTelemetryScopeOnlyOptions(subcommand, subArgs);
+    const context = await loadTelemetryConfigContext({
+      cwd: process.cwd(),
+      scope: telemetryScope(options),
+    });
+    const result = await purgeTelemetryData({ cwd: context.storageCwd });
     output.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }

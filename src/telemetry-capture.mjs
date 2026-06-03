@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { appendTelemetryEvent } from "./telemetry-queue.mjs";
-import { loadTelemetryConfig } from "./telemetry-config.mjs";
+import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
 import {
   DEFAULT_TELEMETRY_DEPLOYMENT_ID,
   truncateTelemetryText,
@@ -21,7 +21,7 @@ let configCache = new WeakMap();
 let defaultConfigCache = new Map();
 
 function configMapFor(loadConfig) {
-  if (loadConfig === loadTelemetryConfig) return defaultConfigCache;
+  if (loadConfig === loadTelemetryConfigContext) return defaultConfigCache;
   let cache = configCache.get(loadConfig);
   if (!cache) {
     cache = new Map();
@@ -30,23 +30,38 @@ function configMapFor(loadConfig) {
   return cache;
 }
 
-function cachedTelemetryConfig({ cwd, loadConfig, configCacheTtlMs = DEFAULT_CONFIG_CACHE_TTL_MS }) {
+function normalizeLoadedTelemetryContext(value, cwd) {
+  if (value && typeof value === "object" && "config" in value && "storageCwd" in value) {
+    return value;
+  }
+  return { scope: "local", storageCwd: cwd, config: value ?? null };
+}
+
+function cachedTelemetryContext({
+  cwd,
+  home,
+  loadConfig,
+  configCacheTtlMs = DEFAULT_CONFIG_CACHE_TTL_MS,
+}) {
   const cache = configMapFor(loadConfig);
   const now = Date.now();
   const ttlMs = nonnegativeInteger(configCacheTtlMs);
-  const cached = cache.get(cwd);
+  const cacheKey = `${cwd}\0${home ?? ""}`;
+  const cached = cache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
     return cached.promise;
   }
   const promise = Promise.resolve()
-    .then(() => loadConfig({ cwd }))
+    .then(() => loadConfig({ cwd, home }))
     .catch(() => null)
-    .then((config) => {
+    .then((loaded) => {
+      const context = normalizeLoadedTelemetryContext(loaded, cwd);
+      const config = context.config;
       const expiresAt = config?.enabled && config.level === "raw" ? now : now + ttlMs;
-      cache.set(cwd, { promise: Promise.resolve(config), expiresAt });
-      return config;
+      cache.set(cacheKey, { promise: Promise.resolve(context), expiresAt });
+      return context;
     });
-  cache.set(cwd, { promise, expiresAt: now + ttlMs });
+  cache.set(cacheKey, { promise, expiresAt: now + ttlMs });
   return promise;
 }
 
@@ -181,6 +196,7 @@ function buildTelemetryEvent({
 
 async function captureGeminiTelemetryTask({
   cwd = process.cwd(),
+  home,
   command = DEFAULT_COMMAND,
   source = DEFAULT_SOURCE,
   prompt = "",
@@ -192,11 +208,12 @@ async function captureGeminiTelemetryTask({
   contents = null,
   deploymentId = null,
   projectId = DEFAULT_PROJECT_ID,
-  loadConfig = loadTelemetryConfig,
+  loadConfig = loadTelemetryConfigContext,
   appendEvent = appendTelemetryEvent,
   configCacheTtlMs = DEFAULT_CONFIG_CACHE_TTL_MS,
 } = {}) {
-  const config = await cachedTelemetryConfig({ cwd, loadConfig, configCacheTtlMs });
+  const context = await cachedTelemetryContext({ cwd, home, loadConfig, configCacheTtlMs });
+  const config = context.config;
   if (!config?.enabled || config.level !== "raw") return { queued: false };
   const resolvedDeploymentId = deploymentId ?? config.deployment_id ?? DEFAULT_TELEMETRY_DEPLOYMENT_ID;
 
@@ -214,7 +231,7 @@ async function captureGeminiTelemetryTask({
     projectId,
     maxEventBytes: config.max_event_bytes,
   });
-  await appendEvent({ cwd, event, maxQueueBytes: config.max_queue_bytes });
+  await appendEvent({ cwd: context.storageCwd, event, maxQueueBytes: config.max_queue_bytes });
   return { queued: true, event_id: event.event_id };
 }
 

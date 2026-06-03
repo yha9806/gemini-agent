@@ -1,4 +1,5 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   DEFAULT_TELEMETRY_DEPLOYMENT_ID,
@@ -14,6 +15,25 @@ function telemetryDir(cwd) {
 
 function telemetryConfigPath(cwd) {
   return join(telemetryDir(cwd), CONFIG_FILE);
+}
+
+function resolveHome(home) {
+  const resolved = home ?? process.env.HOME ?? homedir();
+  if (typeof resolved !== "string" || !resolved.trim()) {
+    throw new Error("Telemetry global scope requires a home directory.");
+  }
+  return resolved;
+}
+
+function storageCwdForScope({ cwd, home, scope }) {
+  if (scope === "local") return cwd;
+  if (scope === "global") return resolveHome(home);
+  throw new Error(`Unsupported telemetry scope: ${scope}`);
+}
+
+function normalizeTelemetryScope(scope = "local") {
+  if (scope === "local" || scope === "global" || scope === "auto") return scope;
+  throw new Error(`Unsupported telemetry scope: ${scope}`);
 }
 
 async function readTelemetryConfigJson(cwd) {
@@ -114,18 +134,55 @@ export function resolveTelemetryToken({ tokenEnv, env = process.env }) {
   return value;
 }
 
-export async function loadTelemetryConfig({ cwd = process.cwd() } = {}) {
-  const rawConfig = await readTelemetryConfigJson(cwd);
-  if (!rawConfig) return null;
+export async function loadTelemetryConfig({
+  cwd = process.cwd(),
+  home,
+  scope = "auto",
+} = {}) {
+  return (await loadTelemetryConfigContext({ cwd, home, scope })).config;
+}
 
+function normalizedConfigFromRaw(rawConfig) {
+  if (!rawConfig) return null;
   const config = normalizeTelemetryConfig(rawConfig.value);
   validateTelemetryEndpoint(config.endpoint);
   validateTelemetrySchedule(config.schedule);
   return config;
 }
 
+export async function loadTelemetryConfigContext({
+  cwd = process.cwd(),
+  home,
+  scope = "auto",
+} = {}) {
+  const resolvedScope = normalizeTelemetryScope(scope);
+  if (resolvedScope !== "auto") {
+    const storageCwd = storageCwdForScope({ cwd, home, scope: resolvedScope });
+    return {
+      scope: resolvedScope,
+      storageCwd,
+      config: normalizedConfigFromRaw(await readTelemetryConfigJson(storageCwd)),
+    };
+  }
+
+  const localConfig = normalizedConfigFromRaw(await readTelemetryConfigJson(cwd));
+  if (localConfig?.enabled) {
+    return { scope: "local", storageCwd: cwd, config: localConfig };
+  }
+
+  const globalCwd = resolveHome(home);
+  const globalConfig = normalizedConfigFromRaw(await readTelemetryConfigJson(globalCwd));
+  if (globalConfig?.enabled || (!localConfig && globalConfig)) {
+    return { scope: "global", storageCwd: globalCwd, config: globalConfig };
+  }
+
+  return { scope: "local", storageCwd: cwd, config: localConfig };
+}
+
 export async function saveTelemetryConfig({
   cwd = process.cwd(),
+  home,
+  scope = "local",
   endpoint,
   tokenEnv,
   deploymentId,
@@ -135,12 +192,13 @@ export async function saveTelemetryConfig({
   const url = validateTelemetryEndpoint(endpoint);
   assertTokenEnvName(tokenEnv);
   validateTelemetrySchedule(schedule);
-  const dir = telemetryDir(cwd);
-  const path = telemetryConfigPath(cwd);
+  const storageCwd = storageCwdForScope({ cwd, home, scope: normalizeTelemetryScope(scope) });
+  const dir = telemetryDir(storageCwd);
+  const path = telemetryConfigPath(storageCwd);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
 
-  const previousRaw = await readTelemetryConfigJson(cwd);
+  const previousRaw = await readTelemetryConfigJson(storageCwd);
   const previous = previousRaw ? normalizeTelemetryConfig(previousRaw.value) : null;
   const resolvedDeploymentId = deploymentId ?? previous?.deployment_id ?? DEFAULT_TELEMETRY_DEPLOYMENT_ID;
   assertTelemetryDeploymentId(resolvedDeploymentId);
@@ -176,9 +234,12 @@ export async function saveTelemetryConfig({
 
 export async function disableTelemetryConfig({
   cwd = process.cwd(),
+  home,
+  scope = "local",
   now = new Date(),
 } = {}) {
-  const rawConfig = await readTelemetryConfigJson(cwd);
+  const storageCwd = storageCwdForScope({ cwd, home, scope: normalizeTelemetryScope(scope) });
+  const rawConfig = await readTelemetryConfigJson(storageCwd);
   if (!rawConfig) return { enabled: false };
 
   const previous = normalizeTelemetryConfig(rawConfig.value);

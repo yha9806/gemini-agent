@@ -141,9 +141,13 @@ function managedEnd(name) {
   return `${MANAGED_END_PREFIX}${name}`;
 }
 
-function buildTickCommand({ cwd, bin, envFile }) {
+function tickCommandArgs(options) {
+  return `telemetry tick${options.global ? " --global" : ""}`;
+}
+
+function buildTickCommand({ cwd, bin, envFile, global }) {
   const sourceEnv = envFile ? `set -a; . ${shellWord(envFile)}; set +a; ` : "";
-  return `${sourceEnv}cd ${shellWord(cwd)} && exec ${shellWord(bin)} telemetry tick`;
+  return `${sourceEnv}cd ${shellWord(cwd)} && exec ${shellWord(bin)} ${tickCommandArgs({ global })}`;
 }
 
 function currentUid() {
@@ -180,6 +184,7 @@ export function normalizeSchedulerOptions({
   home = schedulerHome(),
   uid = currentUid(),
   launchdDomain = "gui",
+  global = false,
 } = {}) {
   assertName(name);
   parseSchedule(schedule);
@@ -191,6 +196,9 @@ export function normalizeSchedulerOptions({
   if (!["gui", "user"].includes(launchdDomain)) {
     throw new Error("launchdDomain must be gui or user.");
   }
+  if (typeof global !== "boolean") {
+    throw new Error("Scheduler global option must be a boolean.");
+  }
   return {
     name,
     schedule,
@@ -200,6 +208,7 @@ export function normalizeSchedulerOptions({
     home: safeHome,
     uid,
     launchdDomain,
+    global,
   };
 }
 
@@ -234,7 +243,7 @@ export function generateCronEntry(input) {
   const options = normalizeSchedulerOptions(input);
   const schedule = parseSchedule(options.schedule);
   const sourceEnv = options.envFile ? `. ${shellWord(options.envFile)} && ` : "";
-  return `${schedule.cron} cd ${shellWord(options.cwd)} && ${sourceEnv}${shellWord(options.bin)} telemetry tick # gemini-agent:${options.name}`;
+  return `${schedule.cron} cd ${shellWord(options.cwd)} && ${sourceEnv}${shellWord(options.bin)} ${tickCommandArgs(options)} # gemini-agent:${options.name}`;
 }
 
 export function generateSystemdService(input) {
@@ -247,8 +256,8 @@ Description=Gemini Agent telemetry tick ${options.name}
 [Service]
 Type=oneshot
 WorkingDirectory=${options.cwd}
-${env}ExecStart=${options.bin} telemetry tick
-`;
+${env}ExecStart=${options.bin} ${tickCommandArgs(options)}
+${options.global ? "# Global telemetry scope is pinned by the ExecStart argument above.\n" : ""}`;
 }
 
 export function generateSystemdTimer(input) {

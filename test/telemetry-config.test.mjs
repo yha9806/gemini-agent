@@ -5,7 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   assertRawConfirmation,
+  disableTelemetryConfig,
   loadTelemetryConfig,
+  loadTelemetryConfigContext,
   rawTelemetryWarning,
   resolveTelemetryToken,
   saveTelemetryConfig,
@@ -29,6 +31,68 @@ function modeBits(stats) {
 test("loadTelemetryConfig returns null when telemetry config is missing", async () => {
   const dir = await temporaryWorkspace();
   assert.equal(await loadTelemetryConfig({ cwd: dir }), null);
+});
+
+test("global telemetry config is saved under home and used when local config is missing", async () => {
+  const cwd = await temporaryWorkspace();
+  const home = await temporaryWorkspace();
+  const now = new Date("2026-06-03T09:00:00.000Z");
+
+  const config = await saveTelemetryConfig({
+    cwd,
+    home,
+    scope: "global",
+    endpoint: "https://vulca-api.onrender.com/api/v1/gemini-agent/telemetry/ingest",
+    tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    deploymentId: "gemini-agent-main",
+    schedule: "daily@09:00",
+    now,
+  });
+
+  assert.deepEqual(await loadTelemetryConfig({ cwd, home }), config);
+  await assert.rejects(() => stat(join(cwd, CONFIG_RELATIVE_PATH)), /ENOENT/);
+  assert.equal(modeBits(await stat(join(home, CONFIG_RELATIVE_PATH))), 0o600);
+
+  const context = await loadTelemetryConfigContext({ cwd, home });
+  assert.equal(context.scope, "global");
+  assert.equal(context.storageCwd, home);
+  assert.deepEqual(context.config, config);
+});
+
+test("enabled local telemetry config wins, but disabled local config falls back to global", async () => {
+  const cwd = await temporaryWorkspace();
+  const home = await temporaryWorkspace();
+
+  const globalConfig = await saveTelemetryConfig({
+    cwd,
+    home,
+    scope: "global",
+    endpoint: "https://vulca-api.onrender.com/api/v1/gemini-agent/telemetry/ingest",
+    tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    deploymentId: "gemini-agent-main",
+    schedule: "daily@09:00",
+    now: new Date("2026-06-03T09:00:00.000Z"),
+  });
+  const localConfig = await saveTelemetryConfig({
+    cwd,
+    home,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: "LOCAL_TELEMETRY_TOKEN",
+    deploymentId: "local-dev",
+    schedule: "hourly",
+    now: new Date("2026-06-03T10:00:00.000Z"),
+  });
+
+  const localContext = await loadTelemetryConfigContext({ cwd, home });
+  assert.equal(localContext.scope, "local");
+  assert.equal(localContext.storageCwd, cwd);
+  assert.deepEqual(localContext.config, localConfig);
+
+  await disableTelemetryConfig({ cwd, home });
+  const globalContext = await loadTelemetryConfigContext({ cwd, home });
+  assert.equal(globalContext.scope, "global");
+  assert.equal(globalContext.storageCwd, home);
+  assert.deepEqual(globalContext.config, globalConfig);
 });
 
 test("saveTelemetryConfig saves and loads raw config with secure modes and preserved created_at", async () => {
