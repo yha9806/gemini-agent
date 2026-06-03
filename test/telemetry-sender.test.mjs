@@ -264,6 +264,63 @@ test("flushTelemetryQueue rejects oversized maxBytes before sending", async () =
 
   assert.equal(called, false);
   assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000001"]);
+  assert.deepEqual(await regularFileNames(telemetryQueueDirs(cwd).inflight), []);
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_failure_count, 1);
+  assert.equal(state.last_failure_reason, "max_bytes_exceeded");
+});
+
+test("flushTelemetryQueue sends when maxBytes matches actual serialized body length", async () => {
+  const event = telemetryEvent(21);
+  const probeCwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd: probeCwd, event });
+  let actualBytes;
+
+  await flushTelemetryQueue({
+    cwd: probeCwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    fetchImpl: async (url, options) => {
+      actualBytes = Buffer.byteLength(options.body, "utf8");
+      const body = JSON.parse(options.body);
+      return new Response(JSON.stringify({
+        ok: true,
+        batch_id: body.batch_id,
+        received_count: body.events.length,
+        received_at: "2026-05-29T10:00:01.000Z",
+      }), { status: 200 });
+    },
+    now: NOW,
+  });
+  assert.equal(Number.isInteger(actualBytes), true);
+
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event });
+  let sentBytes;
+
+  const result = await flushTelemetryQueue({
+    cwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    maxBytes: actualBytes,
+    fetchImpl: async (url, options) => {
+      sentBytes = Buffer.byteLength(options.body, "utf8");
+      assert.equal(sentBytes, actualBytes);
+      const body = JSON.parse(options.body);
+      return new Response(JSON.stringify({
+        ok: true,
+        batch_id: body.batch_id,
+        received_count: body.events.length,
+        received_at: "2026-05-29T10:00:01.000Z",
+      }), { status: 200 });
+    },
+    now: NOW,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.sent_count, 1);
+  assert.equal(sentBytes, actualBytes);
+  assert.deepEqual(await readPendingEvents(cwd), []);
 });
 
 test("flushTelemetryQueue maps MCP legacy events to raw-v1 source fields", async () => {

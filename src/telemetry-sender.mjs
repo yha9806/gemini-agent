@@ -381,10 +381,6 @@ export async function flushTelemetryQueue({
   }
   if (maxBytes !== undefined) {
     assertPositiveInteger(maxBytes, "maxBytes");
-    const preview = await previewTelemetryFlush({ cwd, now, batchSize, maxBytes });
-    if (preview.would_send_count > 0 && preview.exceeds_max_bytes) {
-      throw new Error("Telemetry batch exceeds maxBytes before send.");
-    }
   }
 
   const claimed = await claimTelemetryBatch({ cwd, batchSize, now });
@@ -393,6 +389,15 @@ export async function flushTelemetryQueue({
   }
 
   const batch = rawBatchFromClaimed({ claimed, now });
+  if (maxBytes !== undefined && byteLength(batch) > maxBytes) {
+    await failTelemetryBatch({
+      cwd,
+      batchId: claimed.batchId,
+      retryable: true,
+      reason: "max_bytes_exceeded",
+    });
+    throw new Error("Telemetry batch exceeds maxBytes before send.");
+  }
 
   let ack;
   let acceptedEventIds;
