@@ -177,6 +177,25 @@ test("flushTelemetryQueue returns zero without sending when queue is empty", asy
   assert.equal(called, false);
 });
 
+test("previewTelemetryFlush returns empty planned batch shape", async () => {
+  const cwd = await temporaryWorkspace();
+
+  const preview = await previewTelemetryFlush({
+    cwd,
+    maxBytes: 10,
+    now: NOW,
+  });
+
+  assert.deepEqual(preview, {
+    ok: true,
+    dry_run: true,
+    would_send_count: 0,
+    event_ids: [],
+    batch_bytes: 0,
+    exceeds_max_bytes: false,
+  });
+});
+
 test("previewTelemetryFlush returns planned batch without moving files", async () => {
   const cwd = await temporaryWorkspace();
   await appendTelemetryEvent({ cwd, event: telemetryEvent(1) });

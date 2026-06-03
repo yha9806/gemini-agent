@@ -337,7 +337,14 @@ export async function previewTelemetryFlush({
 
   const peeked = await peekTelemetryEvents({ cwd, batchSize });
   if (peeked.events.length === 0) {
-    return { ok: true, dry_run: true, would_send_count: 0 };
+    return {
+      ok: true,
+      dry_run: true,
+      would_send_count: 0,
+      event_ids: [],
+      batch_bytes: 0,
+      exceeds_max_bytes: false,
+    };
   }
 
   const batch = rawBatchFromEvents({
