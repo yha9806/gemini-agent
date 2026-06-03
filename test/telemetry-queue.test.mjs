@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test from "node:test";
 import {
   appendTelemetryEvent,
@@ -106,6 +106,11 @@ async function readPendingEvents(cwd) {
   const { pending } = telemetryQueueDirs(cwd);
   const paths = await regularFilePaths(pending);
   return Promise.all(paths.map((path) => readJson(path)));
+}
+
+function assertQuarantinedEventPath(dirs, eventPath) {
+  const relativePath = relative(dirs.quarantine, eventPath);
+  assert.match(relativePath, /^event_[a-f0-9]{16}(?:_[a-f0-9-]+)?\/event\.json$/);
 }
 
 async function sumFileBytes(paths) {
@@ -307,6 +312,10 @@ test("quarantineTelemetryEvent moves one pending event into quarantine with reas
   assert.equal(reason.reason, "bad payload");
   assert.equal(reason.quarantined_at, "2026-06-03T12:00:00.000Z");
   assert.equal(result.event_path.startsWith(dirs.quarantine), true);
+
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.queue_bytes, await sumFileBytes(await regularFilePaths(dirs.pending)));
+  assert.equal(state.last_failure_reason, "quarantined:bad payload");
 });
 
 test("quarantineTelemetryEvent returns false when event id is not pending", async () => {
@@ -321,6 +330,95 @@ test("quarantineTelemetryEvent returns false when event id is not pending", asyn
 
   assert.deepEqual(result, { quarantined: false, event_id: "evt_missing" });
   assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000003"]);
+});
+
+test("quarantineTelemetryEvent stores dot-segment event ids in safe hashed directories", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(1, { event_id: ".", trace_id: "trace_dot" }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(2, { event_id: "..", trace_id: "trace_dotdot" }),
+  });
+
+  const dot = await quarantineTelemetryEvent({ cwd, eventId: ".", reason: "dot" });
+  const dotdot = await quarantineTelemetryEvent({ cwd, eventId: "..", reason: "dotdot" });
+
+  assertQuarantinedEventPath(dirs, dot.event_path);
+  assertQuarantinedEventPath(dirs, dotdot.event_path);
+  assert.notEqual(dot.event_path, dotdot.event_path);
+  assert.equal((await readJson(dot.event_path)).event_id, ".");
+  assert.equal((await readJson(dotdot.event_path)).event_id, "..");
+
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.pending.count, 0);
+  assert.equal(snapshot.quarantine.count, 2);
+});
+
+test("quarantineTelemetryEvent does not overwrite safe-name collisions", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(1, { event_id: "a:b", trace_id: "trace_colon" }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(2, { event_id: "a_b", trace_id: "trace_underscore" }),
+  });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(3) });
+
+  const colon = await quarantineTelemetryEvent({ cwd, eventId: "a:b", reason: "colon" });
+  const underscore = await quarantineTelemetryEvent({
+    cwd,
+    eventId: "a_b",
+    reason: "underscore",
+  });
+
+  assert.notEqual(colon.event_path, underscore.event_path);
+  assertQuarantinedEventPath(dirs, colon.event_path);
+  assertQuarantinedEventPath(dirs, underscore.event_path);
+  assert.equal((await readJson(colon.event_path)).event_id, "a:b");
+  assert.equal((await readJson(underscore.event_path)).event_id, "a_b");
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000003"]);
+
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.pending.count, 1);
+  assert.equal(snapshot.quarantine.count, 2);
+
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.queue_bytes, await sumFileBytes(await regularFilePaths(dirs.pending)));
+  assert.equal(state.last_failure_reason, "quarantined:underscore");
+});
+
+test("peekTelemetryEvents respects the queue lock", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1), maxQueueBytes: LARGE_QUEUE_LIMIT });
+
+  let releaseLock;
+  let enteredLock = false;
+  const holder = withTelemetryQueueLock({ cwd, staleMs: 10_000, retries: 0 }, async () => {
+    enteredLock = true;
+    await new Promise((resolve) => {
+      releaseLock = resolve;
+    });
+  });
+
+  await waitUntil(async () => enteredLock && await pathExists(dirs.lock));
+
+  await assert.rejects(
+    () => peekTelemetryEvents({ cwd, batchSize: 1 }),
+    /lock/i,
+  );
+
+  releaseLock();
+  await holder;
+  const peeked = await peekTelemetryEvents({ cwd, batchSize: 1 });
+  assert.deepEqual(peeked.events.map((event) => event.event_id), ["evt_000001"]);
 });
 
 test("complete and fail update send state counters", async () => {

@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_MAX_QUEUE_BYTES,
   normalizeTelemetryEvent,
@@ -202,7 +202,13 @@ async function summarizeDirectory(dir, filter = () => true) {
     for (const entry of entries) {
       const child = join(path, entry.name);
       if (entry.isFile()) {
-        const itemStat = await stat(child);
+        let itemStat;
+        try {
+          itemStat = await stat(child);
+        } catch (error) {
+          if (error.code === "ENOENT") continue;
+          throw error;
+        }
         bytes += itemStat.size;
         if (filter({ name: entry.name, path: child })) count += 1;
       } else if (entry.isDirectory()) {
@@ -224,10 +230,27 @@ async function quarantineSummary(dir) {
 }
 
 function safeQuarantineEventDir(eventId) {
-  if (typeof eventId !== "string" || !/^[A-Za-z0-9_.:-]+$/.test(eventId)) {
+  if (typeof eventId !== "string" || !eventId.trim()) {
     throw new Error("Telemetry event id is invalid.");
   }
-  return eventId.replaceAll(":", "_");
+  const digest = createHash("sha256").update(eventId).digest("hex").slice(0, 16);
+  return `event_${digest}`;
+}
+
+async function reserveQuarantineEventDir(dirs, eventId) {
+  const baseName = safeQuarantineEventDir(eventId);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const name = attempt === 0 ? baseName : `${baseName}_${randomUUID()}`;
+    const eventDir = join(dirs.quarantine, name);
+    try {
+      await mkdir(eventDir, { mode: SECURE_DIR_MODE });
+      await chmod(eventDir, SECURE_DIR_MODE);
+      return eventDir;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error("Telemetry quarantine event directory could not be reserved.");
 }
 
 async function sumFileSizes(files) {
@@ -589,13 +612,15 @@ export async function peekTelemetryEvents({
   batchSize,
 } = {}) {
   assertPositiveInteger(batchSize, "batchSize");
-  const dirs = await ensureQueueDirs(cwd);
-  const files = (await regularFiles(dirs.pending)).slice(0, batchSize);
-  const events = [];
-  for (const file of files) {
-    events.push(normalizeTelemetryEvent(await readJsonFile(file.path, "Telemetry queue event")));
-  }
-  return { files, events };
+  return withTelemetryQueueLock({ cwd }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const files = (await regularFiles(dirs.pending)).slice(0, batchSize);
+    const events = [];
+    for (const file of files) {
+      events.push(normalizeTelemetryEvent(await readJsonFile(file.path, "Telemetry queue event")));
+    }
+    return { files, events };
+  });
 }
 
 export async function quarantineTelemetryEvent({
@@ -618,8 +643,7 @@ export async function quarantineTelemetryEvent({
       const event = normalizeTelemetryEvent(await readJsonFile(file.path, "Telemetry queue event"));
       if (event.event_id !== eventId) continue;
 
-      const eventDir = join(dirs.quarantine, safeQuarantineEventDir(eventId));
-      await secureMkdir(eventDir);
+      const eventDir = await reserveQuarantineEventDir(dirs, eventId);
       const eventPath = join(eventDir, "event.json");
       const reasonPath = join(eventDir, "reason.json");
       await rename(file.path, eventPath);
