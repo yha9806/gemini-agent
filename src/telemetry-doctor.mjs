@@ -1,12 +1,24 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { validateTelemetryEndpoint } from "./telemetry-config.mjs";
+import { resolveTelemetryToken, validateTelemetryEndpoint } from "./telemetry-config.mjs";
 import { loadTelemetryQueueSnapshot, loadTelemetryState } from "./telemetry-queue.mjs";
 import { normalizeTelemetryConfig } from "./telemetry-schemas.mjs";
 
 const TELEMETRY_ROOT = ".gemini-agent/telemetry";
 const CONFIG_FILE = "config.json";
+const DIAGNOSTIC_CONFIG_FIELDS = [
+  "enabled",
+  "level",
+  "endpoint",
+  "token_env",
+  "deployment_id",
+  "schedule",
+  "max_event_bytes",
+  "max_queue_bytes",
+  "created_at",
+  "updated_at",
+];
 
 function telemetryConfigPath(cwd) {
   return join(cwd, TELEMETRY_ROOT, CONFIG_FILE);
@@ -96,10 +108,15 @@ async function readTelemetryConfigJson(cwd) {
 }
 
 function rawConfigFallback(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return { ...value };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { enabled: false };
   }
-  return { enabled: false };
+
+  const config = {};
+  for (const field of DIAGNOSTIC_CONFIG_FIELDS) {
+    if (Object.hasOwn(value, field)) config[field] = value[field];
+  }
+  return config;
 }
 
 function validateConfigEndpoint(config) {
@@ -133,6 +150,21 @@ function validateConfigSchedule(config) {
   }
 }
 
+function validateConfigTokenEnv(config) {
+  const tokenEnv = config.token_env;
+  const env = Object.create(null);
+  if (typeof tokenEnv === "string") env[tokenEnv] = "telemetry-token";
+  try {
+    resolveTelemetryToken({ tokenEnv, env });
+    return { tokenEnvValid: true, tokenEnvError: null };
+  } catch (error) {
+    return {
+      tokenEnvValid: false,
+      tokenEnvError: messageFromError(error),
+    };
+  }
+}
+
 function loadConfigFromRaw(rawConfig) {
   if (!rawConfig.exists) {
     return {
@@ -144,6 +176,8 @@ function loadConfigFromRaw(rawConfig) {
       endpointError: "Telemetry endpoint is missing.",
       scheduleValid: true,
       scheduleError: null,
+      tokenEnvValid: false,
+      tokenEnvError: "Telemetry token env is missing.",
     };
   }
 
@@ -157,6 +191,8 @@ function loadConfigFromRaw(rawConfig) {
       endpointError: "Telemetry endpoint is missing.",
       scheduleValid: false,
       scheduleError: rawConfig.error,
+      tokenEnvValid: false,
+      tokenEnvError: null,
     };
   }
 
@@ -171,15 +207,18 @@ function loadConfigFromRaw(rawConfig) {
 
   const { endpointValid, endpointError } = validateConfigEndpoint(config);
   const { scheduleValid, scheduleError } = validateConfigSchedule(config);
+  const { tokenEnvValid, tokenEnvError } = validateConfigTokenEnv(config);
   return {
     hasConfig: true,
     config,
-    configValid: !configError && endpointValid && scheduleValid,
-    configError: configError ?? endpointError ?? scheduleError,
+    configValid: !configError && endpointValid && scheduleValid && tokenEnvValid,
+    configError: configError ?? endpointError ?? scheduleError ?? tokenEnvError,
     endpointValid,
     endpointError,
     scheduleValid,
     scheduleError,
+    tokenEnvValid,
+    tokenEnvError,
   };
 }
 
@@ -245,11 +284,14 @@ function recommendation({
   configValid,
   endpointValid,
   endpointError,
+  tokenEnvValid,
+  tokenEnvError,
   tokenPresent,
   pendingCount,
   quarantineCount,
 }) {
   if (!configValid) {
+    if (!tokenEnvValid && tokenEnvError) return "Fix the telemetry token environment variable name.";
     return endpointError && endpointError !== "Telemetry endpoint is missing."
       ? "Fix the telemetry endpoint URL."
       : "Fix the telemetry config.";
@@ -277,7 +319,10 @@ export async function runTelemetryDoctor({
   const enabled = config.enabled === true;
   const configValid = context.configValid;
   const tokenName = config.token_env;
-  const tokenPresent = typeof tokenName === "string"
+  const tokenEnvValid = context.tokenEnvValid;
+  const tokenEnvError = context.tokenEnvError;
+  const tokenPresent = tokenEnvValid
+    && typeof tokenName === "string"
     && typeof env[tokenName] === "string"
     && env[tokenName].trim().length > 0;
   const endpointValid = context.endpointValid;
@@ -305,7 +350,8 @@ export async function runTelemetryDoctor({
     checks: {
       config_valid: check(configValid, configValid ? "Telemetry config is valid." : context.configError ?? "Telemetry config is invalid."),
       config_enabled: check(enabled, enabled ? "Telemetry is enabled." : "Telemetry is not enabled."),
-      token_env_present: check(tokenPresent, tokenPresent ? `${tokenName} is set.` : "Telemetry token env is missing."),
+      token_env_valid: check(tokenEnvValid, tokenEnvValid ? "Telemetry token env name is valid." : tokenEnvError ?? "Telemetry token env name is invalid."),
+      token_env_present: check(tokenPresent, tokenPresent ? `${tokenName} is set.` : tokenEnvError ?? "Telemetry token env is missing."),
       endpoint_valid: check(endpointValid, endpointValid ? "Telemetry endpoint is valid." : endpointError ?? "Telemetry endpoint is missing."),
     },
     endpoint_check: endpointCheck,
@@ -316,6 +362,8 @@ export async function runTelemetryDoctor({
       tokenPresent,
       endpointValid,
       endpointError,
+      tokenEnvValid,
+      tokenEnvError,
       pendingCount,
       quarantineCount,
     }),

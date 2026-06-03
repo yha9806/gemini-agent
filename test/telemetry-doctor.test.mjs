@@ -192,6 +192,60 @@ test("runTelemetryDoctor reports malformed config JSON without throwing or fetch
   assert.equal(result.recommended_action, "Fix the telemetry config.");
 });
 
+test("runTelemetryDoctor rejects forbidden token env names before health or flush recommendation", async () => {
+  const cwd = await temporaryWorkspace();
+  await writeTelemetryConfig(cwd, telemetryConfig({
+    token_env: "GEMINI_API_KEY",
+  }));
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(4) });
+
+  let fetchCalled = false;
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: { GEMINI_API_KEY: "gemini-api-key" },
+    fetchImpl: async () => {
+      fetchCalled = true;
+      throw new Error("fetch should not be called");
+    },
+  });
+
+  assert.equal(fetchCalled, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.config_valid.ok, false);
+  assert.equal(result.checks.token_env_valid.ok, false);
+  assert.equal(result.checks.token_env_present.ok, false);
+  assert.match(result.checks.token_env_valid.message, /must not be GEMINI_API_KEY/);
+  assert.equal(result.endpoint_check.skipped, true);
+  assert.equal(result.small_flush_safe, false);
+  assert.equal(result.recommended_action, "Fix the telemetry token environment variable name.");
+});
+
+test("runTelemetryDoctor does not echo unknown fields from invalid config diagnostics", async () => {
+  const cwd = await temporaryWorkspace();
+  await writeTelemetryConfig(cwd, telemetryConfig({
+    token: "secret-value",
+    extra: "hidden",
+  }));
+
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    fetchImpl: async () => {
+      throw new Error("fetch should not be called");
+    },
+  });
+
+  const serializedConfig = JSON.stringify(result.config);
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.config_valid.ok, false);
+  assert.equal(serializedConfig.includes("secret-value"), false);
+  assert.equal(serializedConfig.includes("hidden"), false);
+  assert.equal(Object.hasOwn(result.config, "token"), false);
+  assert.equal(Object.hasOwn(result.config, "extra"), false);
+});
+
 test("runTelemetryDoctor uses supplied home for global config lookup", async () => {
   const cwd = await temporaryWorkspace();
   const home = await temporaryWorkspace();
