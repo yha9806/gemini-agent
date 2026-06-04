@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp } from "node:fs/promises";
+import { access, mkdtemp, writeFile } from "node:fs/promises";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,10 +11,12 @@ import {
   completeTelemetryBatch,
   failTelemetryBatch,
   quarantineTelemetryEvent,
+  telemetryQueueDirs,
 } from "../src/telemetry-queue.mjs";
 import { runTelemetrySummary } from "../src/telemetry-summary.mjs";
 
 const TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
+const require = createRequire(import.meta.url);
 
 async function temporaryWorkspace() {
   return mkdtemp(join(tmpdir(), "gemini-agent-telemetry-summary-"));
@@ -241,4 +244,93 @@ test("runTelemetrySummary aggregates pending sent failed quarantine dimensions a
     error_count: 1,
     unknown_count: 0,
   }]);
+});
+
+test("runTelemetrySummary reports invalid events with bounded POSIX samples", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1) });
+  const dirs = telemetryQueueDirs(cwd);
+  await writeFile(join(dirs.pending, "bad-a.json"), "{");
+  await writeFile(join(dirs.pending, "bad-b.json"), "{}");
+
+  const result = await runTelemetrySummary({
+    cwd,
+    scope: "local",
+    now: new Date("2026-06-04T10:00:00.000Z"),
+    invalidSampleLimit: 1,
+  });
+
+  assert.deepEqual(result.event_counts, {
+    total: 3,
+    pending: 1,
+    inflight: 0,
+    sent: 0,
+    failed: 0,
+    quarantine: 0,
+    invalid: 2,
+  });
+  assert.deepEqual(result.invalid_events, {
+    count: 2,
+    samples: ["queue/pending/bad-a.json"],
+  });
+});
+
+test("runTelemetrySummary skips queue files removed before read", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1) });
+  const dirs = telemetryQueueDirs(cwd);
+  const vanishingPath = join(dirs.pending, "vanishing.json");
+  await writeFile(vanishingPath, `${JSON.stringify(telemetryEvent(2))}\n`);
+
+  const fsPromises = require("node:fs/promises");
+  const originalReadFile = fsPromises.readFile;
+  fsPromises.readFile = async function readFileWithSyntheticRace(path, ...args) {
+    if (path === vanishingPath) {
+      const error = new Error(`ENOENT: no such file or directory, open '${path}'`);
+      error.code = "ENOENT";
+      throw error;
+    }
+    return originalReadFile.call(this, path, ...args);
+  };
+  syncBuiltinESMExports();
+
+  let result;
+  try {
+    result = await runTelemetrySummary({
+      cwd,
+      scope: "local",
+      now: new Date("2026-06-04T10:00:00.000Z"),
+    });
+  } finally {
+    fsPromises.readFile = originalReadFile;
+    syncBuiltinESMExports();
+  }
+
+  assert.deepEqual(result.event_counts, {
+    total: 1,
+    pending: 1,
+    inflight: 0,
+    sent: 0,
+    failed: 0,
+    quarantine: 0,
+    invalid: 0,
+  });
+  assert.deepEqual(result.invalid_events, {
+    count: 0,
+    samples: [],
+  });
 });

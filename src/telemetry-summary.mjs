@@ -1,9 +1,8 @@
 import { readFile, readdir } from "node:fs/promises";
-import { basename, relative, join } from "node:path";
+import { basename, relative, join, sep } from "node:path";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
 import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
 import {
-  loadTelemetryQueueSnapshot,
   loadTelemetryState,
   telemetryQueueDirs,
 } from "./telemetry-queue.mjs";
@@ -115,9 +114,17 @@ async function readEventFile(path) {
   return normalizeTelemetryEvent(JSON.parse(raw));
 }
 
-function createAccumulator(topLimit, invalidSampleLimit) {
+function isMissingFileError(error) {
+  return error?.code === "ENOENT";
+}
+
+function relativeSamplePath(root, path) {
+  const sample = relative(root, path);
+  return sep === "\\" ? sample.replaceAll("\\", "/") : sample;
+}
+
+function createAccumulator(invalidSampleLimit) {
   return {
-    topLimit,
     invalidSampleLimit,
     counts: zeroCounts(),
     usage: zeroUsage(),
@@ -134,7 +141,7 @@ function addInvalid(accumulator, path, root) {
   accumulator.counts.invalid += 1;
   accumulator.counts.total += 1;
   if (accumulator.invalidSamples.length < accumulator.invalidSampleLimit) {
-    accumulator.invalidSamples.push(relative(root, path));
+    accumulator.invalidSamples.push(relativeSamplePath(root, path));
   }
 }
 
@@ -183,22 +190,17 @@ export async function runTelemetrySummary({
   const context = await loadTelemetryConfigContext({ cwd, home, scope });
   if (!context.config?.enabled) throw new Error("Telemetry is not enabled.");
 
-  const [state] = await Promise.all([
-    loadTelemetryState({ cwd: context.storageCwd }),
-    loadTelemetryQueueSnapshot({
-      cwd: context.storageCwd,
-      createMissingDirs: false,
-    }),
-  ]);
+  const state = await loadTelemetryState({ cwd: context.storageCwd });
 
   const dirs = telemetryQueueDirs(context.storageCwd);
-  const accumulator = createAccumulator(topLimit, invalidSampleLimit);
+  const accumulator = createAccumulator(invalidSampleLimit);
   for (const queueState of QUEUE_STATES) {
     for await (const path of walkFiles(dirs[queueState])) {
       if (!eventFileForState(queueState, path)) continue;
       try {
         addEvent(accumulator, queueState, await readEventFile(path));
-      } catch {
+      } catch (error) {
+        if (isMissingFileError(error)) continue;
         addInvalid(accumulator, path, dirs.root);
       }
     }
