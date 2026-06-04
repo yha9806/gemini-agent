@@ -59,6 +59,15 @@ function sanitizeDimension(value, fallback = "unknown") {
   return masked.length > 120 ? `${masked.slice(0, 117)}...` : masked;
 }
 
+function classifyFailureReason(reason) {
+  const text = `${reason ?? ""}`.trim().toLowerCase();
+  if (!text) return null;
+  if (text.startsWith("quarantined:")) return "quarantined";
+  if (text.startsWith("receiver_error")) return "receiver_error";
+  if (text.startsWith("schedule_not_due")) return "schedule_not_due";
+  return "other";
+}
+
 function createDimensionMap() {
   return new Map();
 }
@@ -298,9 +307,7 @@ export async function runTelemetrySummary({
     sent_success_count: state.sent_success_count,
     sent_failure_count: state.sent_failure_count,
     non_retryable_failure_count: state.non_retryable_failure_count,
-    last_failure_reason: state.last_failure_reason === null
-      ? null
-      : sanitizeDimension(state.last_failure_reason),
+    last_failure_reason: classifyFailureReason(state.last_failure_reason),
     last_sent_at: state.last_sent_at,
   };
 

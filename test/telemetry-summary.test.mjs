@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -396,7 +396,33 @@ test("runTelemetrySummary sanitizes queue failure metadata before JSON and text 
 
   assert.doesNotMatch(json, /secret-token/);
   assert.doesNotMatch(text, /secret-token/);
-  assert.match(summary.queue.last_failure_reason, /Authorization: \[MASKED\]/);
+  assert.equal(summary.queue.last_failure_reason, "receiver_error");
+});
+
+test("runTelemetrySummary classifies quarantine reasons without exposing reason text", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(12) });
+  await quarantineTelemetryEvent({
+    cwd,
+    eventId: "evt_000012",
+    reason: "manual review for customer@example.com",
+    now: new Date("2026-06-04T09:05:00.000Z"),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const json = JSON.stringify(summary);
+  const text = formatTelemetrySummaryText(summary);
+
+  assert.equal(summary.queue.last_failure_reason, "quarantined");
+  assert.doesNotMatch(json, /customer@example\.com/);
+  assert.doesNotMatch(text, /customer@example\.com/);
+  assert.doesNotMatch(text, /manual review/);
 });
 
 test("runTelemetrySummary uses uncapped status aggregates for reliability and text rates", async () => {
@@ -461,6 +487,32 @@ test("runTelemetrySummary counts invalid files with bounded relative samples", a
   assert.equal(summary.invalid_events.samples.length, 1);
   assert.equal(summary.invalid_events.samples[0], "queue/pending/bad-a.json");
   assert.doesNotMatch(JSON.stringify(summary.invalid_events.samples), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("runTelemetrySummary ignores symlinked queue entries", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  const dirs = telemetryQueueDirs(cwd);
+  await mkdir(dirs.pending, { recursive: true });
+  const outsideEvent = join(cwd, "outside-event.json");
+  await writeFile(outsideEvent, `${JSON.stringify(telemetryEvent(13, {
+    prompt: "symlink raw prompt should not print",
+    response: "symlink raw response should not print",
+  }))}\n`);
+  await symlink(outsideEvent, join(dirs.pending, "outside-event.json"));
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const json = JSON.stringify(summary);
+
+  assert.equal(summary.event_counts.total, 0);
+  assert.equal(summary.invalid_events.count, 0);
+  assert.doesNotMatch(json, /symlink raw prompt should not print/);
+  assert.doesNotMatch(json, /symlink raw response should not print/);
 });
 
 test("runTelemetrySummary caps top dimensions and builds deterministic recommendations", async () => {
