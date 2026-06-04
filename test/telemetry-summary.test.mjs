@@ -279,10 +279,10 @@ test("runTelemetrySummary reports invalid events with bounded POSIX samples", as
     quarantine: 0,
     invalid: 2,
   });
-  assert.deepEqual(result.invalid_events, {
-    count: 2,
-    samples: ["queue/pending/bad-a.json"],
-  });
+  assert.equal(result.invalid_events.count, 2);
+  assert.equal(result.invalid_events.samples.length, 1);
+  assert.match(result.invalid_events.samples[0], /^queue\/pending\/invalid-[a-f0-9]{12}\.json$/);
+  assert.doesNotMatch(result.invalid_events.samples[0], /bad-a/);
 });
 
 test("runTelemetrySummary skips queue files removed before read", async () => {
@@ -485,8 +485,49 @@ test("runTelemetrySummary counts invalid files with bounded relative samples", a
   assert.equal(summary.event_counts.invalid, 2);
   assert.equal(summary.invalid_events.count, 2);
   assert.equal(summary.invalid_events.samples.length, 1);
-  assert.equal(summary.invalid_events.samples[0], "queue/pending/bad-a.json");
+  assert.match(summary.invalid_events.samples[0], /^queue\/pending\/invalid-[a-f0-9]{12}\.json$/);
+  assert.doesNotMatch(summary.invalid_events.samples[0], /bad-a/);
   assert.doesNotMatch(JSON.stringify(summary.invalid_events.samples), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("runTelemetrySummary does not expose sensitive invalid file names", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  const dirs = telemetryQueueDirs(cwd);
+  await mkdir(dirs.pending, { recursive: true });
+  await writeFile(join(dirs.pending, "X_API_KEY=super-secret-token.json"), "{bad json");
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const json = JSON.stringify(summary);
+
+  assert.equal(summary.invalid_events.count, 1);
+  assert.match(summary.invalid_events.samples[0], /^queue\/pending\/invalid-[a-f0-9]{12}\.json$/);
+  assert.doesNotMatch(json, /X_API_KEY/);
+  assert.doesNotMatch(json, /super-secret-token/);
+});
+
+test("runTelemetrySummary continues when queue state JSON is corrupted", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(14) });
+  const dirs = telemetryQueueDirs(cwd);
+  await writeFile(dirs.state, "{bad json");
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+
+  assert.equal(summary.event_counts.total, 1);
+  assert.equal(summary.queue.state_read_error, true);
+  assert.match(summary.limitations.join("\n"), /Queue state metadata could not be read/);
 });
 
 test("runTelemetrySummary ignores symlinked queue entries", async () => {

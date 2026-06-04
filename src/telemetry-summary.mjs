@@ -1,5 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { basename, relative, join, sep } from "node:path";
+import { createHash } from "node:crypto";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
 import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
 import {
@@ -8,6 +9,16 @@ import {
 } from "./telemetry-queue.mjs";
 
 const QUEUE_STATES = ["pending", "inflight", "sent", "failed", "quarantine"];
+const DEFAULT_QUEUE_STATE = Object.freeze({
+  dropped_old_count: 0,
+  dropped_memory_count: 0,
+  queue_bytes: 0,
+  sent_success_count: 0,
+  sent_failure_count: 0,
+  non_retryable_failure_count: 0,
+  last_failure_reason: null,
+  last_sent_at: null,
+});
 
 function zeroCounts() {
   return {
@@ -210,6 +221,17 @@ function relativeSamplePath(root, path) {
   return sep === "\\" ? sample.replaceAll("\\", "/") : sample;
 }
 
+function safeInvalidSamplePath(root, path) {
+  const sample = relativeSamplePath(root, path);
+  const digest = createHash("sha256").update(sample).digest("hex").slice(0, 12);
+  const segments = sample.split("/");
+  const queueIndex = segments.indexOf("queue");
+  const state = queueIndex >= 0 ? segments[queueIndex + 1] : null;
+  return QUEUE_STATES.includes(state)
+    ? `queue/${state}/invalid-${digest}.json`
+    : `invalid-${digest}.json`;
+}
+
 function createAccumulator(invalidSampleLimit) {
   return {
     invalidSampleLimit,
@@ -229,7 +251,7 @@ function addInvalid(accumulator, path, root) {
   accumulator.counts.invalid += 1;
   accumulator.counts.total += 1;
   if (accumulator.invalidSamples.length < accumulator.invalidSampleLimit) {
-    accumulator.invalidSamples.push(relativeSamplePath(root, path));
+    accumulator.invalidSamples.push(safeInvalidSamplePath(root, path));
   }
 }
 
@@ -279,7 +301,13 @@ export async function runTelemetrySummary({
   const context = await loadTelemetryConfigContext({ cwd, home, scope });
   if (!context.config?.enabled) throw new Error("Telemetry is not enabled.");
 
-  const state = await loadTelemetryState({ cwd: context.storageCwd });
+  let state = DEFAULT_QUEUE_STATE;
+  let stateReadError = false;
+  try {
+    state = await loadTelemetryState({ cwd: context.storageCwd });
+  } catch {
+    stateReadError = true;
+  }
 
   const dirs = telemetryQueueDirs(context.storageCwd);
   const accumulator = createAccumulator(invalidSampleLimit);
@@ -309,6 +337,7 @@ export async function runTelemetrySummary({
     non_retryable_failure_count: state.non_retryable_failure_count,
     last_failure_reason: classifyFailureReason(state.last_failure_reason),
     last_sent_at: state.last_sent_at,
+    state_read_error: stateReadError,
   };
 
   return {
@@ -338,6 +367,7 @@ export async function runTelemetrySummary({
     limitations: [
       "Local summary only includes telemetry files available on this machine.",
       "Codex token savings are estimated from Gemini prompt token usage, not measured from Codex billing.",
+      ...(stateReadError ? ["Queue state metadata could not be read; queue counters may be incomplete."] : []),
     ],
   };
 }
