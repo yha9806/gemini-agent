@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,10 @@ import {
   quarantineTelemetryEvent,
   telemetryQueueDirs,
 } from "../src/telemetry-queue.mjs";
-import { runTelemetrySummary } from "../src/telemetry-summary.mjs";
+import {
+  formatTelemetrySummaryText,
+  runTelemetrySummary,
+} from "../src/telemetry-summary.mjs";
 
 const TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
 const require = createRequire(import.meta.url);
@@ -333,4 +336,136 @@ test("runTelemetrySummary skips queue files removed before read", async () => {
     count: 0,
     samples: [],
   });
+});
+
+test("runTelemetrySummary sanitizes metadata dimensions and never exposes raw prompt or response", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(10, {
+      project_id: "vulca\nAuthorization: Bearer secret-token",
+      command: "artifact-review",
+      prompt: "raw prompt with customer secret",
+      response: "raw response with customer secret",
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const json = JSON.stringify(summary);
+  const text = formatTelemetrySummaryText(summary);
+
+  assert.doesNotMatch(json, /secret-token/);
+  assert.doesNotMatch(json, /raw prompt with customer secret/);
+  assert.doesNotMatch(json, /raw response with customer secret/);
+  assert.doesNotMatch(text, /secret-token/);
+  assert.doesNotMatch(text, /raw prompt with customer secret/);
+  assert.doesNotMatch(text, /raw response with customer secret/);
+  assert.match(text, /Telemetry Summary/);
+});
+
+test("runTelemetrySummary counts invalid files with bounded relative samples", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  const dirs = telemetryQueueDirs(cwd);
+  await mkdir(dirs.pending, { recursive: true });
+  await writeFile(join(dirs.pending, "bad-a.json"), "{bad json");
+  await writeFile(join(dirs.pending, "bad-b.json"), "{bad json");
+
+  const summary = await runTelemetrySummary({
+    cwd,
+    scope: "local",
+    invalidSampleLimit: 1,
+  });
+
+  assert.equal(summary.event_counts.invalid, 2);
+  assert.equal(summary.invalid_events.count, 2);
+  assert.equal(summary.invalid_events.samples.length, 1);
+  assert.equal(summary.invalid_events.samples[0], "queue/pending/bad-a.json");
+  assert.doesNotMatch(JSON.stringify(summary.invalid_events.samples), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("runTelemetrySummary caps top dimensions and builds deterministic recommendations", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  for (let index = 1; index <= 6; index += 1) {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(index, {
+        project_id: `project-${index}`,
+        command: "artifact-review",
+      }),
+    });
+  }
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local", topLimit: 3 });
+
+  assert.equal(summary.top_projects.length, 3);
+  assert.equal(summary.top_commands[0].command, "artifact-review");
+  assert.match(summary.recommendations.map((item) => item.message).join("\n"), /multimodal\/design workflows/);
+});
+
+test("runTelemetrySummary keeps large queues bounded by topLimit", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  for (let index = 1; index <= 250; index += 1) {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(index, {
+        project_id: `project-${index}`,
+        command: index % 2 === 0 ? "context-pack" : "artifact-review",
+      }),
+    });
+  }
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local", topLimit: 5 });
+
+  assert.equal(summary.event_counts.total, 250);
+  assert.equal(summary.top_projects.length, 5);
+  assert.equal(summary.top_commands.length, 2);
+  assert.equal(summary.invalid_events.samples.length, 0);
+});
+
+test("runTelemetrySummary supports global scope from a different cwd", async () => {
+  const home = await temporaryWorkspace();
+  const project = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd: project,
+    home,
+    scope: "global",
+    endpoint: "https://vulca-api.onrender.com/api/v1/gemini-agent/telemetry/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({
+    cwd: home,
+    event: telemetryEvent(21, { project_id: "global-project", command: "context-pack" }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd: project, home, scope: "global" });
+
+  assert.equal(summary.scope, "global");
+  assert.equal(summary.storage_cwd, home);
+  assert.equal(summary.event_counts.total, 1);
+  assert.equal(summary.top_projects[0].project_id, "global-project");
 });

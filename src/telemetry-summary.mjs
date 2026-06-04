@@ -83,6 +83,59 @@ function topDimension(map, keyName, limit) {
     }));
 }
 
+function successRate(item) {
+  return item.event_count > 0 ? item.success_count / item.event_count : 0;
+}
+
+function buildRecommendations({ topCommands, counts, queue, usage }) {
+  const recommendations = [];
+  const artifactReview = topCommands.find((item) => item.command === "artifact-review");
+  if (artifactReview?.success_count >= 5 && successRate(artifactReview) >= 0.8) {
+    recommendations.push({
+      kind: "workflow",
+      message: "artifact-review has enough successful use to keep prioritizing multimodal/design workflows.",
+    });
+  }
+  const contextPack = topCommands.find((item) => item.command === "context-pack");
+  if (contextPack?.success_count >= 5 && successRate(contextPack) >= 0.8) {
+    recommendations.push({
+      kind: "workflow",
+      message: "context-pack has enough successful use to keep prioritizing large-context compression.",
+    });
+  }
+  const errorCount = topCommands.reduce((sum, item) => sum + item.error_count, 0);
+  if (counts.total > 0 && errorCount / counts.total > 0.2) {
+    recommendations.push({
+      kind: "reliability",
+      message: "Error rate is above 20%; diagnose reliability before expanding automation.",
+    });
+  }
+  if (counts.pending >= 50 && queue.last_failure_reason === "receiver_error") {
+    recommendations.push({
+      kind: "delivery",
+      message: "Pending queue is high with receiver_error; keep bounded flushes and inspect the endpoint.",
+    });
+  }
+  if (counts.total > 0 && usage.events_missing_usage / counts.total > 0.5) {
+    recommendations.push({
+      kind: "instrumentation",
+      message: "Most events are missing usage metadata; validate Gemini client capture before drawing token-savings conclusions.",
+    });
+  }
+  return recommendations;
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatTopRows(items, keyName) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item[keyName]}: ${item.event_count} events, ${item.success_count} success, ${item.error_count} error`
+  )).join("\n");
+}
+
 async function* walkFiles(root) {
   let entries;
   try {
@@ -206,35 +259,83 @@ export async function runTelemetrySummary({
     }
   }
 
+  const topProjects = topDimension(accumulator.projects, "project_id", topLimit);
+  const topCommands = topDimension(accumulator.commands, "command", topLimit);
+  const sources = topDimension(accumulator.sources, "source", topLimit);
+  const models = topDimension(accumulator.models, "model", topLimit);
+  const queue = {
+    queue_bytes: state.queue_bytes,
+    dropped_old_count: state.dropped_old_count,
+    dropped_memory_count: state.dropped_memory_count,
+    sent_success_count: state.sent_success_count,
+    sent_failure_count: state.sent_failure_count,
+    non_retryable_failure_count: state.non_retryable_failure_count,
+    last_failure_reason: state.last_failure_reason,
+    last_sent_at: state.last_sent_at,
+  };
+
   return {
     scope: context.scope,
     storage_cwd: context.storageCwd,
     generated_at: now.toISOString(),
     event_counts: accumulator.counts,
-    queue: {
-      queue_bytes: state.queue_bytes,
-      dropped_old_count: state.dropped_old_count,
-      dropped_memory_count: state.dropped_memory_count,
-      sent_success_count: state.sent_success_count,
-      sent_failure_count: state.sent_failure_count,
-      non_retryable_failure_count: state.non_retryable_failure_count,
-      last_failure_reason: state.last_failure_reason,
-      last_sent_at: state.last_sent_at,
-    },
+    queue,
     usage: accumulator.usage,
-    top_projects: topDimension(accumulator.projects, "project_id", topLimit),
-    top_commands: topDimension(accumulator.commands, "command", topLimit),
-    sources: topDimension(accumulator.sources, "source", topLimit),
-    models: topDimension(accumulator.models, "model", topLimit),
+    top_projects: topProjects,
+    top_commands: topCommands,
+    sources,
+    models,
     raw_content: accumulator.rawContent,
     invalid_events: {
       count: accumulator.counts.invalid,
       samples: accumulator.invalidSamples,
     },
-    recommendations: [],
+    recommendations: buildRecommendations({
+      topCommands,
+      counts: accumulator.counts,
+      queue,
+      usage: accumulator.usage,
+    }),
     limitations: [
       "Local summary only includes telemetry files available on this machine.",
       "Codex token savings are estimated from Gemini prompt token usage, not measured from Codex billing.",
     ],
   };
+}
+
+export function formatTelemetrySummaryText(summary) {
+  const successCount = summary.top_commands.reduce((sum, item) => sum + item.success_count, 0);
+  const errorCount = summary.top_commands.reduce((sum, item) => sum + item.error_count, 0);
+  const knownOutcomes = successCount + errorCount;
+  const successRateText = knownOutcomes === 0 ? "n/a" : `${((successCount / knownOutcomes) * 100).toFixed(1)}%`;
+  const recommendations = summary.recommendations.length
+    ? summary.recommendations.map((item) => `- ${item.message}`).join("\n")
+    : "- No recommendations yet; collect more events.";
+
+  return [
+    "Telemetry Summary",
+    "",
+    `Scope: ${summary.scope}`,
+    `Storage: ${summary.storage_cwd}`,
+    `Events: ${summary.event_counts.total} total, ${summary.event_counts.sent} sent, ${summary.event_counts.pending} pending, ${summary.event_counts.failed} failed, ${summary.event_counts.quarantine} quarantined, ${summary.event_counts.invalid} invalid`,
+    "",
+    "Top projects:",
+    formatTopRows(summary.top_projects, "project_id"),
+    "",
+    "Top commands:",
+    formatTopRows(summary.top_commands, "command"),
+    "",
+    "Reliability:",
+    `- Success rate: ${successRateText}`,
+    `- Last failure: ${summary.queue.last_failure_reason ?? "none"}`,
+    "",
+    "Usage:",
+    `- Prompt tokens: ${formatNumber(summary.usage.prompt_tokens)}`,
+    `- Response tokens: ${formatNumber(summary.usage.response_tokens)}`,
+    `- Estimated Codex tokens saved: ${formatNumber(summary.usage.estimated_codex_tokens_saved)}`,
+    "",
+    "Recommendations:",
+    recommendations,
+    "",
+  ].join("\n");
 }
