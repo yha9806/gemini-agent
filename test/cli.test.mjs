@@ -1007,6 +1007,8 @@ test("telemetry install-scheduler dry-runs cron artifact", async () => {
     "cron",
     "--name",
     "cli-test",
+    "--batch-size",
+    "1",
   ], {
     cwd: dir,
     env: { PATH: process.env.PATH },
@@ -1015,7 +1017,33 @@ test("telemetry install-scheduler dry-runs cron artifact", async () => {
   assert.equal(stderr, "");
   assert.match(stdout, /gemini-agent:cli-test/);
   assert.match(stdout, /0 9 \* \* \*/);
+  assert.match(stdout, /telemetry tick --batch-size 1/);
   assert.match(stdout, /"dry_run": true/);
+});
+
+test("telemetry install-scheduler rejects invalid batch size", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  await assert.rejects(
+    execFileAsync(bin, [
+      "telemetry",
+      "install-scheduler",
+      "--target",
+      "cron",
+      "--name",
+      "cli-test",
+      "--batch-size",
+      "0",
+    ], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--batch-size requires a positive integer/);
+      return true;
+    },
+  );
 });
 
 test("telemetry scheduler-status accepts only status arguments", async () => {
@@ -1324,6 +1352,83 @@ test("telemetry tick flushes only when the hourly schedule is due", async () => 
   } finally {
     await receiver.close();
   }
+});
+
+test("telemetry tick accepts batch-size and flushes bounded batches when due", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const receivedBatches = [];
+  const receiver = await withTelemetryReceiver(async ({ request, response, body }) => {
+    assert.equal(request.method, "POST");
+    const batch = JSON.parse(body);
+    receivedBatches.push(batch);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      batch_id: batch.batch_id,
+      accepted_event_ids: batch.events.map((event) => event.event_id),
+      rejected: [],
+      received_at: "2026-06-04T09:00:01.000Z",
+    }));
+  });
+
+  try {
+    await saveTelemetryConfig({
+      cwd: dir,
+      endpoint: receiver.endpoint,
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      schedule: "hourly",
+    });
+    await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(81) });
+    await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(82) });
+
+    const { stdout } = await execFileAsync(bin, ["telemetry", "tick", "--batch-size", "1"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.sent_count, 1);
+    assert.equal(receivedBatches.length, 1);
+    assert.equal(receivedBatches[0].events.length, 1);
+    assert.equal(receivedBatches[0].events[0].event_id, "evt_cli_81");
+  } finally {
+    await receiver.close();
+  }
+});
+
+test("telemetry tick rejects missing or invalid batch size", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+    schedule: "hourly",
+  });
+
+  await assert.rejects(
+    execFileAsync(bin, ["telemetry", "tick", "--batch-size"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--batch-size requires a positive integer/);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    execFileAsync(bin, ["telemetry", "tick", "--batch-size", "1.5"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--batch-size requires a positive integer/);
+      return true;
+    },
+  );
 });
 
 test("telemetry validate uses fake response path and prints result JSON", async () => {

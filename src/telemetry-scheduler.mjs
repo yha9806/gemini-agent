@@ -25,6 +25,12 @@ function assertTarget(target) {
   }
 }
 
+function assertPositiveInteger(value, field) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${field} must be a positive integer.`);
+  }
+}
+
 function parseSchedule(schedule) {
   if (schedule === "hourly") {
     return {
@@ -142,12 +148,16 @@ function managedEnd(name) {
 }
 
 function tickCommandArgs(options) {
-  return `telemetry tick${options.global ? " --global" : ""}`;
+  return [
+    "telemetry tick",
+    options.global ? "--global" : "",
+    options.batchSize != null ? `--batch-size ${options.batchSize}` : "",
+  ].filter(Boolean).join(" ");
 }
 
-function buildTickCommand({ cwd, bin, envFile, global }) {
+function buildTickCommand({ cwd, bin, envFile, global, batchSize }) {
   const sourceEnv = envFile ? `set -a; . ${shellWord(envFile)}; set +a; ` : "";
-  return `${sourceEnv}cd ${shellWord(cwd)} && exec ${shellWord(bin)} ${tickCommandArgs({ global })}`;
+  return `${sourceEnv}cd ${shellWord(cwd)} && exec ${shellWord(bin)} ${tickCommandArgs({ global, batchSize })}`;
 }
 
 function currentUid() {
@@ -185,6 +195,7 @@ export function normalizeSchedulerOptions({
   uid = currentUid(),
   launchdDomain = "gui",
   global = false,
+  batchSize = null,
 } = {}) {
   assertName(name);
   parseSchedule(schedule);
@@ -199,6 +210,9 @@ export function normalizeSchedulerOptions({
   if (typeof global !== "boolean") {
     throw new Error("Scheduler global option must be a boolean.");
   }
+  if (batchSize != null) {
+    assertPositiveInteger(batchSize, "batchSize");
+  }
   return {
     name,
     schedule,
@@ -209,6 +223,7 @@ export function normalizeSchedulerOptions({
     uid,
     launchdDomain,
     global,
+    batchSize,
   };
 }
 

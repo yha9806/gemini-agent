@@ -33,7 +33,9 @@ test("normalizes scheduler options and validates unsafe input", () => {
   const options = normalizeSchedulerOptions(base);
   assert.equal(options.name, "gemini-agent-test");
   assert.equal(options.schedule, "hourly");
+  assert.equal(options.batchSize, null);
   assert.equal(options.launchdDomain, "gui");
+  assert.equal(normalizeSchedulerOptions({ ...base, batchSize: 1 }).batchSize, 1);
   assert.equal(
     normalizeSchedulerOptions({ name: "default-schedule", cwd: "/tmp/project", bin: "gemini-agent", uid: 501 }).schedule,
     "daily@09:00",
@@ -42,6 +44,8 @@ test("normalizes scheduler options and validates unsafe input", () => {
   assert.throws(() => normalizeSchedulerOptions({ ...base, uid: 0 }), /must not run as root/);
   assert.throws(() => normalizeSchedulerOptions({ ...base, name: "bad/name" }), /only letters, numbers, dot, underscore, or dash/);
   assert.throws(() => normalizeSchedulerOptions({ ...base, schedule: "weekly" }), /Unsupported scheduler schedule/);
+  assert.throws(() => normalizeSchedulerOptions({ ...base, batchSize: 0 }), /batchSize must be a positive integer/);
+  assert.throws(() => normalizeSchedulerOptions({ ...base, batchSize: 1.5 }), /batchSize must be a positive integer/);
 });
 
 test("rejects scheduler text injection inputs before artifact generation", () => {
@@ -114,6 +118,17 @@ test("scheduler artifacts can pin global telemetry scope", () => {
   assert.match(generateLaunchdPlist(input), /telemetry tick --global/);
   assert.match(generateCronEntry(input), /telemetry tick --global/);
   assert.match(generateSystemdService(input), /ExecStart=\/usr\/local\/bin\/gemini-agent telemetry tick --global/);
+});
+
+test("scheduler artifacts can pin tick batch size", () => {
+  const input = { ...base, global: true, batchSize: 1 };
+
+  assert.match(generateLaunchdPlist(input), /telemetry tick --global --batch-size 1/);
+  assert.match(generateCronEntry(input), /telemetry tick --global --batch-size 1/);
+  assert.match(
+    generateSystemdService(input),
+    /ExecStart=\/usr\/local\/bin\/gemini-agent telemetry tick --global --batch-size 1/,
+  );
 });
 
 test("rejects systemd parser-sensitive service fields", () => {
