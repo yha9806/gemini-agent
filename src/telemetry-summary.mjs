@@ -40,6 +40,15 @@ function zeroRawContent() {
   };
 }
 
+function zeroStatusCounts() {
+  return {
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    unknown_count: 0,
+  };
+}
+
 function safeInteger(value) {
   return Number.isInteger(value) && value >= 0 ? value : 0;
 }
@@ -70,6 +79,13 @@ function updateDimension(map, key, status) {
   map.set(safeKey, item);
 }
 
+function updateStatusCounts(counts, status) {
+  counts.event_count += 1;
+  if (status === "success") counts.success_count += 1;
+  else if (status === "error") counts.error_count += 1;
+  else counts.unknown_count += 1;
+}
+
 function topDimension(map, keyName, limit) {
   return [...map.values()]
     .sort((left, right) => right.event_count - left.event_count || left.key.localeCompare(right.key))
@@ -87,24 +103,23 @@ function successRate(item) {
   return item.event_count > 0 ? item.success_count / item.event_count : 0;
 }
 
-function buildRecommendations({ topCommands, counts, queue, usage }) {
+function buildRecommendations({ commands, counts, statusCounts, queue, usage }) {
   const recommendations = [];
-  const artifactReview = topCommands.find((item) => item.command === "artifact-review");
+  const artifactReview = commands.find((item) => item.command === "artifact-review");
   if (artifactReview?.success_count >= 5 && successRate(artifactReview) >= 0.8) {
     recommendations.push({
       kind: "workflow",
       message: "artifact-review has enough successful use to keep prioritizing multimodal/design workflows.",
     });
   }
-  const contextPack = topCommands.find((item) => item.command === "context-pack");
+  const contextPack = commands.find((item) => item.command === "context-pack");
   if (contextPack?.success_count >= 5 && successRate(contextPack) >= 0.8) {
     recommendations.push({
       kind: "workflow",
       message: "context-pack has enough successful use to keep prioritizing large-context compression.",
     });
   }
-  const errorCount = topCommands.reduce((sum, item) => sum + item.error_count, 0);
-  if (counts.total > 0 && errorCount / counts.total > 0.2) {
+  if (statusCounts.event_count > 0 && statusCounts.error_count / statusCounts.event_count > 0.2) {
     recommendations.push({
       kind: "reliability",
       message: "Error rate is above 20%; diagnose reliability before expanding automation.",
@@ -134,6 +149,16 @@ function formatTopRows(items, keyName) {
   return items.map((item, index) => (
     `${index + 1}. ${item[keyName]}: ${item.event_count} events, ${item.success_count} success, ${item.error_count} error`
   )).join("\n");
+}
+
+function summaryStatusCounts(summary) {
+  if (summary.status_counts) return summary.status_counts;
+  return summary.top_commands.reduce((counts, item) => ({
+    event_count: counts.event_count + item.event_count,
+    success_count: counts.success_count + item.success_count,
+    error_count: counts.error_count + item.error_count,
+    unknown_count: counts.unknown_count + item.unknown_count,
+  }), zeroStatusCounts());
 }
 
 async function* walkFiles(root) {
@@ -180,6 +205,7 @@ function createAccumulator(invalidSampleLimit) {
   return {
     invalidSampleLimit,
     counts: zeroCounts(),
+    statusCounts: zeroStatusCounts(),
     usage: zeroUsage(),
     rawContent: zeroRawContent(),
     projects: createDimensionMap(),
@@ -202,6 +228,7 @@ function addEvent(accumulator, state, event) {
   accumulator.counts[state] += 1;
   accumulator.counts.total += 1;
   const status = event.status === "success" || event.status === "error" ? event.status : "unknown";
+  updateStatusCounts(accumulator.statusCounts, status);
   updateDimension(accumulator.projects, event.project_id, status);
   updateDimension(accumulator.commands, event.command, status);
   updateDimension(accumulator.sources, event.source, status);
@@ -261,6 +288,7 @@ export async function runTelemetrySummary({
 
   const topProjects = topDimension(accumulator.projects, "project_id", topLimit);
   const topCommands = topDimension(accumulator.commands, "command", topLimit);
+  const allCommands = topDimension(accumulator.commands, "command", accumulator.commands.size);
   const sources = topDimension(accumulator.sources, "source", topLimit);
   const models = topDimension(accumulator.models, "model", topLimit);
   const queue = {
@@ -270,7 +298,9 @@ export async function runTelemetrySummary({
     sent_success_count: state.sent_success_count,
     sent_failure_count: state.sent_failure_count,
     non_retryable_failure_count: state.non_retryable_failure_count,
-    last_failure_reason: state.last_failure_reason,
+    last_failure_reason: state.last_failure_reason === null
+      ? null
+      : sanitizeDimension(state.last_failure_reason),
     last_sent_at: state.last_sent_at,
   };
 
@@ -279,6 +309,7 @@ export async function runTelemetrySummary({
     storage_cwd: context.storageCwd,
     generated_at: now.toISOString(),
     event_counts: accumulator.counts,
+    status_counts: accumulator.statusCounts,
     queue,
     usage: accumulator.usage,
     top_projects: topProjects,
@@ -291,8 +322,9 @@ export async function runTelemetrySummary({
       samples: accumulator.invalidSamples,
     },
     recommendations: buildRecommendations({
-      topCommands,
+      commands: allCommands,
       counts: accumulator.counts,
+      statusCounts: accumulator.statusCounts,
       queue,
       usage: accumulator.usage,
     }),
@@ -304,8 +336,9 @@ export async function runTelemetrySummary({
 }
 
 export function formatTelemetrySummaryText(summary) {
-  const successCount = summary.top_commands.reduce((sum, item) => sum + item.success_count, 0);
-  const errorCount = summary.top_commands.reduce((sum, item) => sum + item.error_count, 0);
+  const statusCounts = summaryStatusCounts(summary);
+  const successCount = statusCounts.success_count;
+  const errorCount = statusCounts.error_count;
   const knownOutcomes = successCount + errorCount;
   const successRateText = knownOutcomes === 0 ? "n/a" : `${((successCount / knownOutcomes) * 100).toFixed(1)}%`;
   const recommendations = summary.recommendations.length

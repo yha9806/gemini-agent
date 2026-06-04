@@ -369,6 +369,74 @@ test("runTelemetrySummary sanitizes metadata dimensions and never exposes raw pr
   assert.match(text, /Telemetry Summary/);
 });
 
+test("runTelemetrySummary sanitizes queue failure metadata before JSON and text output", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(11) });
+  const batch = await claimTelemetryBatch({
+    cwd,
+    batchSize: 1,
+    now: new Date("2026-06-04T09:01:00.000Z"),
+  });
+  await failTelemetryBatch({
+    cwd,
+    batchId: batch.batchId,
+    reason: "receiver_error\nAuthorization: Bearer secret-token",
+    retryable: true,
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const json = JSON.stringify(summary);
+  const text = formatTelemetrySummaryText(summary);
+
+  assert.doesNotMatch(json, /secret-token/);
+  assert.doesNotMatch(text, /secret-token/);
+  assert.match(summary.queue.last_failure_reason, /Authorization: \[MASKED\]/);
+});
+
+test("runTelemetrySummary uses uncapped status aggregates for reliability and text rates", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  for (let index = 1; index <= 10; index += 1) {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(index, {
+        command: "alpha-success",
+        status: "success",
+      }),
+    });
+  }
+  for (let index = 11; index <= 14; index += 1) {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(index, {
+        command: `hidden-error-${index}`,
+        status: "error",
+        error_type: "APIError",
+      }),
+    });
+  }
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local", topLimit: 1 });
+  const text = formatTelemetrySummaryText(summary);
+
+  assert.equal(summary.top_commands.length, 1);
+  assert.equal(summary.top_commands[0].command, "alpha-success");
+  assert.match(summary.recommendations.map((item) => item.message).join("\n"), /Error rate is above 20%/);
+  assert.match(text, /Success rate: 71\.4%/);
+  assert.doesNotMatch(text, /Success rate: 100\.0%/);
+});
+
 test("runTelemetrySummary counts invalid files with bounded relative samples", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({
