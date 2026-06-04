@@ -764,6 +764,7 @@ export async function completeTelemetryBatch({
       ...state,
       sent_success_count: state.sent_success_count + moved,
       last_sent_at: now.toISOString(),
+      last_failure_reason: moved > 0 ? null : state.last_failure_reason,
     });
     return moved;
   });

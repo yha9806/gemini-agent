@@ -447,6 +447,53 @@ test("complete and fail update send state counters", async () => {
   assert.equal(afterFailure.queue_bytes, await sumFileBytes(await regularFilePaths(telemetryQueueDirs(cwd).pending)));
 });
 
+test("complete clears stale failure reason after a later successful send", async () => {
+  const cwd = await temporaryWorkspace();
+  const failedAt = new Date("2026-05-29T12:00:00.000Z");
+  const completedAt = new Date("2026-05-29T12:05:00.000Z");
+
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1), maxQueueBytes: LARGE_QUEUE_LIMIT });
+
+  const failedBatch = await claimTelemetryBatch({ cwd, batchSize: 1, now: failedAt });
+  await failTelemetryBatch({
+    cwd,
+    batchId: failedBatch.batchId,
+    reason: "receiver_error",
+    retryable: true,
+  });
+  assert.equal((await loadTelemetryState({ cwd })).last_failure_reason, "receiver_error");
+
+  const successfulBatch = await claimTelemetryBatch({ cwd, batchSize: 1, now: completedAt });
+  await completeTelemetryBatch({ cwd, batchId: successfulBatch.batchId, now: completedAt });
+
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_success_count, 1);
+  assert.equal(state.last_failure_reason, null);
+});
+
+test("complete preserves failure reason when no events are moved", async () => {
+  const cwd = await temporaryWorkspace();
+  const failedAt = new Date("2026-05-29T12:00:00.000Z");
+  const completedAt = new Date("2026-05-29T12:05:00.000Z");
+
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1), maxQueueBytes: LARGE_QUEUE_LIMIT });
+  const failedBatch = await claimTelemetryBatch({ cwd, batchSize: 1, now: failedAt });
+  await failTelemetryBatch({
+    cwd,
+    batchId: failedBatch.batchId,
+    reason: "receiver_error",
+    retryable: true,
+  });
+
+  const dirs = telemetryQueueDirs(cwd);
+  await mkdir(join(dirs.inflight, "batch_empty"), { recursive: true });
+  await completeTelemetryBatch({ cwd, batchId: "batch_empty", now: completedAt });
+
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_success_count, 0);
+  assert.equal(state.last_failure_reason, "receiver_error");
+});
+
 test("loadTelemetryQueueSnapshot counts failed events without reason metadata", async () => {
   const cwd = await temporaryWorkspace();
   const failedAt = new Date("2026-05-29T12:00:00.000Z");
