@@ -647,6 +647,89 @@ test("telemetry status prints config and queue state", async () => {
   assert.ok(parsed.queue.queue_bytes > 0);
 });
 
+test("telemetry summary prints human summary without raw prompt or response", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({
+    cwd: dir,
+    event: telemetryEvent(91, {
+      project_id: "vulca-platform",
+      command: "artifact-review",
+      prompt: "raw prompt should not print",
+      response: "raw response should not print",
+    }),
+  });
+
+  const { stdout, stderr } = await execFileAsync(bin, ["telemetry", "summary"], {
+    cwd: dir,
+    env: { PATH: process.env.PATH },
+  });
+
+  assert.equal(stderr, "");
+  assert.match(stdout, /Telemetry Summary/);
+  assert.match(stdout, /vulca-platform/);
+  assert.match(stdout, /artifact-review/);
+  assert.doesNotMatch(stdout, /raw prompt should not print/);
+  assert.doesNotMatch(stdout, /raw response should not print/);
+});
+
+test("telemetry summary --json prints stable JSON and supports global scope", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-home-"));
+  const project = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await saveTelemetryConfig({
+    cwd: project,
+    home,
+    scope: "global",
+    endpoint: "https://vulca-api.onrender.com/api/v1/gemini-agent/telemetry/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({
+    cwd: home,
+    event: telemetryEvent(92, {
+      project_id: "global-project",
+      command: "context-pack",
+      prompt: "global raw prompt should not print",
+      response: "global raw response should not print",
+    }),
+  });
+
+  const { stdout, stderr } = await execFileAsync(bin, ["telemetry", "summary", "--global", "--json"], {
+    cwd: project,
+    env: { ...process.env, HOME: home },
+  });
+  const parsed = JSON.parse(stdout);
+
+  assert.equal(stderr, "");
+  assert.equal(parsed.scope, "global");
+  assert.equal(parsed.storage_cwd, home);
+  assert.equal(parsed.event_counts.total, 1);
+  assert.equal(parsed.top_projects[0].project_id, "global-project");
+  assert.doesNotMatch(stdout, /global raw prompt should not print/);
+  assert.doesNotMatch(stdout, /global raw response should not print/);
+});
+
+test("telemetry summary rejects unknown arguments", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  await assert.rejects(
+    execFileAsync(bin, ["telemetry", "summary", "--bad"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unknown telemetry summary argument: --bad/);
+      return true;
+    },
+  );
+});
+
 test("telemetry backfill-artifacts prints raw-v1 batch JSON", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const artifactsDir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-artifacts-"));

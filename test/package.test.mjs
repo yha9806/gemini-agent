@@ -42,6 +42,13 @@ test("public markdown does not expose local home paths", async () => {
   }
 });
 
+test("README documents telemetry summary and bounded scheduler examples", async () => {
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  assert.match(readme, /telemetry summary --global/);
+  assert.match(readme, /telemetry tick --global --batch-size 1/);
+  assert.match(readme, /install-scheduler[\s\S]*--batch-size 1/);
+});
+
 test("wrappers fail clearly before Gemini integration is implemented", async () => {
   const cli = await runNodeScript(new URL("bin/gemini-agent", root));
   assert.equal(cli.code, 0);

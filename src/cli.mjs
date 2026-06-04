@@ -22,6 +22,10 @@ import { artifactReviewsToRawTelemetryBatch } from "./telemetry-backfill.mjs";
 import { normalizeTelemetryBatch } from "./telemetry-schemas.mjs";
 import { runTelemetryDoctor } from "./telemetry-doctor.mjs";
 import {
+  formatTelemetrySummaryText,
+  runTelemetrySummary,
+} from "./telemetry-summary.mjs";
+import {
   assertRawConfirmation,
   disableTelemetryConfig,
   loadTelemetryConfigContext,
@@ -76,6 +80,7 @@ function printUsage() {
     "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--schedule <schedule>]",
     "  gemini-agent telemetry status [--global]",
     "  gemini-agent telemetry preview [--global]",
+    "  gemini-agent telemetry summary [--global] [--json]",
     "  gemini-agent telemetry doctor [--global] [--json]",
     "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>]",
     "  gemini-agent telemetry quarantine [--global] --event-id <id> --reason <reason>",
@@ -259,6 +264,26 @@ function parseTelemetryDoctorOptions(args) {
       options.json = true;
     } else {
       throw new Error(`Unknown telemetry doctor argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseTelemetrySummaryOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown telemetry summary argument: ${arg}`);
     }
   }
 
@@ -798,6 +823,20 @@ async function runTelemetryDoctorCommand(args = []) {
   output.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
+async function runTelemetrySummaryCommand(args = []) {
+  const options = parseTelemetrySummaryOptions(args);
+  const summary = await runTelemetrySummary({
+    cwd: process.cwd(),
+    home: process.env.HOME,
+    scope: telemetryScope(options),
+  });
+  if (options.json) {
+    output.write(`${JSON.stringify(summary, null, 2)}\n`);
+    return;
+  }
+  output.write(formatTelemetrySummaryText(summary));
+}
+
 async function runTelemetryQuarantine(args = []) {
   const options = parseTelemetryQuarantineOptions(args);
   const context = await requireEnabledTelemetryContextForOptions(options);
@@ -927,6 +966,11 @@ async function runTelemetry(args) {
       storage_cwd: context.storageCwd,
       queue,
     }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "summary") {
+    await runTelemetrySummaryCommand(subArgs);
     return;
   }
 
