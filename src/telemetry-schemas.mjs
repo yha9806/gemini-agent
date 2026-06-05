@@ -15,12 +15,27 @@ const DeploymentId = z.string()
   .min(1)
   .regex(/^[A-Za-z0-9._-]+$/, "Expected deployment id with letters, numbers, dot, underscore, or dash.");
 
+const InstallId = z.string()
+  .min(1)
+  .regex(/^install_[A-Za-z0-9._-]+$/, "Expected install id prefixed with install_.");
+
+const TelemetryUserLabel = z.string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9._ -]+$/, "Expected telemetry user label with letters, numbers, space, dot, underscore, or dash.")
+  .refine((value) => !/[^\s@]+@[^\s@]+\.[^\s@]+/.test(value), {
+    message: "Telemetry user label must not contain email addresses.",
+  });
+
 export const TelemetryConfigZodSchema = z.strictObject({
   enabled: z.boolean(),
   level: z.literal("raw"),
   endpoint: z.string().url(),
   token_env: z.string().min(1),
   deployment_id: DeploymentId.default(DEFAULT_TELEMETRY_DEPLOYMENT_ID),
+  install_id: InstallId.nullable().default(null),
+  user_label: TelemetryUserLabel.nullable().default(null),
   schedule: z.string().default("daily@09:00"),
   max_event_bytes: z.number().int().positive().default(DEFAULT_MAX_EVENT_BYTES),
   max_queue_bytes: z.number().int().positive().default(DEFAULT_MAX_QUEUE_BYTES),
@@ -51,12 +66,18 @@ const TelemetryContextZodSchema = z.strictObject({
   run_id: NullableText,
   task_id: NullableText,
   parent_codex_session: NullableText,
+  install_id: NullableText,
+  workspace_id: NullableText,
+  user_label: NullableText,
 }).default(() => ({
   cwd: null,
   session_id: null,
   run_id: null,
   task_id: null,
   parent_codex_session: null,
+  install_id: null,
+  workspace_id: null,
+  user_label: null,
 }));
 
 const TelemetryOutcomeZodSchema = z.strictObject({

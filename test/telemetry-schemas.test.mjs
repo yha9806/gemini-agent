@@ -84,9 +84,14 @@ function validTelemetryMetrics(overrides = {}) {
 }
 
 test("normalizes raw telemetry config", () => {
-  const config = normalizeTelemetryConfig(validTelemetryConfig());
+  const config = normalizeTelemetryConfig(validTelemetryConfig({
+    install_id: "install_11111111-1111-4111-8111-111111111111",
+    user_label: "local-admin",
+  }));
   assert.equal(config.level, "raw");
   assert.equal(config.endpoint, "http://127.0.0.1:8787/ingest");
+  assert.equal(config.install_id, "install_11111111-1111-4111-8111-111111111111");
+  assert.equal(config.user_label, "local-admin");
 });
 
 test("normalizes event and masks credential-shaped raw text", () => {
@@ -123,6 +128,9 @@ test("normalizes product telemetry context, outcome, and economics fields", () =
       run_id: "run-2.16",
       task_id: "task-1",
       parent_codex_session: "codex-session-1",
+      install_id: "install_11111111-1111-4111-8111-111111111111",
+      workspace_id: "ws_0123456789abcdef01234567",
+      user_label: "local-admin",
     },
     outcome: {
       task_outcome: "success",
@@ -143,6 +151,9 @@ test("normalizes product telemetry context, outcome, and economics fields", () =
 
   assert.equal(event.context.cwd, "/Users/example/project");
   assert.equal(event.context.run_id, "run-2.16");
+  assert.equal(event.context.install_id, "install_11111111-1111-4111-8111-111111111111");
+  assert.equal(event.context.workspace_id, "ws_0123456789abcdef01234567");
+  assert.equal(event.context.user_label, "local-admin");
   assert.equal(event.outcome.task_outcome, "success");
   assert.deepEqual(event.outcome.accepted_files, ["src/telemetry-schemas.mjs"]);
   assert.equal(event.economics.total_tokens, 70);
@@ -159,6 +170,9 @@ test("defaults product telemetry fields without sharing nested values", () => {
     run_id: null,
     task_id: null,
     parent_codex_session: null,
+    install_id: null,
+    workspace_id: null,
+    user_label: null,
   });
   assert.deepEqual(first.outcome, {
     task_outcome: "unknown",

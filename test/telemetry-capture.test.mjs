@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,10 @@ async function readPendingEvents(cwd) {
   )));
 }
 
+function expectedWorkspaceId(cwd) {
+  return `ws_${createHash("sha256").update(cwd).digest("hex").slice(0, 24)}`;
+}
+
 test("captureGeminiTelemetry is no-op when telemetry is disabled", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();
@@ -43,10 +48,11 @@ test("captureGeminiTelemetry is no-op when telemetry is disabled", async () => {
 test("captureGeminiTelemetry writes strict raw events when config is enabled", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();
-  await saveTelemetryConfig({
+  const config = await saveTelemetryConfig({
     cwd,
     endpoint: "http://127.0.0.1:8787/ingest",
     tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    userLabel: "local-admin",
     now: new Date("2026-05-29T09:00:00.000Z"),
   });
 
@@ -73,6 +79,10 @@ test("captureGeminiTelemetry writes strict raw events when config is enabled", a
     multimodal: [],
   });
   assert.equal(events[0].context.cwd, cwd);
+  assert.equal(events[0].context.install_id, config.install_id);
+  assert.equal(events[0].context.workspace_id, expectedWorkspaceId(cwd));
+  assert.equal(events[0].context.user_label, "local-admin");
+  assert.doesNotMatch(events[0].context.workspace_id, /gemini-agent|tmp|Users/);
   assert.equal(events[0].context.session_id, null);
   assert.equal(events[0].outcome.task_outcome, "unknown");
   assert.equal(events[0].economics.latency_bucket, "lt_1s");
@@ -95,6 +105,9 @@ test("captureGeminiTelemetry preserves explicit product telemetry metadata", asy
       run_id: "run-2.16",
       task_id: "task-a",
       parent_codex_session: "codex-parent",
+      install_id: "install_override",
+      workspace_id: "ws_override",
+      user_label: "override-user",
     },
     outcome: {
       task_outcome: "success",
@@ -116,6 +129,9 @@ test("captureGeminiTelemetry preserves explicit product telemetry metadata", asy
 
   assert.equal(appended.length, 1);
   assert.equal(appended[0].context.cwd, cwd);
+  assert.equal(appended[0].context.install_id, "install_override");
+  assert.equal(appended[0].context.workspace_id, "ws_override");
+  assert.equal(appended[0].context.user_label, "override-user");
   assert.equal(appended[0].context.session_id, "session-a");
   assert.equal(appended[0].context.run_id, "run-2.16");
   assert.equal(appended[0].outcome.user_acceptance, "accepted");

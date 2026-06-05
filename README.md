@@ -10,7 +10,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent diff-review --stdin
 ./bin/gemini-agent context-pack --stdin
 ./bin/gemini-agent artifact-review --file design.png --kind ui
-./bin/gemini-agent telemetry enable --global --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
+./bin/gemini-agent telemetry enable --global --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --user-label local-admin --confirm-raw-content
 ./bin/gemini-agent telemetry status --global
 ./bin/gemini-agent telemetry summary --global
 ./bin/gemini-agent telemetry summary --global --json
@@ -42,6 +42,7 @@ Global Gemini review gate for Codex.
 - Generated local artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - Telemetry raw mode is explicit and requires `--confirm-raw-content`.
 - Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.
+- Telemetry config stores a generated `install_id`; captured events add a pseudonymous hashed `workspace_id` derived from the working directory. `workspace_id` is not a secret. `--user-label` is optional, rejects email-shaped labels, and can be cleared with `--clear-user-label`.
 - `telemetry summary` reports aggregate usage and queue health; it does not print raw prompt or response text.
 - Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
 - Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.

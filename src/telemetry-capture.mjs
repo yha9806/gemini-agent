@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { appendTelemetryEvent } from "./telemetry-queue.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
@@ -72,6 +72,11 @@ function utcTimestamp(now) {
 
 function makeId(prefix) {
   return `${prefix}_${Date.now()}_${randomUUID()}`;
+}
+
+function workspaceIdFromCwd(cwd) {
+  if (typeof cwd !== "string" || !cwd.trim()) return null;
+  return `ws_${createHash("sha256").update(cwd).digest("hex").slice(0, 24)}`;
 }
 
 function nonnegativeInteger(value) {
@@ -175,6 +180,8 @@ function buildTelemetryEvent({
   now,
   contents,
   deploymentId,
+  installId,
+  userLabel,
   projectId,
   maxEventBytes,
   context,
@@ -189,6 +196,7 @@ function buildTelemetryEvent({
     latency_bucket: economics?.latency_bucket ?? latencyBucket(latencyMs),
   };
   const providedContext = context && typeof context === "object" ? context : {};
+  const resolvedWorkspaceId = providedContext.workspace_id ?? workspaceIdFromCwd(cwd);
 
   return {
     schema_version: 1,
@@ -213,6 +221,9 @@ function buildTelemetryEvent({
     context: {
       ...providedContext,
       cwd: context?.cwd ?? cwd ?? null,
+      install_id: providedContext.install_id ?? installId ?? null,
+      workspace_id: resolvedWorkspaceId,
+      user_label: providedContext.user_label ?? userLabel ?? null,
     },
     outcome: outcome && typeof outcome === "object" ? outcome : undefined,
     economics: resolvedEconomics,
@@ -257,6 +268,8 @@ async function captureGeminiTelemetryTask({
     now,
     contents,
     deploymentId: resolvedDeploymentId,
+    installId: config.install_id ?? null,
+    userLabel: config.user_label ?? null,
     projectId,
     maxEventBytes: config.max_event_bytes,
     context,

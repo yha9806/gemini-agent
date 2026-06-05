@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -95,6 +96,27 @@ function assertTelemetryDeploymentId(deploymentId) {
   }
 }
 
+function makeInstallId() {
+  return `install_${randomUUID()}`;
+}
+
+function normalizeTelemetryUserLabel(userLabel) {
+  if (userLabel === undefined) return undefined;
+  if (userLabel === null) return null;
+  const text = `${userLabel}`.trim();
+  if (!text) return null;
+  if (text.length > 80) {
+    throw new Error("Telemetry user label must be at most 80 characters.");
+  }
+  if (/[^\s@]+@[^\s@]+\.[^\s@]+/.test(text)) {
+    throw new Error("Telemetry user label must not contain email addresses.");
+  }
+  if (!/^[A-Za-z0-9._ -]+$/.test(text)) {
+    throw new Error("Telemetry user label must contain only letters, numbers, space, dot, underscore, or dash.");
+  }
+  return text;
+}
+
 export function validateTelemetryEndpoint(endpoint) {
   const url = new URL(endpoint);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -186,6 +208,7 @@ export async function saveTelemetryConfig({
   endpoint,
   tokenEnv,
   deploymentId,
+  userLabel,
   schedule = "daily@09:00",
   now = new Date(),
 } = {}) {
@@ -202,12 +225,15 @@ export async function saveTelemetryConfig({
   const previous = previousRaw ? normalizeTelemetryConfig(previousRaw.value) : null;
   const resolvedDeploymentId = deploymentId ?? previous?.deployment_id ?? DEFAULT_TELEMETRY_DEPLOYMENT_ID;
   assertTelemetryDeploymentId(resolvedDeploymentId);
+  const resolvedUserLabel = normalizeTelemetryUserLabel(userLabel);
   const configInput = {
     enabled: true,
     level: "raw",
     endpoint: url.href,
     token_env: tokenEnv,
     deployment_id: resolvedDeploymentId,
+    install_id: previous?.install_id ?? makeInstallId(),
+    user_label: resolvedUserLabel === undefined ? previous?.user_label ?? null : resolvedUserLabel,
     schedule,
     created_at: previous?.created_at ?? now.toISOString(),
     updated_at: now.toISOString(),

@@ -77,7 +77,7 @@ function printUsage() {
     "  gemini-agent diff-review (--file <path> | --stdin | <text>)",
     "  gemini-agent research-brief (--file <path> | --stdin | <text>)",
     "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
-    "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--schedule <schedule>]",
+    "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--user-label <label>|--clear-user-label] [--schedule <schedule>]",
     "  gemini-agent telemetry status [--global]",
     "  gemini-agent telemetry preview [--global]",
     "  gemini-agent telemetry summary [--global] [--json]",
@@ -133,6 +133,7 @@ async function readSecret(prompt) {
 function parseTelemetryOptions(args) {
   const options = {
     confirmRawContent: false,
+    clearUserLabel: false,
     global: false,
   };
 
@@ -162,6 +163,13 @@ function parseTelemetryOptions(args) {
       if (!value || value.startsWith("--")) throw new Error("--deployment-id requires an id.");
       options.deploymentId = value;
       index += 1;
+    } else if (arg === "--user-label") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--user-label requires a label.");
+      options.userLabel = value;
+      index += 1;
+    } else if (arg === "--clear-user-label") {
+      options.clearUserLabel = true;
     } else if (arg === "--schedule") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new Error("--schedule requires a value.");
@@ -170,6 +178,9 @@ function parseTelemetryOptions(args) {
     } else {
       throw new Error(`Unknown telemetry argument: ${arg}`);
     }
+  }
+  if (options.userLabel !== undefined && options.clearUserLabel) {
+    throw new Error("--user-label and --clear-user-label cannot be used together.");
   }
 
   return options;
@@ -186,6 +197,8 @@ function hasNonScopeTelemetryOptions(options) {
       || options.endpoint
       || options.tokenEnv
       || options.deploymentId
+      || options.userLabel
+      || options.clearUserLabel
       || options.schedule
   );
 }
@@ -951,6 +964,7 @@ async function runTelemetry(args) {
       endpoint: options.endpoint,
       tokenEnv: options.tokenEnv,
       deploymentId: options.deploymentId,
+      userLabel: options.clearUserLabel ? null : options.userLabel,
       schedule: options.schedule,
     });
     output.write(`${rawTelemetryWarning()}\n`);

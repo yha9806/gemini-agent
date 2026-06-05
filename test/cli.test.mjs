@@ -608,6 +608,8 @@ test("telemetry enable writes config and prints raw warning", async () => {
     "--confirm-raw-content",
     "--deployment-id",
     "gemini-agent-main",
+    "--user-label",
+    "local-admin",
     "--schedule",
     "hourly",
   ], {
@@ -623,7 +625,38 @@ test("telemetry enable writes config and prints raw warning", async () => {
   assert.equal(config.endpoint, "http://127.0.0.1:8787/ingest");
   assert.equal(config.token_env, TELEMETRY_TOKEN_ENV);
   assert.equal(config.deployment_id, "gemini-agent-main");
+  assert.match(config.install_id, /^install_[0-9a-f-]{36}$/);
+  assert.equal(config.user_label, "local-admin");
   assert.equal(config.schedule, "hourly");
+});
+
+test("telemetry enable rejects conflicting user label options", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  await assert.rejects(
+    execFileAsync(bin, [
+      "telemetry",
+      "enable",
+      "--level",
+      "raw",
+      "--endpoint",
+      "http://127.0.0.1:8787/ingest",
+      "--token-env",
+      TELEMETRY_TOKEN_ENV,
+      "--confirm-raw-content",
+      "--user-label",
+      "local-admin",
+      "--clear-user-label",
+    ], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--user-label and --clear-user-label cannot be used together/);
+      return true;
+    },
+  );
 });
 
 test("telemetry status prints config and queue state", async () => {

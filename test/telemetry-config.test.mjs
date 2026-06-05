@@ -106,6 +106,7 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
     endpoint: "http://127.0.0.1:8787/ingest",
     tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
     deploymentId: "gemini-agent-main",
+    userLabel: "local-admin",
     schedule: "daily@09:00",
     now: firstNow,
   });
@@ -115,6 +116,8 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
   assert.equal(firstConfig.endpoint, "http://127.0.0.1:8787/ingest");
   assert.equal(firstConfig.token_env, "GEMINI_AGENT_TELEMETRY_TOKEN");
   assert.equal(firstConfig.deployment_id, "gemini-agent-main");
+  assert.match(firstConfig.install_id, /^install_[0-9a-f-]{36}$/);
+  assert.equal(firstConfig.user_label, "local-admin");
   assert.equal(firstConfig.created_at, firstNow.toISOString());
   assert.equal(firstConfig.updated_at, firstNow.toISOString());
 
@@ -124,6 +127,8 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
   assert.match(configText, /127\.0\.0\.1/);
   const savedFirstConfig = JSON.parse(configText);
   assert.equal(savedFirstConfig.deployment_id, "gemini-agent-main");
+  assert.equal(savedFirstConfig.install_id, firstConfig.install_id);
+  assert.equal(savedFirstConfig.user_label, "local-admin");
   assert.equal(savedFirstConfig.max_event_bytes, DEFAULT_MAX_EVENT_BYTES);
   assert.equal(savedFirstConfig.max_queue_bytes, DEFAULT_MAX_QUEUE_BYTES);
   assert.equal(Object.hasOwn(savedFirstConfig, "max_event_bytes"), true);
@@ -148,6 +153,8 @@ test("saveTelemetryConfig saves and loads raw config with secure modes and prese
   assert.equal(secondConfig.endpoint, "http://localhost:8787/ingest");
   assert.equal(secondConfig.schedule, "daily@10:30");
   assert.equal(secondConfig.deployment_id, "gemini-agent-main");
+  assert.equal(secondConfig.install_id, firstConfig.install_id);
+  assert.equal(secondConfig.user_label, "local-admin");
   assert.equal(secondConfig.created_at, firstNow.toISOString());
   assert.equal(secondConfig.updated_at, secondNow.toISOString());
   assert.equal(secondConfig.max_event_bytes, 2048);
@@ -188,8 +195,47 @@ test("saveTelemetryConfig preserves absence of older byte limit fields", async (
 
   const saved = JSON.parse(await readFile(configPath, "utf8"));
   assert.equal(saved.created_at, createdAt);
+  assert.match(saved.install_id, /^install_[0-9a-f-]{36}$/);
+  assert.equal(saved.user_label, null);
   assert.equal(Object.hasOwn(saved, "max_event_bytes"), false);
   assert.equal(Object.hasOwn(saved, "max_queue_bytes"), false);
+});
+
+test("saveTelemetryConfig rejects unsafe telemetry user labels", async () => {
+  const dir = await temporaryWorkspace();
+  await assert.rejects(
+    () => saveTelemetryConfig({
+      cwd: dir,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+      userLabel: "person@example.com",
+    }),
+    /Telemetry user label must not contain email addresses/,
+  );
+  assert.equal(await loadTelemetryConfig({ cwd: dir }), null);
+});
+
+test("saveTelemetryConfig can clear a preserved telemetry user label", async () => {
+  const dir = await temporaryWorkspace();
+  const firstConfig = await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    userLabel: "local-admin",
+    now: new Date("2026-05-29T09:00:00.000Z"),
+  });
+
+  const secondConfig = await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    userLabel: null,
+    now: new Date("2026-05-29T10:00:00.000Z"),
+  });
+
+  assert.equal(secondConfig.install_id, firstConfig.install_id);
+  assert.equal(secondConfig.user_label, null);
+  assert.equal((await loadTelemetryConfig({ cwd: dir })).user_label, null);
 });
 
 test("saveTelemetryConfig rejects Gemini API key token env before writing config", async () => {
