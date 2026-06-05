@@ -152,12 +152,13 @@ function tickCommandArgs(options) {
     "telemetry tick",
     options.global ? "--global" : "",
     options.batchSize != null ? `--batch-size ${options.batchSize}` : "",
+    options.timeoutMs != null ? `--timeout-ms ${options.timeoutMs}` : "",
   ].filter(Boolean).join(" ");
 }
 
-function buildTickCommand({ cwd, bin, envFile, global, batchSize }) {
+function buildTickCommand({ cwd, bin, envFile, global, batchSize, timeoutMs }) {
   const sourceEnv = envFile ? `set -a; . ${shellWord(envFile)}; set +a; ` : "";
-  return `${sourceEnv}cd ${shellWord(cwd)} && exec ${shellWord(bin)} ${tickCommandArgs({ global, batchSize })}`;
+  return `${sourceEnv}cd ${shellWord(cwd)} && exec ${shellWord(bin)} ${tickCommandArgs({ global, batchSize, timeoutMs })}`;
 }
 
 function currentUid() {
@@ -196,6 +197,7 @@ export function normalizeSchedulerOptions({
   launchdDomain = "gui",
   global = false,
   batchSize = null,
+  timeoutMs = null,
 } = {}) {
   assertName(name);
   parseSchedule(schedule);
@@ -213,6 +215,9 @@ export function normalizeSchedulerOptions({
   if (batchSize != null) {
     assertPositiveInteger(batchSize, "batchSize");
   }
+  if (timeoutMs != null) {
+    assertPositiveInteger(timeoutMs, "timeoutMs");
+  }
   return {
     name,
     schedule,
@@ -224,6 +229,7 @@ export function normalizeSchedulerOptions({
     launchdDomain,
     global,
     batchSize,
+    timeoutMs,
   };
 }
 

@@ -84,10 +84,10 @@ function printUsage() {
     "  gemini-agent telemetry doctor [--global] [--json]",
     "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry quarantine [--global] --event-id <id> --reason <reason>",
-    "  gemini-agent telemetry tick [--global] [--batch-size <n>]",
+    "  gemini-agent telemetry tick [--global] [--batch-size <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry validate [--global] [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
     "  gemini-agent telemetry backfill-artifacts [--artifacts-dir <path>] --deployment-id <id> [--batch-id <id>] [--generated-at <iso>] [--max-files <n>] [--max-artifact-bytes <n>]",
-    "  gemini-agent telemetry install-scheduler [--global] --target launchd|cron|systemd --name <label> [--schedule hourly|daily@HH:MM] [--batch-size <n>] [--env-file <path>] [--launchd-domain gui|user] [--dry-run|--write]",
+    "  gemini-agent telemetry install-scheduler [--global] --target launchd|cron|systemd --name <label> [--schedule hourly|daily@HH:MM] [--batch-size <n>] [--timeout-ms <n>] [--env-file <path>] [--launchd-domain gui|user] [--dry-run|--write]",
     "  gemini-agent telemetry scheduler-status --target launchd|cron|systemd --name <label>",
     "  gemini-agent telemetry uninstall-scheduler --target launchd|cron|systemd --name <label>",
     "  gemini-agent telemetry disable",
@@ -246,6 +246,11 @@ function parseTelemetryTickOptions(args) {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new Error("--batch-size requires a positive integer.");
       options.batchSize = positiveIntegerOption(value, "--batch-size");
+      index += 1;
+    } else if (arg === "--timeout-ms") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--timeout-ms requires a positive integer.");
+      options.timeoutMs = positiveIntegerOption(value, "--timeout-ms");
       index += 1;
     } else {
       throw new Error(`Unknown telemetry tick argument: ${arg}`);
@@ -413,6 +418,12 @@ function parseSchedulerInstallOptions(args) {
       options.batchSize = positiveIntegerOption(
         schedulerValue(args, index, arg, "a positive integer"),
         "--batch-size",
+      );
+      index += 1;
+    } else if (arg === "--timeout-ms") {
+      options.timeoutMs = positiveIntegerOption(
+        schedulerValue(args, index, arg, "a positive integer"),
+        "--timeout-ms",
       );
       index += 1;
     } else if (arg === "--env-file") {
@@ -882,6 +893,8 @@ async function runTelemetryTick(args = []) {
     options.global ? "--global" : "",
     options.batchSize ? "--batch-size" : "",
     options.batchSize ? String(options.batchSize) : "",
+    options.timeoutMs ? "--timeout-ms" : "",
+    options.timeoutMs ? String(options.timeoutMs) : "",
   ].filter(Boolean);
   await runTelemetryFlush(flushArgs);
 }

@@ -1092,6 +1092,8 @@ test("telemetry install-scheduler dry-runs cron artifact", async () => {
     "cli-test",
     "--batch-size",
     "1",
+    "--timeout-ms",
+    "20000",
   ], {
     cwd: dir,
     env: { PATH: process.env.PATH },
@@ -1100,7 +1102,7 @@ test("telemetry install-scheduler dry-runs cron artifact", async () => {
   assert.equal(stderr, "");
   assert.match(stdout, /gemini-agent:cli-test/);
   assert.match(stdout, /0 9 \* \* \*/);
-  assert.match(stdout, /telemetry tick --batch-size 1/);
+  assert.match(stdout, /telemetry tick --batch-size 1 --timeout-ms 20000/);
   assert.match(stdout, /"dry_run": true/);
 });
 
@@ -1412,6 +1414,43 @@ test("telemetry flush honors timeout-ms for slow receivers", async () => {
 
     await assert.rejects(
       execFileAsync(bin, ["telemetry", "flush", "--timeout-ms", "1"], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+      }),
+      (error) => {
+        assert.match(error.stderr, /Telemetry request aborted after 1ms timeout/);
+        return true;
+      },
+    );
+  } finally {
+    await receiver.close();
+  }
+});
+
+test("telemetry tick honors timeout-ms for slow receivers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const receiver = await withTelemetryReceiver(async ({ response }) => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      batch_id: "too-late",
+      received_count: 1,
+      received_at: "2026-06-05T09:00:01.000Z",
+    }));
+  });
+
+  try {
+    await saveTelemetryConfig({
+      cwd: dir,
+      endpoint: receiver.endpoint,
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      schedule: "hourly",
+    });
+    await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(22) });
+
+    await assert.rejects(
+      execFileAsync(bin, ["telemetry", "tick", "--timeout-ms", "1"], {
         cwd: dir,
         env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
       }),

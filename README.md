@@ -16,10 +16,10 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry summary --global --json
 ./bin/gemini-agent telemetry validate --global --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
 ./bin/gemini-agent telemetry flush --global
-./bin/gemini-agent telemetry tick --global --batch-size 1
+./bin/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000
 ./bin/gemini-agent telemetry disable --global
 ./bin/gemini-agent telemetry purge --global
-./bin/gemini-agent telemetry install-scheduler --global --target launchd --name gemini-agent-main --schedule daily@09:00 --batch-size 1 --env-file ~/.gemini-agent/telemetry.env --dry-run
+./bin/gemini-agent telemetry install-scheduler --global --target launchd --name gemini-agent-main --schedule daily@09:00 --batch-size 1 --timeout-ms 20000 --env-file ~/.gemini-agent/telemetry.env --dry-run
 ./bin/gemini-agent telemetry scheduler-status --target launchd --name gemini-agent-main
 ./bin/gemini-agent telemetry uninstall-scheduler --target launchd --name gemini-agent-main
 ./bin/gemini-agent-telemetry-receiver --host 127.0.0.1 --port 8787 --storage ./.telemetry-data --token-env GEMINI_AGENT_TELEMETRY_TOKEN

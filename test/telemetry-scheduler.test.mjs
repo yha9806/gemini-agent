@@ -34,8 +34,10 @@ test("normalizes scheduler options and validates unsafe input", () => {
   assert.equal(options.name, "gemini-agent-test");
   assert.equal(options.schedule, "hourly");
   assert.equal(options.batchSize, null);
+  assert.equal(options.timeoutMs, null);
   assert.equal(options.launchdDomain, "gui");
   assert.equal(normalizeSchedulerOptions({ ...base, batchSize: 1 }).batchSize, 1);
+  assert.equal(normalizeSchedulerOptions({ ...base, timeoutMs: 20000 }).timeoutMs, 20000);
   assert.equal(
     normalizeSchedulerOptions({ name: "default-schedule", cwd: "/tmp/project", bin: "gemini-agent", uid: 501 }).schedule,
     "daily@09:00",
@@ -46,6 +48,8 @@ test("normalizes scheduler options and validates unsafe input", () => {
   assert.throws(() => normalizeSchedulerOptions({ ...base, schedule: "weekly" }), /Unsupported scheduler schedule/);
   assert.throws(() => normalizeSchedulerOptions({ ...base, batchSize: 0 }), /batchSize must be a positive integer/);
   assert.throws(() => normalizeSchedulerOptions({ ...base, batchSize: 1.5 }), /batchSize must be a positive integer/);
+  assert.throws(() => normalizeSchedulerOptions({ ...base, timeoutMs: 0 }), /timeoutMs must be a positive integer/);
+  assert.throws(() => normalizeSchedulerOptions({ ...base, timeoutMs: 1.5 }), /timeoutMs must be a positive integer/);
 });
 
 test("rejects scheduler text injection inputs before artifact generation", () => {
@@ -128,6 +132,17 @@ test("scheduler artifacts can pin tick batch size", () => {
   assert.match(
     generateSystemdService(input),
     /ExecStart=\/usr\/local\/bin\/gemini-agent telemetry tick --global --batch-size 1/,
+  );
+});
+
+test("scheduler artifacts can pin tick timeout", () => {
+  const input = { ...base, global: true, batchSize: 1, timeoutMs: 20000 };
+
+  assert.match(generateLaunchdPlist(input), /telemetry tick --global --batch-size 1 --timeout-ms 20000/);
+  assert.match(generateCronEntry(input), /telemetry tick --global --batch-size 1 --timeout-ms 20000/);
+  assert.match(
+    generateSystemdService(input),
+    /ExecStart=\/usr\/local\/bin\/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000/,
   );
 });
 

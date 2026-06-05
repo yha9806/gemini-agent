@@ -46,10 +46,10 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry summary --global$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry summary --global --json$/m);
-  assert.match(readme, /^\.\/bin\/gemini-agent telemetry tick --global --batch-size 1$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000$/m);
   assert.match(
     readme,
-    /^\.\/bin\/gemini-agent telemetry install-scheduler --global --target launchd --name gemini-agent-main --schedule daily@09:00 --batch-size 1 --env-file ~\/\.gemini-agent\/telemetry\.env --dry-run$/m,
+    /^\.\/bin\/gemini-agent telemetry install-scheduler --global --target launchd --name gemini-agent-main --schedule daily@09:00 --batch-size 1 --timeout-ms 20000 --env-file ~\/\.gemini-agent\/telemetry\.env --dry-run$/m,
   );
 });
 
