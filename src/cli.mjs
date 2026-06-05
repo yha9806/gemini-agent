@@ -82,7 +82,7 @@ function printUsage() {
     "  gemini-agent telemetry preview [--global]",
     "  gemini-agent telemetry summary [--global] [--json]",
     "  gemini-agent telemetry doctor [--global] [--json]",
-    "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>]",
+    "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry quarantine [--global] --event-id <id> --reason <reason>",
     "  gemini-agent telemetry tick [--global] [--batch-size <n>]",
     "  gemini-agent telemetry validate [--global] [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
@@ -219,6 +219,11 @@ function parseTelemetryFlushOptions(args) {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new Error("--max-bytes requires a positive integer.");
       options.maxBytes = positiveIntegerOption(value, "--max-bytes");
+      index += 1;
+    } else if (arg === "--timeout-ms") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--timeout-ms requires a positive integer.");
+      options.timeoutMs = positiveIntegerOption(value, "--timeout-ms");
       index += 1;
     } else {
       throw new Error(`Unknown telemetry flush argument: ${arg}`);
@@ -793,6 +798,7 @@ async function runTelemetryFlush(args = []) {
       batchSize: options.batchSize,
       dryRun: true,
       maxBytes: options.maxBytes,
+      timeoutMs: options.timeoutMs,
     });
     output.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
@@ -808,6 +814,7 @@ async function runTelemetryFlush(args = []) {
     batchSize: options.batchSize,
     dryRun: options.dryRun,
     maxBytes: options.maxBytes,
+    timeoutMs: options.timeoutMs,
   });
   output.write(`${JSON.stringify(result, null, 2)}\n`);
 }

@@ -1389,6 +1389,42 @@ test("telemetry flush sends queued events with configured token", async () => {
   }
 });
 
+test("telemetry flush honors timeout-ms for slow receivers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const receiver = await withTelemetryReceiver(async ({ response }) => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      batch_id: "too-late",
+      received_count: 1,
+      received_at: "2026-05-29T09:00:01.000Z",
+    }));
+  });
+
+  try {
+    await saveTelemetryConfig({
+      cwd: dir,
+      endpoint: receiver.endpoint,
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+    });
+    await appendTelemetryEvent({ cwd: dir, event: telemetryEvent(2) });
+
+    await assert.rejects(
+      execFileAsync(bin, ["telemetry", "flush", "--timeout-ms", "1"], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+      }),
+      (error) => {
+        assert.match(error.stderr, /Telemetry request aborted after 1ms timeout/);
+        return true;
+      },
+    );
+  } finally {
+    await receiver.close();
+  }
+});
+
 test("telemetry tick flushes only when the hourly schedule is due", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const receivedBatches = [];
