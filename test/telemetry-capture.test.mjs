@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -427,10 +427,13 @@ test("captureGeminiTelemetry queues concurrent events without lock loss", async 
 test("captureGeminiTelemetry stores multimodal metadata without raw content", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();
+  const pdfPath = join(cwd, "audit.pdf");
+  const pdfBytes = Buffer.from("%PDF-1.7\nminimal");
+  await writeFile(pdfPath, pdfBytes);
   const appended = [];
   const contents = [
     { inlineData: { mimeType: "image/png", data: "YWJjZA==" } },
-    { fileData: { mimeType: "application/pdf", fileUri: "file:///tmp/reports/audit.pdf", sha256: "already-known" } },
+    { fileData: { mimeType: "application/pdf", fileUri: `file://${pdfPath}`, sha256: "already-known" } },
   ];
 
   await captureGeminiTelemetry({
@@ -447,7 +450,37 @@ test("captureGeminiTelemetry stores multimodal metadata without raw content", as
   assert.equal(appended.length, 1);
   assert.deepEqual(appended[0].payload.multimodal, [
     { mime_type: "image/png", byte_size: 4 },
-    { mime_type: "application/pdf", basename: "audit.pdf", sha256: "already-known" },
+    {
+      mime_type: "application/pdf",
+      byte_size: pdfBytes.length,
+      basename: "audit.pdf",
+      sha256: "already-known",
+    },
   ]);
   assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /YWJjZA/);
+});
+
+test("captureGeminiTelemetry does not stat fileData outside cwd", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const outsideDir = await tempDir();
+  const outsidePath = join(outsideDir, "outside.png");
+  await writeFile(outsidePath, "outside bytes");
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "artifact-review",
+    prompt: "review external artifact reference",
+    response: "ok",
+    status: "success",
+    contents: [{ fileData: { fileUri: `file://${outsidePath}` } }],
+    loadConfig: async () => ({ enabled: true, level: "raw", max_queue_bytes: 1024 }),
+    appendEvent: async ({ event }) => appended.push(normalizeTelemetryEvent(event)),
+  });
+
+  assert.deepEqual(appended[0].payload.multimodal, [{
+    mime_type: "image/png",
+    basename: "outside.png",
+  }]);
 });

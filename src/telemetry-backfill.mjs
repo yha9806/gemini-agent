@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
+import {
+  inferMediaMime,
+  localMediaByteSize,
+  mediaBasename,
+} from "./media-metadata.mjs";
 import {
   RAW_TELEMETRY_SCHEMA_VERSION,
   maskCredentialText,
@@ -68,14 +73,34 @@ function inferRunId(artifact) {
   return `run-${match[1].replace(/[_-]/g, ".").toLowerCase()}`;
 }
 
-function sourceManifest(artifact) {
-  const sources = Array.isArray(artifact?.metadata?.sources) ? artifact.metadata.sources : [];
-  return sanitizeBackfillValue(sources).map((source) => ({
-    basename: basename(source),
-  }));
+function projectRootFromArtifactsDir(artifactsDir) {
+  const resolved = resolve(artifactsDir);
+  const segments = resolved.split(sep);
+  const markerIndex = segments.lastIndexOf(".gemini-agent");
+  if (markerIndex <= 0 || segments[markerIndex + 1] !== "artifacts") return null;
+  const rootSegments = segments.slice(0, markerIndex);
+  if (rootSegments.length === 1 && rootSegments[0] === "") return sep;
+  return rootSegments.join(sep);
 }
 
-function rawEventFromArtifact({ fileName, raw, artifact }) {
+async function sourceManifest(artifact, { projectRoot } = {}) {
+  const sources = Array.isArray(artifact?.metadata?.sources) ? artifact.metadata.sources : [];
+  const manifest = [];
+  for (const source of sources) {
+    const safeSource = sanitizeBackfillValue(source);
+    const item = {
+      basename: mediaBasename(safeSource) ?? basename(`${safeSource}`),
+    };
+    const mimeType = inferMediaMime(safeSource);
+    if (mimeType) item.mime_type = mimeType;
+    const byteSize = await localMediaByteSize(source, { root: projectRoot });
+    if (byteSize !== undefined) item.byte_size = byteSize;
+    manifest.push(item);
+  }
+  return manifest;
+}
+
+async function rawEventFromArtifact({ fileName, raw, artifact, projectRoot }) {
   const sanitized = sanitizeBackfillValue(artifact);
   const generatedAt = artifact?.metadata?.generated_at || new Date().toISOString();
   const artifactType = typeof artifact?.artifact_type === "string" ? artifact.artifact_type : "unknown";
@@ -98,7 +123,7 @@ function rawEventFromArtifact({ fileName, raw, artifact }) {
     response_raw: JSON.stringify(sanitized),
     response_candidates_raw: [],
     tool_calls_raw: [],
-    media_manifest: sourceManifest(artifact),
+    media_manifest: await sourceManifest(artifact, { projectRoot }),
     error: null,
     metadata: {
       backfill_source: "artifact_review_json",
@@ -159,6 +184,7 @@ export async function artifactReviewsToRawTelemetryBatch({
   }
 
   const events = [];
+  const projectRoot = projectRootFromArtifactsDir(artifactsDir);
   for (const fileName of files) {
     const path = join(artifactsDir, fileName);
     const info = await stat(path);
@@ -167,7 +193,7 @@ export async function artifactReviewsToRawTelemetryBatch({
     }
     const raw = await readFile(path, "utf8");
     const artifact = JSON.parse(raw);
-    events.push(rawEventFromArtifact({ fileName, raw, artifact }));
+    events.push(await rawEventFromArtifact({ fileName, raw, artifact, projectRoot }));
   }
 
   if (events.length === 0) {

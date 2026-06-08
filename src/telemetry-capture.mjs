@@ -3,6 +3,11 @@ import { basename } from "node:path";
 import { appendTelemetryEvent } from "./telemetry-queue.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
 import {
+  inferMediaMime,
+  localMediaByteSize,
+  mediaBasename,
+} from "./media-metadata.mjs";
+import {
   DEFAULT_TELEMETRY_DEPLOYMENT_ID,
   truncateTelemetryText,
 } from "./telemetry-schemas.mjs";
@@ -102,18 +107,6 @@ function deriveBase64ByteSize(value) {
   return Math.max(0, (compact.length / 4) * 3 - padding);
 }
 
-function fileBasename(value) {
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  try {
-    const url = new URL(value);
-    const name = basename(decodeURIComponent(url.pathname));
-    return name || undefined;
-  } catch {
-    const name = basename(value);
-    return name || undefined;
-  }
-}
-
 function maybeAddHash(metadata, source) {
   const sha256 = source?.sha256 ?? source?.sha256Hash ?? source?.hash?.sha256;
   if (typeof sha256 === "string" && sha256.trim()) {
@@ -137,38 +130,49 @@ function metadataFromInlineData(inlineData) {
   return Object.keys(metadata).length ? metadata : null;
 }
 
-function metadataFromFileData(fileData) {
+async function metadataFromFileData(fileData, { cwd } = {}) {
   if (!fileData || typeof fileData !== "object") return null;
   const metadata = {};
+  const fileReference = fileData.fileUri ?? fileData.file_uri ?? fileData.uri;
   const mimeType = fileData.mimeType ?? fileData.mime_type;
-  if (typeof mimeType === "string" && mimeType.trim()) metadata.mime_type = mimeType;
+  if (typeof mimeType === "string" && mimeType.trim()) {
+    metadata.mime_type = mimeType;
+  } else {
+    const inferredMimeType = inferMediaMime(fileReference ?? fileData.displayName ?? fileData.name);
+    if (inferredMimeType) metadata.mime_type = inferredMimeType;
+  }
   const byteSize = fileData.byteSize ?? fileData.byte_size ?? fileData.size;
-  if (Number.isInteger(byteSize) && byteSize >= 0) metadata.byte_size = byteSize;
-  const name = fileData.displayName ?? fileData.name ?? fileBasename(fileData.fileUri ?? fileData.file_uri ?? fileData.uri);
+  if (Number.isInteger(byteSize) && byteSize >= 0) {
+    metadata.byte_size = byteSize;
+  } else {
+    const localSize = await localMediaByteSize(fileReference, { root: cwd });
+    if (localSize !== undefined) metadata.byte_size = localSize;
+  }
+  const name = fileData.displayName ?? fileData.name ?? mediaBasename(fileReference);
   if (typeof name === "string" && name.trim()) metadata.basename = basename(name);
   maybeAddHash(metadata, fileData);
   return Object.keys(metadata).length ? metadata : null;
 }
 
-function collectMultimodalMetadata(value, output = []) {
+async function collectMultimodalMetadata(value, { cwd } = {}, output = []) {
   if (value == null) return output;
   if (Array.isArray(value)) {
-    for (const item of value) collectMultimodalMetadata(item, output);
+    for (const item of value) await collectMultimodalMetadata(item, { cwd }, output);
     return output;
   }
   if (typeof value !== "object") return output;
 
   const inlineMetadata = metadataFromInlineData(value.inlineData ?? value.inline_data);
   if (inlineMetadata) output.push(inlineMetadata);
-  const fileMetadata = metadataFromFileData(value.fileData ?? value.file_data);
+  const fileMetadata = await metadataFromFileData(value.fileData ?? value.file_data, { cwd });
   if (fileMetadata) output.push(fileMetadata);
 
-  if (Array.isArray(value.parts)) collectMultimodalMetadata(value.parts, output);
-  if (Array.isArray(value.contents)) collectMultimodalMetadata(value.contents, output);
+  if (Array.isArray(value.parts)) await collectMultimodalMetadata(value.parts, { cwd }, output);
+  if (Array.isArray(value.contents)) await collectMultimodalMetadata(value.contents, { cwd }, output);
   return output;
 }
 
-function buildTelemetryEvent({
+async function buildTelemetryEvent({
   cwd,
   command,
   source,
@@ -216,7 +220,7 @@ function buildTelemetryEvent({
     payload: {
       prompt_truncated: capturedPrompt.truncated,
       response_truncated: capturedResponse.truncated,
-      multimodal: collectMultimodalMetadata(contents),
+      multimodal: await collectMultimodalMetadata(contents, { cwd }),
     },
     context: {
       ...providedContext,
@@ -256,7 +260,7 @@ async function captureGeminiTelemetryTask({
   if (!config?.enabled || config.level !== "raw") return { queued: false };
   const resolvedDeploymentId = deploymentId ?? config.deployment_id ?? DEFAULT_TELEMETRY_DEPLOYMENT_ID;
 
-  const event = buildTelemetryEvent({
+  const event = await buildTelemetryEvent({
     cwd,
     command,
     source,

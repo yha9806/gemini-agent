@@ -80,6 +80,67 @@ test("artifactReviewsToRawTelemetryBatch converts timestamped artifact reviews t
   assert.equal(legacy.events[0].context.run_id, "run-2");
 });
 
+test("artifactReviewsToRawTelemetryBatch enriches media manifest from artifact sources", async () => {
+  const projectRoot = await tempDir();
+  const artifactsDir = join(projectRoot, ".gemini-agent", "artifacts");
+  const sourceDir = join(projectRoot, "outputs");
+  await mkdir(artifactsDir, { recursive: true });
+  await mkdir(sourceDir, { recursive: true });
+  const sourceBytes = Buffer.from("not real png but size is useful");
+  await writeFile(join(sourceDir, "screen.png"), sourceBytes);
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact({
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-06-03T14:55:51.114Z",
+      sources: ["outputs/screen.png"],
+      omitted_sources: [],
+    },
+  }));
+
+  const batch = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_media_test",
+  });
+
+  assert.deepEqual(batch.events[0].media_manifest, [{
+    basename: "screen.png",
+    mime_type: "image/png",
+    byte_size: sourceBytes.length,
+  }]);
+  assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /outputs/);
+  assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
+});
+
+test("artifactReviewsToRawTelemetryBatch does not stat source paths outside the project root", async () => {
+  const projectRoot = await tempDir();
+  const outsideRoot = await tempDir();
+  const artifactsDir = join(projectRoot, ".gemini-agent", "artifacts");
+  await mkdir(artifactsDir, { recursive: true });
+  await writeFile(join(outsideRoot, "outside.png"), "outside bytes");
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact({
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-06-03T14:55:51.114Z",
+      sources: [`../${outsideRoot.split("/").at(-1)}/outside.png`],
+      omitted_sources: [],
+    },
+  }));
+
+  const batch = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_outside_media_test",
+  });
+
+  assert.deepEqual(batch.events[0].media_manifest, [{
+    basename: "outside.png",
+    mime_type: "image/png",
+  }]);
+});
+
 test("artifactReviewsToRawTelemetryBatch enforces file count and byte limits", async () => {
   const artifactsDir = await tempDir();
   await mkdir(artifactsDir, { recursive: true });
