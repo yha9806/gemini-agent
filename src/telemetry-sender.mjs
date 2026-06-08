@@ -7,6 +7,7 @@ import {
   claimTelemetryBatch,
   completeTelemetryBatch,
   failTelemetryBatch,
+  loadTelemetryState,
   peekTelemetryEvents,
 } from "./telemetry-queue.mjs";
 import {
@@ -261,6 +262,13 @@ function httpFailureForStatus(status) {
       error: new Error("Telemetry batch is too large; receiver returned 413."),
     };
   }
+  if (status === 403) {
+    return {
+      retryable: true,
+      reason: "http_403",
+      error: new Error("Telemetry receiver returned 403."),
+    };
+  }
   if (status >= 400 && status < 500 && status !== 429) {
     return {
       retryable: false,
@@ -273,6 +281,16 @@ function httpFailureForStatus(status) {
     reason: `http_${status}`,
     error: new Error(`Telemetry receiver returned ${status}.`),
   };
+}
+
+async function shouldRetryFailure({ cwd, failure }) {
+  if (failure.reason !== "http_403") return failure.retryable;
+  try {
+    const state = await loadTelemetryState({ cwd });
+    return state.last_failure_reason !== "http_403";
+  } catch {
+    return failure.retryable;
+  }
 }
 
 function rejectedEventId(rejection) {
@@ -429,10 +447,11 @@ export async function flushTelemetryQueue({
     });
 
   } catch (error) {
+    const retryable = await shouldRetryFailure({ cwd, failure });
     await failTelemetryBatch({
       cwd,
       batchId: claimed.batchId,
-      retryable: failure.retryable,
+      retryable,
       reason: failure.reason,
     });
     throw error;

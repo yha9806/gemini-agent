@@ -1047,6 +1047,71 @@ test("flushTelemetryQueue archives other 4xx batches as non-retryable failures",
   assert.equal(reason.reason, "http_422");
 });
 
+test("flushTelemetryQueue treats 403 as retryable and requeues the batch", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(22) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async () => new Response("forbidden", { status: 403 }),
+      now: NOW,
+    }),
+    /Telemetry receiver returned 403\./,
+  );
+
+  const dirs = telemetryQueueDirs(cwd);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000022"]);
+  assert.deepEqual(await regularFileNames(dirs.inflight), []);
+  assert.deepEqual(await directoryNames(dirs.failed), []);
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_failure_count, 1);
+  assert.equal(state.non_retryable_failure_count, 0);
+  assert.equal(state.last_failure_reason, "http_403");
+});
+
+test("flushTelemetryQueue archives a batch after consecutive 403 failures", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(23) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async () => new Response("forbidden", { status: 403 }),
+      now: NOW,
+    }),
+    /Telemetry receiver returned 403\./,
+  );
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), ["evt_000023"]);
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async () => new Response("forbidden again", { status: 403 }),
+      now: NOW,
+    }),
+    /Telemetry receiver returned 403\./,
+  );
+
+  const dirs = telemetryQueueDirs(cwd);
+  assert.deepEqual(await regularFileNames(dirs.pending), []);
+  assert.deepEqual(await regularFileNames(dirs.inflight), []);
+  const failedBatches = await directoryNames(dirs.failed);
+  assert.equal(failedBatches.length, 1);
+  const reason = JSON.parse(await readFile(join(dirs.failed, failedBatches[0], "reason.json"), "utf8"));
+  assert.equal(reason.reason, "http_403");
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_failure_count, 2);
+  assert.equal(state.non_retryable_failure_count, 1);
+  assert.equal(state.last_failure_reason, "http_403");
+});
+
 test("flushTelemetryQueue completes production ACKs with partial event rejection", async () => {
   const cwd = await temporaryWorkspace();
   await appendTelemetryEvent({ cwd, event: telemetryEvent(13) });

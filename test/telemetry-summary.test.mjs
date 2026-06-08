@@ -249,6 +249,74 @@ test("runTelemetrySummary aggregates pending sent failed quarantine dimensions a
   }]);
 });
 
+test("runTelemetrySummary aggregates multimodal metadata without exposing media file names", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(31, {
+      command: "gemini_artifact_review",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [
+          { mime_type: "image/png", byte_size: 1024, basename: "secret-customer-screen.png" },
+          { mime_type: "image/png", byte_size: 2048 },
+        ],
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(32, {
+      command: "artifact-review-backfill",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [
+          { mime_type: "image/jpeg", byte_size: 512 },
+          { byte_size: 128, basename: "private-artifact.jpg" },
+          { mime_type: "application/pdf" },
+        ],
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(33, {
+      command: "ask",
+      payload: { prompt_truncated: false, response_truncated: false, multimodal: [] },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+
+  assert.deepEqual(summary.multimodal, {
+    event_count: 2,
+    item_count: 5,
+    byte_count: 3712,
+    unknown_mime_items: 1,
+    unknown_byte_size_items: 1,
+    top_media_mime: [
+      { mime_type: "image/png", event_count: 1, item_count: 2, byte_count: 3072 },
+      { mime_type: "application/pdf", event_count: 1, item_count: 1, byte_count: 0 },
+      { mime_type: "image/jpeg", event_count: 1, item_count: 1, byte_count: 512 },
+      { mime_type: "unknown", event_count: 1, item_count: 1, byte_count: 128 },
+    ],
+  });
+  assert.match(text, /Multimodal:/);
+  assert.match(summary.recommendations.map((item) => item.message).join("\n"), /multimodal metadata has unknown MIME types/);
+  assert.doesNotMatch(JSON.stringify(summary), /secret-customer-screen/);
+  assert.doesNotMatch(text, /private-artifact/);
+});
+
 test("runTelemetrySummary reports invalid events with bounded POSIX samples", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({

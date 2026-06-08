@@ -51,6 +51,16 @@ function zeroRawContent() {
   };
 }
 
+function zeroMultimodal() {
+  return {
+    event_count: 0,
+    item_count: 0,
+    byte_count: 0,
+    unknown_mime_items: 0,
+    unknown_byte_size_items: 0,
+  };
+}
+
 function zeroStatusCounts() {
   return {
     event_count: 0,
@@ -76,6 +86,7 @@ function classifyFailureReason(reason) {
   if (text.startsWith("quarantined:")) return "quarantined";
   if (text.startsWith("receiver_error")) return "receiver_error";
   if (text.startsWith("schedule_not_due")) return "schedule_not_due";
+  if (/^http_\d{3}$/.test(text)) return text;
   return "other";
 }
 
@@ -119,14 +130,58 @@ function topDimension(map, keyName, limit) {
     }));
 }
 
+function updateMediaMime(map, mimeType, byteSize, seenInEvent) {
+  const key = sanitizeDimension(mimeType, "unknown");
+  const item = map.get(key) ?? {
+    key,
+    event_count: 0,
+    item_count: 0,
+    byte_count: 0,
+  };
+  if (!seenInEvent.has(key)) {
+    item.event_count += 1;
+    seenInEvent.add(key);
+  }
+  item.item_count += 1;
+  item.byte_count += byteSize;
+  map.set(key, item);
+}
+
+function topMediaMime(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.item_count - left.item_count
+      || right.event_count - left.event_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      mime_type: item.key,
+      event_count: item.event_count,
+      item_count: item.item_count,
+      byte_count: item.byte_count,
+    }));
+}
+
 function successRate(item) {
   return item.event_count > 0 ? item.success_count / item.event_count : 0;
 }
 
-function buildRecommendations({ commands, counts, statusCounts, queue, usage }) {
+function commandLooksLikeArtifactReview(command) {
+  return /artifact[_-]?review/i.test(command);
+}
+
+function buildRecommendations({ commands, counts, statusCounts, queue, usage, multimodal }) {
   const recommendations = [];
-  const artifactReview = commands.find((item) => item.command === "artifact-review");
-  if (artifactReview?.success_count >= 5 && successRate(artifactReview) >= 0.8) {
+  const artifactReview = commands
+    .filter((item) => commandLooksLikeArtifactReview(item.command))
+    .reduce((total, item) => ({
+      event_count: total.event_count + item.event_count,
+      success_count: total.success_count + item.success_count,
+      error_count: total.error_count + item.error_count,
+      unknown_count: total.unknown_count + item.unknown_count,
+    }), zeroStatusCounts());
+  if (artifactReview.success_count >= 5 && successRate(artifactReview) >= 0.8) {
     recommendations.push({
       kind: "workflow",
       message: "artifact-review has enough successful use to keep prioritizing multimodal/design workflows.",
@@ -151,10 +206,22 @@ function buildRecommendations({ commands, counts, statusCounts, queue, usage }) 
       message: "Pending queue is high with receiver_error; keep bounded flushes and inspect the endpoint.",
     });
   }
+  if (queue.last_failure_reason === "http_403") {
+    recommendations.push({
+      kind: "delivery",
+      message: "Last telemetry failure was http_403; verify token and endpoint, then retry with small bounded flushes.",
+    });
+  }
   if (counts.total > 0 && usage.events_missing_usage / counts.total > 0.5) {
     recommendations.push({
       kind: "instrumentation",
       message: "Most events are missing usage metadata; validate Gemini client capture before drawing token-savings conclusions.",
+    });
+  }
+  if (multimodal.item_count > 0 && multimodal.unknown_mime_items / multimodal.item_count > 0.1) {
+    recommendations.push({
+      kind: "instrumentation",
+      message: "Some multimodal metadata has unknown MIME types; improve artifact capture so design analytics can segment images, PDFs, and screenshots.",
     });
   }
   return recommendations;
@@ -239,10 +306,12 @@ function createAccumulator(invalidSampleLimit) {
     statusCounts: zeroStatusCounts(),
     usage: zeroUsage(),
     rawContent: zeroRawContent(),
+    multimodal: zeroMultimodal(),
     projects: createDimensionMap(),
     commands: createDimensionMap(),
     sources: createDimensionMap(),
     models: createDimensionMap(),
+    mediaMimes: createDimensionMap(),
     invalidSamples: [],
   };
 }
@@ -269,6 +338,27 @@ function addEvent(accumulator, state, event) {
   if (event.response) accumulator.rawContent.response_events += 1;
   if (event.payload?.prompt_truncated) accumulator.rawContent.truncated_prompt_events += 1;
   if (event.payload?.response_truncated) accumulator.rawContent.truncated_response_events += 1;
+
+  const multimodalItems = Array.isArray(event.payload?.multimodal)
+    ? event.payload.multimodal
+    : [];
+  if (multimodalItems.length > 0) {
+    accumulator.multimodal.event_count += 1;
+    const seenMimes = new Set();
+    for (const item of multimodalItems) {
+      const mimeType = typeof item?.mime_type === "string" && item.mime_type.trim()
+        ? item.mime_type
+        : "unknown";
+      const byteSize = safeInteger(item?.byte_size);
+      accumulator.multimodal.item_count += 1;
+      accumulator.multimodal.byte_count += byteSize;
+      if (mimeType === "unknown") accumulator.multimodal.unknown_mime_items += 1;
+      if (!Number.isInteger(item?.byte_size) || item.byte_size < 0) {
+        accumulator.multimodal.unknown_byte_size_items += 1;
+      }
+      updateMediaMime(accumulator.mediaMimes, mimeType, byteSize, seenMimes);
+    }
+  }
 
   const inputTokens = event.economics?.input_tokens;
   const outputTokens = event.economics?.output_tokens;
@@ -328,6 +418,10 @@ export async function runTelemetrySummary({
   const allCommands = topDimension(accumulator.commands, "command", accumulator.commands.size);
   const sources = topDimension(accumulator.sources, "source", topLimit);
   const models = topDimension(accumulator.models, "model", topLimit);
+  const multimodal = {
+    ...accumulator.multimodal,
+    top_media_mime: topMediaMime(accumulator.mediaMimes, topLimit),
+  };
   const queue = {
     queue_bytes: state.queue_bytes,
     dropped_old_count: state.dropped_old_count,
@@ -348,6 +442,7 @@ export async function runTelemetrySummary({
     status_counts: accumulator.statusCounts,
     queue,
     usage: accumulator.usage,
+    multimodal,
     top_projects: topProjects,
     top_commands: topCommands,
     sources,
@@ -363,6 +458,7 @@ export async function runTelemetrySummary({
       statusCounts: accumulator.statusCounts,
       queue,
       usage: accumulator.usage,
+      multimodal,
     }),
     limitations: [
       "Local summary only includes telemetry files available on this machine.",
@@ -403,6 +499,12 @@ export function formatTelemetrySummaryText(summary) {
     `- Prompt tokens: ${formatNumber(summary.usage.prompt_tokens)}`,
     `- Response tokens: ${formatNumber(summary.usage.response_tokens)}`,
     `- Estimated Codex tokens saved: ${formatNumber(summary.usage.estimated_codex_tokens_saved)}`,
+    "",
+    "Multimodal:",
+    `- Events: ${formatNumber(summary.multimodal?.event_count ?? 0)}`,
+    `- Media items: ${formatNumber(summary.multimodal?.item_count ?? 0)}`,
+    `- Media bytes: ${formatNumber(summary.multimodal?.byte_count ?? 0)}`,
+    `- Unknown MIME items: ${formatNumber(summary.multimodal?.unknown_mime_items ?? 0)}`,
     "",
     "Recommendations:",
     recommendations,
