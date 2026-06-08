@@ -301,6 +301,68 @@ test("appendTelemetryEventsIfNew deduplicates a batch against history and itself
   ]);
 });
 
+test("appendTelemetryEventsIfNew persists event ids after sent files are pruned", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  const sentDay = new Date("2026-05-20T12:00:00.000Z");
+
+  const first = await appendTelemetryEventsIfNew({
+    cwd,
+    events: [telemetryEvent(11), telemetryEvent(12)],
+    maxQueueBytes: LARGE_QUEUE_LIMIT,
+  });
+  assert.deepEqual(first.queued.map((event) => event.event_id), ["evt_000011", "evt_000012"]);
+
+  const indexPath = join(dirs.queue, "event-index.json");
+  const index = await readJson(indexPath);
+  assert.equal(index.schema_version, 1);
+  assert.deepEqual(index.event_ids, ["evt_000011", "evt_000012"]);
+  assert.equal(modeBits(await stat(indexPath)), 0o600);
+
+  const batch = await claimTelemetryBatch({ cwd, batchSize: 2, now: sentDay });
+  await completeTelemetryBatch({ cwd, batchId: batch.batchId, now: sentDay });
+  const removed = await pruneSentTelemetry({
+    cwd,
+    now: new Date("2026-05-29T12:00:00.000Z"),
+    keepDays: 7,
+    maxSentBytes: LARGE_QUEUE_LIMIT,
+  });
+  assert.equal(removed, 2);
+  assert.equal(await pathExists(join(dirs.sent, "2026-05-20")), false);
+
+  const duplicate = await appendTelemetryEventsIfNew({
+    cwd,
+    events: [telemetryEvent(11), telemetryEvent(12)],
+    maxQueueBytes: LARGE_QUEUE_LIMIT,
+  });
+
+  assert.deepEqual(duplicate.queued, []);
+  assert.deepEqual(duplicate.skipped.map((event) => event.event_id), ["evt_000011", "evt_000012"]);
+  assert.deepEqual(await readPendingEvents(cwd), []);
+});
+
+test("appendTelemetryEventsIfNew rebuilds a corrupted event id index", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(13), maxQueueBytes: LARGE_QUEUE_LIMIT });
+  await writeFile(join(dirs.queue, "event-index.json"), "{bad json\n", { mode: 0o600 });
+
+  const result = await appendTelemetryEventsIfNew({
+    cwd,
+    events: [telemetryEvent(13), telemetryEvent(14)],
+    maxQueueBytes: LARGE_QUEUE_LIMIT,
+  });
+
+  assert.deepEqual(result.queued.map((event) => event.event_id), ["evt_000014"]);
+  assert.deepEqual(result.skipped.map((event) => event.event_id), ["evt_000013"]);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), [
+    "evt_000013",
+    "evt_000014",
+  ]);
+  const rebuilt = await readJson(join(dirs.queue, "event-index.json"));
+  assert.deepEqual(rebuilt.event_ids, ["evt_000013", "evt_000014"]);
+});
+
 test("claim, complete, and fail move queue files safely", async () => {
   const cwd = await temporaryWorkspace();
   const dirs = telemetryQueueDirs(cwd);

@@ -21,6 +21,7 @@ import {
 const TELEMETRY_ROOT = ".gemini-agent/telemetry";
 const QUEUE_DIR = "queue";
 const STATE_FILE = "state.json";
+const EVENT_INDEX_FILE = "event-index.json";
 const LOCK_FILE = "lock";
 const LOCK_GUARD_FILE = "lock.guard";
 const SECURE_DIR_MODE = 0o700;
@@ -125,6 +126,7 @@ export function telemetryQueueDirs(cwd = process.cwd()) {
     tmp: join(queue, "tmp"),
     lock: join(queue, LOCK_FILE),
     state: join(queue, STATE_FILE),
+    eventIndex: join(queue, EVENT_INDEX_FILE),
   };
 }
 
@@ -328,6 +330,46 @@ async function writeSecureJsonFile(cwd, path, value) {
   await chmod(tmpPath, SECURE_FILE_MODE);
   await rename(tmpPath, path);
   await chmod(path, SECURE_FILE_MODE);
+}
+
+function normalizeEventIndex(value) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Telemetry event index must be an object.");
+  }
+  if (value.schema_version !== 1) {
+    throw new Error("Telemetry event index schema_version is unsupported.");
+  }
+  if (!Array.isArray(value.event_ids)) {
+    throw new Error("Telemetry event index event_ids must be an array.");
+  }
+  return new Set(value.event_ids.filter((eventId) => typeof eventId === "string" && eventId.trim()));
+}
+
+async function loadEventIndexFromPath(path) {
+  const index = await readJsonFile(path, "Telemetry event index");
+  if (!index) return null;
+  return normalizeEventIndex(index);
+}
+
+async function saveEventIndex(cwd, eventIds) {
+  const dirs = telemetryQueueDirs(cwd);
+  await writeSecureJsonFile(cwd, dirs.eventIndex, {
+    schema_version: 1,
+    updated_at: new Date().toISOString(),
+    event_ids: [...eventIds].sort((left, right) => left.localeCompare(right)),
+  });
+}
+
+async function loadOrRebuildEventIndex(cwd, dirs) {
+  try {
+    const existing = await loadEventIndexFromPath(dirs.eventIndex);
+    if (existing) return existing;
+  } catch {
+    // Rebuild corrupted indexes from queue history; telemetry capture should not fail closed here.
+  }
+  const rebuilt = await queueEventIds(dirs);
+  await saveEventIndex(cwd, rebuilt);
+  return rebuilt;
 }
 
 async function loadStateFromPath(path) {
@@ -637,6 +679,9 @@ async function appendTelemetryEventInternal({
     const dirs = await ensureQueueDirs(cwd);
     const state = await loadStateFromPath(dirs.state);
     await writePendingTelemetryEvent(dirs, normalizedEvent);
+    const eventIds = await loadOrRebuildEventIndex(cwd, dirs);
+    eventIds.add(normalizedEvent.event_id);
+    await saveEventIndex(cwd, eventIds);
 
     const nextState = await enforceQueueLimit(cwd, state, maxQueueBytes);
     await saveState(cwd, nextState);
@@ -662,7 +707,7 @@ export async function appendTelemetryEventsIfNew({
   return withTelemetryQueueLock({ cwd }, async () => {
     const dirs = await ensureQueueDirs(cwd);
     const state = await loadStateFromPath(dirs.state);
-    const existingEventIds = await queueEventIds(dirs);
+    const existingEventIds = await loadOrRebuildEventIndex(cwd, dirs);
     const queued = [];
     const skipped = [];
 
@@ -677,6 +722,7 @@ export async function appendTelemetryEventsIfNew({
     }
 
     if (queued.length > 0) {
+      await saveEventIndex(cwd, existingEventIds);
       const nextState = await enforceQueueLimit(cwd, state, maxQueueBytes);
       await saveState(cwd, nextState);
     }
