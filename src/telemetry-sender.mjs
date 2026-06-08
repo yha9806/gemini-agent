@@ -188,6 +188,7 @@ function rawEventFromLegacy(event) {
       message: event.error_type,
     } : null,
     metadata: {
+      ...(event.metadata ?? {}),
       legacy_schema_version: event.schema_version,
       trace_id: event.trace_id,
       project_id: event.project_id,

@@ -16,6 +16,7 @@ const DEFAULT_MAX_FILES = 500;
 const DEFAULT_MAX_ARTIFACT_BYTES = 1024 * 1024;
 const DEFAULT_PROMPT_RAW = "Backfilled gemini-agent artifact review JSON.";
 const LOCAL_PATH_PATTERN = /\bfile:\/\/\/(?:Users|home|tmp|var|private|Volumes)\/[^\s"',)]+|\/(?:Users|home|tmp|var|private|Volumes)\/[^\s"',)]+/g;
+const CORRECTION_VERSION_PATTERN = /^[A-Za-z0-9._-]{1,48}$/;
 
 function utcNow() {
   return new Date().toISOString();
@@ -33,6 +34,18 @@ function hashText(value) {
 function eventIdForArtifact(fileName, raw) {
   const safeName = fileName.replace(/[^A-Za-z0-9_.-]/g, "_");
   return `artifact_${safeName}_${hashText(raw).slice(0, 12)}`;
+}
+
+function correctionEventIdForArtifact(originalEventId, correctionVersion) {
+  return `artifact_correction_${hashText(`${originalEventId}\0${correctionVersion}`).slice(0, 24)}`;
+}
+
+function normalizeCorrectionVersion(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !CORRECTION_VERSION_PATTERN.test(value)) {
+    throw new Error("correctionVersion must contain 1-48 letters, numbers, dots, underscores, or dashes.");
+  }
+  return value;
 }
 
 function checksumEvents(events) {
@@ -100,19 +113,23 @@ async function sourceManifest(artifact, { projectRoot } = {}) {
   return manifest;
 }
 
-async function rawEventFromArtifact({ fileName, raw, artifact, projectRoot }) {
+async function rawEventFromArtifact({ fileName, raw, artifact, projectRoot, correctionVersion }) {
   const sanitized = sanitizeBackfillValue(artifact);
   const generatedAt = artifact?.metadata?.generated_at || new Date().toISOString();
   const artifactType = typeof artifact?.artifact_type === "string" ? artifact.artifact_type : "unknown";
   const runId = inferRunId(artifact);
+  const originalEventId = eventIdForArtifact(fileName, raw);
+  const isCorrection = correctionVersion !== null;
 
   return {
-    event_id: eventIdForArtifact(fileName, raw),
+    event_id: isCorrection
+      ? correctionEventIdForArtifact(originalEventId, correctionVersion)
+      : originalEventId,
     source_host_app: "other",
     trigger_source: "manual",
     model_provider: "google",
     model: artifact?.metadata?.model || "gemini-3.5-flash",
-    command: "artifact-review-backfill",
+    command: isCorrection ? "artifact-review-backfill-correction" : "artifact-review-backfill",
     started_at: generatedAt,
     ended_at: generatedAt,
     latency_ms: 0,
@@ -126,7 +143,12 @@ async function rawEventFromArtifact({ fileName, raw, artifact, projectRoot }) {
     media_manifest: await sourceManifest(artifact, { projectRoot }),
     error: null,
     metadata: {
-      backfill_source: "artifact_review_json",
+      backfill_source: isCorrection ? "artifact_review_json_correction" : "artifact_review_json",
+      ...(isCorrection ? {
+        correction_for_event_id: originalEventId,
+        correction_version: correctionVersion,
+        correction_reason: "media_manifest_enrichment",
+      } : {}),
       artifact_type: artifactType,
       generated_at: generatedAt,
       source_file: sanitizeBackfillValue(fileName),
@@ -161,6 +183,7 @@ export async function artifactReviewsToRawTelemetryBatch({
   generatedAt = new Date(),
   maxFiles = DEFAULT_MAX_FILES,
   maxArtifactBytes = DEFAULT_MAX_ARTIFACT_BYTES,
+  correctionVersion,
 } = {}) {
   if (typeof artifactsDir !== "string" || !artifactsDir.trim()) {
     throw new Error("artifactsDir is required.");
@@ -177,6 +200,7 @@ export async function artifactReviewsToRawTelemetryBatch({
   if (!Number.isInteger(maxArtifactBytes) || maxArtifactBytes <= 0) {
     throw new RangeError("maxArtifactBytes must be a positive integer.");
   }
+  const normalizedCorrectionVersion = normalizeCorrectionVersion(correctionVersion);
 
   const files = await artifactFiles(artifactsDir);
   if (files.length > maxFiles) {
@@ -193,7 +217,13 @@ export async function artifactReviewsToRawTelemetryBatch({
     }
     const raw = await readFile(path, "utf8");
     const artifact = JSON.parse(raw);
-    events.push(await rawEventFromArtifact({ fileName, raw, artifact, projectRoot }));
+    events.push(await rawEventFromArtifact({
+      fileName,
+      raw,
+      artifact,
+      projectRoot,
+      correctionVersion: normalizedCorrectionVersion,
+    }));
   }
 
   if (events.length === 0) {

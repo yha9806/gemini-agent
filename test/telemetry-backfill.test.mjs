@@ -113,6 +113,56 @@ test("artifactReviewsToRawTelemetryBatch enriches media manifest from artifact s
   assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
 });
 
+test("artifactReviewsToRawTelemetryBatch creates deterministic correction events", async () => {
+  const artifactsDir = await tempDir();
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact());
+
+  const original = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_original_test",
+  });
+  const correction = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_correction_test",
+    correctionVersion: "media-v1",
+  });
+  const repeated = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_correction_repeat_test",
+    correctionVersion: "media-v1",
+  });
+  const nextVersion = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_correction_next_test",
+    correctionVersion: "media-v2",
+  });
+
+  assert.equal(correction.events[0].command, "artifact-review-backfill-correction");
+  assert.match(correction.events[0].event_id, /^artifact_correction_[a-f0-9]{24}$/);
+  assert.notEqual(correction.events[0].event_id, original.events[0].event_id);
+  assert.equal(correction.events[0].event_id.includes(original.events[0].event_id), false);
+  assert.equal(repeated.events[0].event_id, correction.events[0].event_id);
+  assert.notEqual(nextVersion.events[0].event_id, correction.events[0].event_id);
+  assert.equal(correction.events[0].metadata.backfill_source, "artifact_review_json_correction");
+  assert.equal(correction.events[0].metadata.correction_for_event_id, original.events[0].event_id);
+  assert.equal(correction.events[0].metadata.correction_version, "media-v1");
+  assert.equal(correction.events[0].metadata.correction_reason, "media_manifest_enrichment");
+  assert.doesNotThrow(() => normalizeRawTelemetryBatch(correction));
+
+  const legacy = normalizeTelemetryBatch(correction);
+  assert.equal(legacy.events[0].command, "artifact-review-backfill-correction");
+  assert.equal(legacy.events[0].metadata.correction_for_event_id, original.events[0].event_id);
+  assert.equal(legacy.events[0].metadata.correction_version, "media-v1");
+});
+
 test("artifactReviewsToRawTelemetryBatch does not stat source paths outside the project root", async () => {
   const projectRoot = await tempDir();
   const outsideRoot = await tempDir();

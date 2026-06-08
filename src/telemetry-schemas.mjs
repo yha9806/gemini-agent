@@ -110,6 +110,8 @@ const TelemetryEconomicsZodSchema = z.strictObject({
   cost_bucket: null,
 }));
 
+const TelemetryMetadataZodSchema = z.record(z.string(), z.unknown()).default(() => ({}));
+
 export const TelemetryEventZodSchema = z.strictObject({
   schema_version: z.literal(TELEMETRY_SCHEMA_VERSION),
   event_id: z.string().min(1),
@@ -133,6 +135,7 @@ export const TelemetryEventZodSchema = z.strictObject({
   context: TelemetryContextZodSchema,
   outcome: TelemetryOutcomeZodSchema,
   economics: TelemetryEconomicsZodSchema,
+  metadata: TelemetryMetadataZodSchema,
 });
 
 export const TelemetryBatchZodSchema = z.strictObject({
@@ -331,6 +334,7 @@ export function normalizeTelemetryBatch(value) {
           output_tokens: event.usage?.output_tokens ?? null,
           total_tokens: event.usage?.total_tokens ?? null,
         },
+        metadata: event.metadata,
       })),
     };
   }

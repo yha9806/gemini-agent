@@ -87,7 +87,7 @@ function printUsage() {
     "  gemini-agent telemetry quarantine [--global] --event-id <id> --reason <reason>",
     "  gemini-agent telemetry tick [--global] [--batch-size <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry validate [--global] [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
-    "  gemini-agent telemetry backfill-artifacts [--artifacts-dir <path>] --deployment-id <id> [--batch-id <id>] [--generated-at <iso>] [--max-files <n>] [--max-artifact-bytes <n>]",
+    "  gemini-agent telemetry backfill-artifacts [--artifacts-dir <path>] --deployment-id <id> [--batch-id <id>] [--generated-at <iso>] [--max-files <n>] [--max-artifact-bytes <n>] [--correction-version <id>]",
     "  gemini-agent telemetry install-scheduler [--global] --target launchd|cron|systemd --name <label> [--schedule hourly|daily@HH:MM] [--batch-size <n>] [--timeout-ms <n>] [--env-file <path>] [--launchd-domain gui|user] [--dry-run|--write]",
     "  gemini-agent telemetry scheduler-status --target launchd|cron|systemd --name <label>",
     "  gemini-agent telemetry uninstall-scheduler --target launchd|cron|systemd --name <label>",
@@ -394,6 +394,11 @@ function parseBackfillArtifactOptions(args) {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new Error("--max-artifact-bytes requires a positive integer.");
       options.maxArtifactBytes = positiveIntegerOption(value, "--max-artifact-bytes");
+      index += 1;
+    } else if (arg === "--correction-version") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--correction-version requires an id.");
+      options.correctionVersion = value;
       index += 1;
     } else {
       throw new Error(`Unknown backfill-artifacts argument: ${arg}`);
@@ -1044,6 +1049,7 @@ async function runTelemetry(args) {
       generatedAt: options.generatedAt,
       maxFiles: options.maxFiles,
       maxArtifactBytes: options.maxArtifactBytes,
+      correctionVersion: options.correctionVersion,
     });
     if (options.queue) {
       const context = await loadTelemetryConfigContext({

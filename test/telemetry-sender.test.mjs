@@ -158,6 +158,49 @@ test("flushTelemetryQueue sends a strict batch and completes the queue", async (
   assert.equal(state.sent_failure_count, 0);
 });
 
+test("flushTelemetryQueue preserves correction metadata in raw upload", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(3, {
+      event_id: "artifact_correction_abcd1234abcd1234abcd1234",
+      command: "artifact-review-backfill-correction",
+      metadata: {
+        correction_for_event_id: "artifact_original_abc123",
+        correction_version: "media-v1",
+        correction_reason: "media_manifest_enrichment",
+      },
+    }),
+  });
+
+  let request;
+  const fetchImpl = async (url, options) => {
+    request = {
+      url: `${url}`,
+      body: JSON.parse(options.body),
+    };
+    return new Response(JSON.stringify({
+      ok: true,
+      batch_id: request.body.batch_id,
+      received_count: request.body.events.length,
+      received_at: "2026-05-29T10:00:01.000Z",
+    }), { status: 200 });
+  };
+
+  await flushTelemetryQueue({
+    cwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    fetchImpl,
+    now: NOW,
+    batchSize: 1,
+  });
+
+  assert.equal(request.body.events[0].metadata.correction_for_event_id, "artifact_original_abc123");
+  assert.equal(request.body.events[0].metadata.correction_version, "media-v1");
+  assert.equal(request.body.events[0].metadata.correction_reason, "media_manifest_enrichment");
+});
+
 test("flushTelemetryQueue returns zero without sending when queue is empty", async () => {
   const cwd = await temporaryWorkspace();
   let called = false;
