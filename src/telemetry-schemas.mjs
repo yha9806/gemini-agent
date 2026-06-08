@@ -198,6 +198,32 @@ const TelemetryStatusCountsZodSchema = z.strictObject({
   error: z.number().int().nonnegative(),
 });
 
+const TelemetryReceiverCorrectionVersionZodSchema = z.strictObject({
+  correction_version: z.string().min(1),
+  event_count: z.number().int().nonnegative(),
+  corrected_original_event_count: z.number().int().nonnegative(),
+  media_item_count: z.number().int().nonnegative(),
+  media_byte_count: z.number().int().nonnegative(),
+});
+
+const TelemetryReceiverCorrectionsZodSchema = z.strictObject({
+  event_count: z.number().int().nonnegative(),
+  corrected_original_event_count: z.number().int().nonnegative(),
+  media_item_count: z.number().int().nonnegative(),
+  media_byte_count: z.number().int().nonnegative(),
+  media_items_with_mime: z.number().int().nonnegative(),
+  media_items_with_byte_size: z.number().int().nonnegative(),
+  top_versions: z.array(TelemetryReceiverCorrectionVersionZodSchema).default(() => []),
+}).default(() => ({
+  event_count: 0,
+  corrected_original_event_count: 0,
+  media_item_count: 0,
+  media_byte_count: 0,
+  media_items_with_mime: 0,
+  media_items_with_byte_size: 0,
+  top_versions: [],
+}));
+
 export const TelemetryReceiverAckZodSchema = z.strictObject({
   ok: z.literal(true),
   batch_id: z.string().min(1),
@@ -214,6 +240,7 @@ export const TelemetryReceiverMetricsZodSchema = z.strictObject({
   latest_event: TelemetryReceiverLatestEventZodSchema.nullable().default(null),
   status_counts: TelemetryStatusCountsZodSchema,
   clock_skew_warnings: z.number().int().nonnegative().default(0),
+  corrections: TelemetryReceiverCorrectionsZodSchema,
 });
 
 const MASK_PATTERNS = [

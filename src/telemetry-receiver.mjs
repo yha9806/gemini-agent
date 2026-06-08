@@ -14,6 +14,9 @@ const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_RAW_BYTES = 100 * 1024 * 1024;
 const DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024;
 const CLOCK_SKEW_WARNING_MS = 60 * 60 * 1000;
+const CORRECTION_COMMAND = "artifact-review-backfill-correction";
+const CORRECTION_VERSION_PATTERN = /^[A-Za-z0-9._-]{1,48}$/;
+const TOP_CORRECTION_VERSION_LIMIT = 10;
 
 function utcNow() {
   return new Date().toISOString();
@@ -98,12 +101,69 @@ function openDatabase(storage) {
         FOREIGN KEY (batch_id) REFERENCES batches(batch_id)
       );
     `);
+    ensureEventColumns(db);
     return db;
   } catch (error) {
     throw new Error(`Failed to initialize telemetry receiver SQLite database in ${storage}: ${error.message}`, {
       cause: error,
     });
   }
+}
+
+function ensureEventColumns(db) {
+  const columns = new Set(db.prepare("PRAGMA table_info(events)").all().map((column) => column.name));
+  const requiredColumns = [
+    ["correction_for_event_id", "TEXT"],
+    ["correction_version", "TEXT"],
+    ["media_item_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["media_byte_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["media_items_with_mime", "INTEGER NOT NULL DEFAULT 0"],
+    ["media_items_with_byte_size", "INTEGER NOT NULL DEFAULT 0"],
+  ];
+  for (const [name, definition] of requiredColumns) {
+    if (!columns.has(name)) {
+      db.exec(`ALTER TABLE events ADD COLUMN ${name} ${definition}`);
+    }
+  }
+}
+
+function safeNonnegativeInteger(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function safeCorrectionVersion(value) {
+  return typeof value === "string" && CORRECTION_VERSION_PATTERN.test(value) ? value : "unknown";
+}
+
+function correctionColumns(event) {
+  if (event.command !== CORRECTION_COMMAND) {
+    return {
+      correction_for_event_id: null,
+      correction_version: null,
+      media_item_count: 0,
+      media_byte_count: 0,
+      media_items_with_mime: 0,
+      media_items_with_byte_size: 0,
+    };
+  }
+
+  const multimodal = Array.isArray(event.payload?.multimodal) ? event.payload.multimodal : [];
+  const correctionForEventId = typeof event.metadata?.correction_for_event_id === "string"
+    && event.metadata.correction_for_event_id.trim()
+    ? event.metadata.correction_for_event_id
+    : null;
+  return {
+    correction_for_event_id: correctionForEventId,
+    correction_version: safeCorrectionVersion(event.metadata?.correction_version),
+    media_item_count: multimodal.length,
+    media_byte_count: multimodal.reduce((sum, item) => sum + safeNonnegativeInteger(item?.byte_size), 0),
+    media_items_with_mime: multimodal.filter((item) => (
+      typeof item?.mime_type === "string" && item.mime_type.trim()
+    )).length,
+    media_items_with_byte_size: multimodal.filter((item) => (
+      Number.isInteger(item?.byte_size) && item.byte_size >= 0
+    )).length,
+  };
 }
 
 function insertBatch(db, batch, receivedAt, clockSkewWarning) {
@@ -123,12 +183,26 @@ function insertBatch(db, batch, receivedAt, clockSkewWarning) {
     );
 
     const insertEvent = db.prepare(`
-      INSERT INTO events (event_id, batch_id, received_at, command, model, status)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO events (
+        event_id,
+        batch_id,
+        received_at,
+        command,
+        model,
+        status,
+        correction_for_event_id,
+        correction_version,
+        media_item_count,
+        media_byte_count,
+        media_items_with_mime,
+        media_items_with_byte_size
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(event_id) DO NOTHING
     `);
     let insertedEvents = 0;
     for (const event of batch.events) {
+      const correction = correctionColumns(event);
       const eventResult = insertEvent.run(
         event.event_id,
         batch.batch_id,
@@ -136,6 +210,12 @@ function insertBatch(db, batch, receivedAt, clockSkewWarning) {
         event.command,
         event.model,
         event.status,
+        correction.correction_for_event_id,
+        correction.correction_version,
+        correction.media_item_count,
+        correction.media_byte_count,
+        correction.media_items_with_mime,
+        correction.media_items_with_byte_size,
       );
       insertedEvents += Number(eventResult.changes);
     }
@@ -213,6 +293,30 @@ function currentMetrics(db) {
     ORDER BY received_at DESC, rowid DESC
     LIMIT 1
   `).get();
+  const corrections = db.prepare(`
+    SELECT
+      COUNT(*) AS event_count,
+      COUNT(DISTINCT correction_for_event_id) AS corrected_original_event_count,
+      COALESCE(SUM(media_item_count), 0) AS media_item_count,
+      COALESCE(SUM(media_byte_count), 0) AS media_byte_count,
+      COALESCE(SUM(media_items_with_mime), 0) AS media_items_with_mime,
+      COALESCE(SUM(media_items_with_byte_size), 0) AS media_items_with_byte_size
+    FROM events
+    WHERE command = ?
+  `).get(CORRECTION_COMMAND);
+  const correctionVersions = db.prepare(`
+    SELECT
+      COALESCE(correction_version, 'unknown') AS correction_version,
+      COUNT(*) AS event_count,
+      COUNT(DISTINCT correction_for_event_id) AS corrected_original_event_count,
+      COALESCE(SUM(media_item_count), 0) AS media_item_count,
+      COALESCE(SUM(media_byte_count), 0) AS media_byte_count
+    FROM events
+    WHERE command = ?
+    GROUP BY COALESCE(correction_version, 'unknown')
+    ORDER BY event_count DESC, media_item_count DESC, correction_version ASC
+    LIMIT ?
+  `).all(CORRECTION_COMMAND, TOP_CORRECTION_VERSION_LIMIT);
 
   return normalizeTelemetryReceiverMetrics({
     ok: true,
@@ -232,16 +336,53 @@ function currentMetrics(db) {
       error: Number(totals.error),
     },
     clock_skew_warnings: Number(batches.clock_skew_warnings ?? 0),
+    corrections: {
+      event_count: Number(corrections.event_count),
+      corrected_original_event_count: Number(corrections.corrected_original_event_count),
+      media_item_count: Number(corrections.media_item_count),
+      media_byte_count: Number(corrections.media_byte_count),
+      media_items_with_mime: Number(corrections.media_items_with_mime),
+      media_items_with_byte_size: Number(corrections.media_items_with_byte_size),
+      top_versions: correctionVersions.map((version) => ({
+        correction_version: version.correction_version,
+        event_count: Number(version.event_count),
+        corrected_original_event_count: Number(version.corrected_original_event_count),
+        media_item_count: Number(version.media_item_count),
+        media_byte_count: Number(version.media_byte_count),
+      })),
+    },
   });
 }
 
+function escapeHtml(value) {
+  return `${value}`.replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  })[char]);
+}
+
 function dashboardHtml(metrics) {
+  const correctionVersionRows = metrics.corrections.top_versions.length
+    ? metrics.corrections.top_versions.map((item) => (
+      `<li>${escapeHtml(item.correction_version)}: ${item.event_count} events, ${item.media_item_count} media items</li>`
+    )).join("")
+    : "<li>None</li>";
   return `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Telemetry Receiver</title></head>
 <body>
 <h1>Telemetry Receiver</h1>
-<pre>${JSON.stringify(metrics, null, 2)}</pre>
+<h2>Corrections</h2>
+<ul>
+<li>Correction events: ${metrics.corrections.event_count}</li>
+<li>Corrected original events: ${metrics.corrections.corrected_original_event_count}</li>
+<li>Correction media items: ${metrics.corrections.media_item_count}</li>
+${correctionVersionRows}
+</ul>
+<pre>${escapeHtml(JSON.stringify(metrics, null, 2))}</pre>
 </body>
 </html>`;
 }

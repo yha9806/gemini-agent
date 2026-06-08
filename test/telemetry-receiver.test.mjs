@@ -159,6 +159,130 @@ test("successful ingest stores raw JSONL, indexes metrics, and returns strict AC
   });
 });
 
+test("metrics and dashboard expose correction overlays without raw event ids", async () => {
+  await withReceiver({ token: TOKEN }, async ({ url }) => {
+    const batch = telemetryBatch({
+      batch_id: "batch_corrections",
+      events: [
+        telemetryEvent(10, {
+          event_id: "artifact_original_private",
+          command: "artifact-review-backfill",
+          payload: {
+            prompt_truncated: false,
+            response_truncated: false,
+            multimodal: [{ basename: "private-source.png" }],
+          },
+        }),
+        telemetryEvent(11, {
+          event_id: "artifact_correction_alpha",
+          command: "artifact-review-backfill-correction",
+          payload: {
+            prompt_truncated: false,
+            response_truncated: false,
+            multimodal: [
+              { mime_type: "image/png", byte_size: 100, basename: "private-source.png" },
+              { mime_type: "image/jpeg" },
+            ],
+          },
+          metadata: {
+            correction_for_event_id: "artifact_original_private",
+            correction_version: "media-v1",
+          },
+        }),
+        telemetryEvent(12, {
+          event_id: "artifact_correction_beta",
+          command: "artifact-review-backfill-correction",
+          payload: {
+            prompt_truncated: false,
+            response_truncated: false,
+            multimodal: [{ mime_type: "image/png", byte_size: 200 }],
+          },
+          metadata: {
+            correction_for_event_id: "artifact_original_private",
+            correction_version: "media-v1",
+          },
+        }),
+      ],
+    });
+
+    const response = await postJson(url, batch, { Authorization: `Bearer ${TOKEN}` });
+    assert.equal(response.status, 200);
+
+    const metrics = normalizeTelemetryReceiverMetrics(await (await fetch(`${url}/metrics`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json());
+    assert.deepEqual(metrics.corrections, {
+      event_count: 2,
+      corrected_original_event_count: 1,
+      media_item_count: 3,
+      media_byte_count: 300,
+      media_items_with_mime: 3,
+      media_items_with_byte_size: 2,
+      top_versions: [
+        {
+          correction_version: "media-v1",
+          event_count: 2,
+          corrected_original_event_count: 1,
+          media_item_count: 3,
+          media_byte_count: 300,
+        },
+      ],
+    });
+
+    const dashboard = await (await fetch(`${url}/dashboard`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).text();
+    assert.match(dashboard, /Corrections/);
+    assert.match(dashboard, /media-v1/);
+    assert.doesNotMatch(dashboard, /artifact_original_private/);
+    assert.doesNotMatch(dashboard, /private-source/);
+  });
+});
+
+test("metrics sanitizes invalid correction versions", async () => {
+  await withReceiver({ token: TOKEN }, async ({ url }) => {
+    const batch = telemetryBatch({
+      batch_id: "batch_invalid_correction_version",
+      events: [
+        telemetryEvent(13, {
+          event_id: "artifact_correction_invalid_version",
+          command: "artifact-review-backfill-correction",
+          payload: {
+            prompt_truncated: false,
+            response_truncated: false,
+            multimodal: [{ mime_type: "image/png", byte_size: 25 }],
+          },
+          metadata: {
+            correction_for_event_id: 123,
+            correction_version: "media-v1<script>",
+          },
+        }),
+      ],
+    });
+
+    const response = await postJson(url, batch, { Authorization: `Bearer ${TOKEN}` });
+    assert.equal(response.status, 200);
+
+    const metrics = normalizeTelemetryReceiverMetrics(await (await fetch(`${url}/metrics`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json());
+    assert.equal(metrics.corrections.corrected_original_event_count, 0);
+    assert.deepEqual(metrics.corrections.top_versions, [{
+      correction_version: "unknown",
+      event_count: 1,
+      corrected_original_event_count: 0,
+      media_item_count: 1,
+      media_byte_count: 25,
+    }]);
+
+    const dashboard = await (await fetch(`${url}/dashboard`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).text();
+    assert.match(dashboard, /unknown/);
+    assert.doesNotMatch(dashboard, /<script>/);
+  });
+});
+
 test("ingest is idempotent when the exact same batch is retried", async () => {
   await withReceiver({ token: TOKEN }, async ({ url }) => {
     const batch = telemetryBatch({
