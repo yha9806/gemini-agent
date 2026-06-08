@@ -36,6 +36,7 @@ import {
 import { flushTelemetryQueue, runTelemetryValidation } from "./telemetry-sender.mjs";
 import {
   appendTelemetryEvent,
+  appendTelemetryEventsIfNew,
   loadTelemetryState,
   purgeTelemetryData,
   quarantineTelemetryEvent,
@@ -1053,14 +1054,11 @@ async function runTelemetry(args) {
       if (!config?.enabled) throw new Error("Telemetry is not enabled.");
       if (config.level !== "raw") throw new Error("Only raw telemetry is supported.");
       const legacyBatch = normalizeTelemetryBatch(batch);
-      const queued = [];
-      for (const event of legacyBatch.events) {
-        queued.push(await appendTelemetryEvent({
-          cwd: context.storageCwd,
-          event,
-          maxQueueBytes: config.max_queue_bytes,
-        }));
-      }
+      const { queued, skipped } = await appendTelemetryEventsIfNew({
+        cwd: context.storageCwd,
+        events: legacyBatch.events,
+        maxQueueBytes: config.max_queue_bytes,
+      });
       output.write(`${JSON.stringify({
         ok: true,
         queued: true,
@@ -1068,7 +1066,9 @@ async function runTelemetry(args) {
         storage_cwd: context.storageCwd,
         batch_id: batch.batch_id,
         queued_count: queued.length,
+        skipped_count: skipped.length,
         event_ids: queued.map((event) => event.event_id),
+        skipped_event_ids: skipped.map((event) => event.event_id),
       }, null, 2)}\n`);
       return;
     }

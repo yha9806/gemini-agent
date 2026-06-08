@@ -16,6 +16,8 @@ import { join, relative } from "node:path";
 import test from "node:test";
 import {
   appendTelemetryEvent,
+  appendTelemetryEventsIfNew,
+  appendTelemetryEventIfNew,
   claimTelemetryBatch,
   completeTelemetryBatch,
   failTelemetryBatch,
@@ -230,6 +232,73 @@ test("append preserves existing non-queue state counters", async () => {
   assert.equal(state.last_failure_reason, "unauthorized");
   assert.equal(state.last_sent_at, "2026-05-29T11:00:00.000Z");
   assert.equal(state.queue_bytes, await sumFileBytes(await regularFilePaths(dirs.pending)));
+});
+
+test("appendTelemetryEventIfNew skips duplicate event ids already in the queue history", async () => {
+  const cwd = await temporaryWorkspace();
+  const event = telemetryEvent(7);
+
+  const first = await appendTelemetryEventIfNew({
+    cwd,
+    event,
+    maxQueueBytes: LARGE_QUEUE_LIMIT,
+  });
+  const pendingDuplicate = await appendTelemetryEventIfNew({
+    cwd,
+    event,
+    maxQueueBytes: LARGE_QUEUE_LIMIT,
+  });
+
+  assert.equal(first.queued, true);
+  assert.equal(first.event.event_id, "evt_000007");
+  assert.equal(pendingDuplicate.queued, false);
+  assert.equal(pendingDuplicate.event.event_id, event.event_id);
+  assert.equal(pendingDuplicate.reason, "duplicate_event_id");
+  assert.deepEqual((await readPendingEvents(cwd)).map((item) => item.event_id), ["evt_000007"]);
+
+  const batch = await claimTelemetryBatch({
+    cwd,
+    batchSize: 1,
+    now: new Date("2026-05-29T12:00:00.000Z"),
+  });
+  await completeTelemetryBatch({
+    cwd,
+    batchId: batch.batchId,
+    now: new Date("2026-05-29T12:01:00.000Z"),
+  });
+  const sentDuplicate = await appendTelemetryEventIfNew({
+    cwd,
+    event,
+    maxQueueBytes: LARGE_QUEUE_LIMIT,
+  });
+
+  assert.equal(sentDuplicate.queued, false);
+  assert.equal(sentDuplicate.reason, "duplicate_event_id");
+  assert.deepEqual(await readPendingEvents(cwd), []);
+});
+
+test("appendTelemetryEventsIfNew deduplicates a batch against history and itself", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(8), maxQueueBytes: LARGE_QUEUE_LIMIT });
+
+  const result = await appendTelemetryEventsIfNew({
+    cwd,
+    events: [
+      telemetryEvent(8),
+      telemetryEvent(9),
+      telemetryEvent(9),
+      telemetryEvent(10),
+    ],
+    maxQueueBytes: LARGE_QUEUE_LIMIT,
+  });
+
+  assert.deepEqual(result.queued.map((event) => event.event_id), ["evt_000009", "evt_000010"]);
+  assert.deepEqual(result.skipped.map((event) => event.event_id), ["evt_000008", "evt_000009"]);
+  assert.deepEqual((await readPendingEvents(cwd)).map((event) => event.event_id), [
+    "evt_000008",
+    "evt_000009",
+    "evt_000010",
+  ]);
 });
 
 test("claim, complete, and fail move queue files safely", async () => {

@@ -282,6 +282,45 @@ async function readJsonFile(path, label) {
   }
 }
 
+async function eventIdFromQueueFile(path) {
+  try {
+    const raw = await readFile(path, "utf8");
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.event_id === "string" ? parsed.event_id : null;
+  } catch {
+    return null;
+  }
+}
+
+async function collectQueueEventIdsFromDir(root, eventIds) {
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    if (entry.isFile()) {
+      if (entry.name === "reason.json" || !entry.name.endsWith(".json")) continue;
+      const eventId = await eventIdFromQueueFile(path);
+      if (eventId) eventIds.add(eventId);
+    } else if (entry.isDirectory()) {
+      await collectQueueEventIdsFromDir(path, eventIds);
+    }
+  }
+}
+
+async function queueEventIds(dirs) {
+  const eventIds = new Set();
+  for (const dir of [dirs.pending, dirs.inflight, dirs.sent, dirs.failed, dirs.quarantine]) {
+    await collectQueueEventIdsFromDir(dir, eventIds);
+  }
+  return eventIds;
+}
+
 async function writeSecureJsonFile(cwd, path, value) {
   const dirs = await ensureQueueDirs(cwd);
   const tmpPath = join(dirs.tmp, `${queueFileName("tmp")}.tmp`);
@@ -575,7 +614,18 @@ async function enforceQueueLimit(cwd, state, maxQueueBytes) {
   };
 }
 
-export async function appendTelemetryEvent({
+async function writePendingTelemetryEvent(dirs, normalizedEvent) {
+  const fileName = queueFileName("event");
+  const tmpPath = join(dirs.tmp, `${fileName}.tmp`);
+  const pendingPath = join(dirs.pending, fileName);
+
+  await writeFile(tmpPath, `${JSON.stringify(normalizedEvent)}\n`, { mode: SECURE_FILE_MODE });
+  await chmod(tmpPath, SECURE_FILE_MODE);
+  await rename(tmpPath, pendingPath);
+  await chmod(pendingPath, SECURE_FILE_MODE);
+}
+
+async function appendTelemetryEventInternal({
   cwd = process.cwd(),
   event,
   maxQueueBytes = DEFAULT_MAX_QUEUE_BYTES,
@@ -586,19 +636,67 @@ export async function appendTelemetryEvent({
   return withTelemetryQueueLock({ cwd }, async () => {
     const dirs = await ensureQueueDirs(cwd);
     const state = await loadStateFromPath(dirs.state);
-    const fileName = queueFileName("event");
-    const tmpPath = join(dirs.tmp, `${fileName}.tmp`);
-    const pendingPath = join(dirs.pending, fileName);
-
-    await writeFile(tmpPath, `${JSON.stringify(normalizedEvent)}\n`, { mode: SECURE_FILE_MODE });
-    await chmod(tmpPath, SECURE_FILE_MODE);
-    await rename(tmpPath, pendingPath);
-    await chmod(pendingPath, SECURE_FILE_MODE);
+    await writePendingTelemetryEvent(dirs, normalizedEvent);
 
     const nextState = await enforceQueueLimit(cwd, state, maxQueueBytes);
     await saveState(cwd, nextState);
     return normalizedEvent;
   });
+}
+
+export async function appendTelemetryEvent(options = {}) {
+  return appendTelemetryEventInternal(options);
+}
+
+export async function appendTelemetryEventsIfNew({
+  cwd = process.cwd(),
+  events,
+  maxQueueBytes = DEFAULT_MAX_QUEUE_BYTES,
+} = {}) {
+  assertPositiveInteger(maxQueueBytes, "maxQueueBytes");
+  if (!Array.isArray(events)) {
+    throw new TypeError("events must be an array.");
+  }
+  const normalizedEvents = events.map((event) => normalizeTelemetryEvent(event));
+
+  return withTelemetryQueueLock({ cwd }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const state = await loadStateFromPath(dirs.state);
+    const existingEventIds = await queueEventIds(dirs);
+    const queued = [];
+    const skipped = [];
+
+    for (const event of normalizedEvents) {
+      if (existingEventIds.has(event.event_id)) {
+        skipped.push(event);
+        continue;
+      }
+      await writePendingTelemetryEvent(dirs, event);
+      existingEventIds.add(event.event_id);
+      queued.push(event);
+    }
+
+    if (queued.length > 0) {
+      const nextState = await enforceQueueLimit(cwd, state, maxQueueBytes);
+      await saveState(cwd, nextState);
+    }
+    return { queued, skipped };
+  });
+}
+
+export async function appendTelemetryEventIfNew(options = {}) {
+  const result = await appendTelemetryEventsIfNew({
+    ...options,
+    events: [options.event],
+  });
+  if (result.queued.length > 0) {
+    return { queued: true, event: result.queued[0] };
+  }
+  return {
+    queued: false,
+    event: result.skipped[0],
+    reason: "duplicate_event_id",
+  };
 }
 
 export async function loadTelemetryQueueSnapshot({
