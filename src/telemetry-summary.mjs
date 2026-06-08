@@ -61,6 +61,17 @@ function zeroMultimodal() {
   };
 }
 
+function zeroCorrections() {
+  return {
+    event_count: 0,
+    corrected_original_event_count: 0,
+    media_item_count: 0,
+    media_byte_count: 0,
+    media_items_with_mime: 0,
+    media_items_with_byte_size: 0,
+  };
+}
+
 function zeroStatusCounts() {
   return {
     event_count: 0,
@@ -163,12 +174,33 @@ function topMediaMime(map, limit) {
     }));
 }
 
+function topCorrectionVersions(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.event_count - left.event_count
+      || right.media_item_count - left.media_item_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      correction_version: item.key,
+      event_count: item.event_count,
+      corrected_original_event_count: item.correctedOriginalIds.size,
+      media_item_count: item.media_item_count,
+      media_byte_count: item.media_byte_count,
+    }));
+}
+
 function successRate(item) {
   return item.event_count > 0 ? item.success_count / item.event_count : 0;
 }
 
 function commandLooksLikeArtifactReview(command) {
   return /artifact[_-]?review/i.test(command);
+}
+
+function isCorrectionEvent(event) {
+  return event.command === "artifact-review-backfill-correction";
 }
 
 function buildRecommendations({ commands, counts, statusCounts, queue, usage, multimodal }) {
@@ -307,11 +339,14 @@ function createAccumulator(invalidSampleLimit) {
     usage: zeroUsage(),
     rawContent: zeroRawContent(),
     multimodal: zeroMultimodal(),
+    corrections: zeroCorrections(),
     projects: createDimensionMap(),
     commands: createDimensionMap(),
     sources: createDimensionMap(),
     models: createDimensionMap(),
     mediaMimes: createDimensionMap(),
+    correctionVersions: createDimensionMap(),
+    correctedOriginalIds: new Set(),
     invalidSamples: [],
   };
 }
@@ -342,7 +377,9 @@ function addEvent(accumulator, state, event) {
   const multimodalItems = Array.isArray(event.payload?.multimodal)
     ? event.payload.multimodal
     : [];
-  if (multimodalItems.length > 0) {
+  if (isCorrectionEvent(event)) {
+    addCorrectionEvent(accumulator, event, multimodalItems);
+  } else if (multimodalItems.length > 0) {
     accumulator.multimodal.event_count += 1;
     const seenMimes = new Set();
     for (const item of multimodalItems) {
@@ -371,6 +408,42 @@ function addEvent(accumulator, state, event) {
   accumulator.usage.response_tokens += safeInteger(outputTokens);
   accumulator.usage.total_tokens += safeInteger(totalTokens);
   accumulator.usage.estimated_codex_tokens_saved += safeInteger(inputTokens);
+}
+
+function addCorrectionEvent(accumulator, event, multimodalItems) {
+  accumulator.corrections.event_count += 1;
+  const originalEventId = typeof event.metadata?.correction_for_event_id === "string"
+    && event.metadata.correction_for_event_id.trim()
+    ? event.metadata.correction_for_event_id
+    : null;
+  if (originalEventId) accumulator.correctedOriginalIds.add(originalEventId);
+
+  const version = sanitizeDimension(event.metadata?.correction_version, "unknown");
+  const versionItem = accumulator.correctionVersions.get(version) ?? {
+    key: version,
+    event_count: 0,
+    media_item_count: 0,
+    media_byte_count: 0,
+    correctedOriginalIds: new Set(),
+  };
+  versionItem.event_count += 1;
+  if (originalEventId) versionItem.correctedOriginalIds.add(originalEventId);
+
+  for (const item of multimodalItems) {
+    const byteSize = safeInteger(item?.byte_size);
+    accumulator.corrections.media_item_count += 1;
+    accumulator.corrections.media_byte_count += byteSize;
+    versionItem.media_item_count += 1;
+    versionItem.media_byte_count += byteSize;
+    if (typeof item?.mime_type === "string" && item.mime_type.trim()) {
+      accumulator.corrections.media_items_with_mime += 1;
+    }
+    if (Number.isInteger(item?.byte_size) && item.byte_size >= 0) {
+      accumulator.corrections.media_items_with_byte_size += 1;
+    }
+  }
+
+  accumulator.correctionVersions.set(version, versionItem);
 }
 
 export async function runTelemetrySummary({
@@ -422,6 +495,11 @@ export async function runTelemetrySummary({
     ...accumulator.multimodal,
     top_media_mime: topMediaMime(accumulator.mediaMimes, topLimit),
   };
+  const corrections = {
+    ...accumulator.corrections,
+    corrected_original_event_count: accumulator.correctedOriginalIds.size,
+    top_versions: topCorrectionVersions(accumulator.correctionVersions, topLimit),
+  };
   const queue = {
     queue_bytes: state.queue_bytes,
     dropped_old_count: state.dropped_old_count,
@@ -443,6 +521,7 @@ export async function runTelemetrySummary({
     queue,
     usage: accumulator.usage,
     multimodal,
+    corrections,
     top_projects: topProjects,
     top_commands: topCommands,
     sources,
@@ -505,6 +584,11 @@ export function formatTelemetrySummaryText(summary) {
     `- Media items: ${formatNumber(summary.multimodal?.item_count ?? 0)}`,
     `- Media bytes: ${formatNumber(summary.multimodal?.byte_count ?? 0)}`,
     `- Unknown MIME items: ${formatNumber(summary.multimodal?.unknown_mime_items ?? 0)}`,
+    "",
+    "Corrections:",
+    `- Correction events: ${formatNumber(summary.corrections?.event_count ?? 0)}`,
+    `- Corrected original events: ${formatNumber(summary.corrections?.corrected_original_event_count ?? 0)}`,
+    `- Correction media items: ${formatNumber(summary.corrections?.media_item_count ?? 0)}`,
     "",
     "Recommendations:",
     recommendations,
