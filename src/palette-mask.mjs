@@ -351,6 +351,60 @@ function selectedManifestFields(layer) {
   };
 }
 
+function roundPct(value) {
+  return Number(value.toFixed(1));
+}
+
+function clampScore(value) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+export function computePaletteQuality({
+  sourceImage,
+  paletteMask,
+  decodedMasks,
+  warnings = [],
+} = {}) {
+  const source = ensurePngImage(sourceImage);
+  const mask = ensurePngImage(paletteMask);
+  const layers = Array.isArray(decodedMasks?.layers) ? decodedMasks.layers : [];
+  const targets = layers.filter((layer) => layer.name !== BACKGROUND_NAME);
+  const targetCount = targets.length;
+  const detectedTargetCount = targets.filter((layer) => layer.quality_status === "detected").length;
+  const emptyTargetCount = targets.filter((layer) => layer.quality_status === "empty").length;
+  const degenerateTargetCount = targets.filter((layer) => layer.quality_status === "degenerate").length;
+  const foregroundAreaPct = roundPct(targets.reduce((total, layer) => total + Number(layer.area_pct ?? 0), 0));
+  const largestTargetAreaPct = roundPct(targets.reduce((largest, layer) => (
+    Math.max(largest, Number(layer.area_pct ?? 0))
+  ), 0));
+  const maskResized = source.width !== mask.width || source.height !== mask.height;
+  const warningsCount = Array.isArray(warnings) ? warnings.length : 0;
+  const qualityScore = clampScore(
+    100
+    - (maskResized ? 10 : 0)
+    - emptyTargetCount * 30
+    - degenerateTargetCount * 20
+    - warningsCount * 5,
+  );
+
+  return {
+    source_width: source.width,
+    source_height: source.height,
+    mask_width: mask.width,
+    mask_height: mask.height,
+    mask_resized: maskResized,
+    layer_count: layers.length,
+    target_count: targetCount,
+    detected_target_count: detectedTargetCount,
+    empty_target_count: emptyTargetCount,
+    degenerate_target_count: degenerateTargetCount,
+    foreground_area_pct: foregroundAreaPct,
+    largest_target_area_pct: largestTargetAreaPct,
+    warnings_count: warningsCount,
+    quality_score: qualityScore,
+  };
+}
+
 export async function extractLayers(sourceImage, decodedMasks, outputDir) {
   const source = ensurePngImage(sourceImage);
   if (source.width !== decodedMasks.width || source.height !== decodedMasks.height) {
@@ -389,6 +443,7 @@ export async function writeManifest({
   contactSheet = "contact_sheet.png",
   layers,
   warnings = [],
+  quality,
 }) {
   await mkdir(outputDir, { recursive: true });
   const manifest = {
@@ -397,6 +452,7 @@ export async function writeManifest({
     palette_mask: paletteMask,
     palette_mask_quantized: paletteMaskQuantized,
     contact_sheet: contactSheet,
+    ...(quality ? { quality } : {}),
     layers: layers.map(selectedManifestFields),
     warnings,
   };
@@ -535,12 +591,14 @@ async function capturePaletteTelemetry(telemetry, event, { awaitCapture = false 
 }
 
 function paletteTelemetryMetadata({ model, spec, manifest }) {
-  return {
+  const metadata = {
     actual_model: model,
     workflow: "palette-split",
     target_count: Math.max(0, spec.layers.length - 1),
     layer_count: manifest?.layers?.length ?? spec.layers.length,
   };
+  if (manifest?.quality) metadata.quality = manifest.quality;
+  return metadata;
 }
 
 function paletteTelemetryResponse(manifest) {
@@ -708,9 +766,10 @@ export async function runPaletteSplit({
       model: resolvedModel,
     });
     const maskPngBuffer = normalizeImageBytesToPng(maskBuffer);
+    const rawMaskImage = PNG.sync.read(maskPngBuffer);
     await writeFile(join(outputDir, "palette_mask.png"), maskPngBuffer);
 
-    const decoded = decodePaletteMask(maskPngBuffer, spec, {
+    const decoded = decodePaletteMask(rawMaskImage, spec, {
       width: sourceImage.width,
       height: sourceImage.height,
       tolerance,
@@ -731,6 +790,12 @@ export async function runPaletteSplit({
       contactSheet: "contact_sheet.png",
       layers,
       warnings: decoded.warnings,
+      quality: computePaletteQuality({
+        sourceImage,
+        paletteMask: rawMaskImage,
+        decodedMasks: decoded,
+        warnings: decoded.warnings,
+      }),
     });
 
     await capturePaletteTelemetry(telemetry, {

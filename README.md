@@ -40,12 +40,12 @@ Global Gemini review gate for Codex.
 - Project policy is discovered from `.gemini-agent-policy.json`.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1.
-- `palette-split` writes palette masks, decoded layers, a manifest, and a contact sheet to the explicit output directory selected by the caller.
+- `palette-split` writes palette masks, decoded layers, a manifest, a quality scorecard, and a contact sheet to the explicit output directory selected by the caller.
 - Generated context/review artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - Telemetry raw mode is explicit and requires `--confirm-raw-content`.
 - Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.
 - Telemetry config stores a generated `install_id`; captured events add a pseudonymous hashed `workspace_id` derived from the working directory. `workspace_id` is not a secret. `--user-label` is optional, rejects email-shaped labels, and can be cleared with `--clear-user-label`.
-- `telemetry summary` reports aggregate usage, queue health, and multimodal MIME/byte counts; it does not print raw prompt, response text, or media file names.
+- `telemetry summary` reports aggregate usage, queue health, palette-split quality, and multimodal MIME/byte counts; it does not print raw prompt, response text, or media file names.
 - Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
 - Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.
 - Telemetry uses a separate ingestion token from `GEMINI_AGENT_TELEMETRY_TOKEN` or another `--token-env` value. It never uses `GEMINI_API_KEY`.

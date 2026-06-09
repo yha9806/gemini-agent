@@ -233,6 +233,22 @@ test("runPaletteSplit writes artifacts with a mock provider", async () => {
       assert.equal(existsSync(join(dir, "out", relativePath)), true, relativePath);
     }
     assert.equal(result.manifest.layers.find((layer) => layer.name === "product").quality_status, "detected");
+    assert.deepEqual(result.manifest.quality, {
+      source_width: 4,
+      source_height: 2,
+      mask_width: 4,
+      mask_height: 2,
+      mask_resized: false,
+      layer_count: 3,
+      target_count: 2,
+      detected_target_count: 2,
+      empty_target_count: 0,
+      degenerate_target_count: 0,
+      foreground_area_pct: 50,
+      largest_target_area_pct: 25,
+      warnings_count: 0,
+      quality_score: 100,
+    });
   });
 });
 
@@ -290,6 +306,22 @@ test("runPaletteSplit captures palette workflow telemetry", async () => {
       workflow: "palette-split",
       target_count: 2,
       layer_count: 3,
+      quality: {
+        source_width: 4,
+        source_height: 2,
+        mask_width: 4,
+        mask_height: 2,
+        mask_resized: false,
+        layer_count: 3,
+        target_count: 2,
+        detected_target_count: 2,
+        empty_target_count: 0,
+        degenerate_target_count: 0,
+        foreground_area_pct: 50,
+        largest_target_area_pct: 25,
+        warnings_count: 0,
+        quality_score: 100,
+      },
     });
     assert.deepEqual(captured[0].contents.map((item) => item.basename), [
       "source.png",

@@ -117,6 +117,18 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
   });
   assert.equal(result.usage.total_tokens, 0);
   assert.equal(result.raw_content.prompt_events, 0);
+  assert.deepEqual(result.palette_split, {
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    quality_event_count: 0,
+    avg_quality_score: null,
+    resized_mask_count: 0,
+    empty_target_count: 0,
+    degenerate_target_count: 0,
+    avg_foreground_area_pct: null,
+    top_actual_models: [],
+  });
   assert.deepEqual(result.top_projects, []);
   assert.deepEqual(result.top_commands, []);
   assert.equal(await pathExists(join(cwd, ".gemini-agent/telemetry/queue")), false);
@@ -315,6 +327,83 @@ test("runTelemetrySummary aggregates multimodal metadata without exposing media 
   assert.match(summary.recommendations.map((item) => item.message).join("\n"), /multimodal metadata has unknown MIME types/);
   assert.doesNotMatch(JSON.stringify(summary), /secret-customer-screen/);
   assert.doesNotMatch(text, /private-artifact/);
+});
+
+test("runTelemetrySummary aggregates palette-split quality metrics with legacy events", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(37, {
+      command: "palette-split",
+      metadata: {
+        actual_model: "gemini-3.1-flash-image",
+        workflow: "palette-split",
+        quality: {
+          quality_score: 82,
+          mask_resized: true,
+          empty_target_count: 1,
+          degenerate_target_count: 0,
+          foreground_area_pct: 45.5,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(38, {
+      command: "palette-split",
+      status: "error",
+      metadata: {
+        actual_model: "gemini-3.1-flash-image",
+        workflow: "palette-split",
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(39, {
+      command: "ask",
+      metadata: {
+        quality: {
+          quality_score: 1,
+          foreground_area_pct: 1,
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+
+  assert.deepEqual(summary.palette_split, {
+    event_count: 2,
+    success_count: 1,
+    error_count: 1,
+    quality_event_count: 1,
+    avg_quality_score: 82,
+    resized_mask_count: 1,
+    empty_target_count: 1,
+    degenerate_target_count: 0,
+    avg_foreground_area_pct: 45.5,
+    top_actual_models: [
+      {
+        actual_model: "gemini-3.1-flash-image",
+        event_count: 2,
+        success_count: 1,
+        error_count: 1,
+        unknown_count: 0,
+      },
+    ],
+  });
+  assert.match(text, /Palette split:/);
+  assert.match(text, /Average quality score: 82/);
 });
 
 test("runTelemetrySummary reports correction overlays without polluting original multimodal totals", async () => {

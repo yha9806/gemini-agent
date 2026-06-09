@@ -72,6 +72,21 @@ function zeroCorrections() {
   };
 }
 
+function zeroPaletteSplit() {
+  return {
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    quality_event_count: 0,
+    avg_quality_score: null,
+    resized_mask_count: 0,
+    empty_target_count: 0,
+    degenerate_target_count: 0,
+    avg_foreground_area_pct: null,
+    top_actual_models: [],
+  };
+}
+
 function zeroStatusCounts() {
   return {
     event_count: 0,
@@ -83,6 +98,14 @@ function zeroStatusCounts() {
 
 function safeInteger(value) {
   return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function safeFiniteNumber(value) {
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function roundOne(value) {
+  return Number(value.toFixed(1));
 }
 
 function sanitizeDimension(value, fallback = "unknown") {
@@ -201,6 +224,10 @@ function commandLooksLikeArtifactReview(command) {
 
 function isCorrectionEvent(event) {
   return event.command === "artifact-review-backfill-correction";
+}
+
+function isPaletteSplitEvent(event) {
+  return event.command === "palette-split" || event.metadata?.workflow === "palette-split";
 }
 
 function buildRecommendations({ commands, counts, statusCounts, queue, usage, multimodal }) {
@@ -347,6 +374,20 @@ function createAccumulator(invalidSampleLimit) {
     mediaMimes: createDimensionMap(),
     correctionVersions: createDimensionMap(),
     correctedOriginalIds: new Set(),
+    paletteSplit: {
+      event_count: 0,
+      success_count: 0,
+      error_count: 0,
+      quality_event_count: 0,
+      quality_score_sum: 0,
+      quality_score_count: 0,
+      resized_mask_count: 0,
+      empty_target_count: 0,
+      degenerate_target_count: 0,
+      foreground_area_pct_sum: 0,
+      foreground_area_pct_count: 0,
+    },
+    paletteSplitModels: createDimensionMap(),
     invalidSamples: [],
   };
 }
@@ -368,6 +409,7 @@ function addEvent(accumulator, state, event) {
   updateDimension(accumulator.commands, event.command, status);
   updateDimension(accumulator.sources, event.source, status);
   updateDimension(accumulator.models, event.model, status);
+  if (isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
 
   if (event.prompt) accumulator.rawContent.prompt_events += 1;
   if (event.response) accumulator.rawContent.response_events += 1;
@@ -410,6 +452,32 @@ function addEvent(accumulator, state, event) {
   accumulator.usage.estimated_codex_tokens_saved += safeInteger(inputTokens);
 }
 
+function addPaletteSplitEvent(accumulator, event, status) {
+  accumulator.paletteSplit.event_count += 1;
+  if (status === "success") accumulator.paletteSplit.success_count += 1;
+  else if (status === "error") accumulator.paletteSplit.error_count += 1;
+
+  updateDimension(accumulator.paletteSplitModels, event.metadata?.actual_model, status);
+
+  const quality = event.metadata?.quality;
+  if (!quality || typeof quality !== "object" || Array.isArray(quality)) return;
+  accumulator.paletteSplit.quality_event_count += 1;
+  if (quality.mask_resized === true) accumulator.paletteSplit.resized_mask_count += 1;
+  accumulator.paletteSplit.empty_target_count += safeInteger(quality.empty_target_count);
+  accumulator.paletteSplit.degenerate_target_count += safeInteger(quality.degenerate_target_count);
+
+  const qualityScore = safeFiniteNumber(quality.quality_score);
+  if (qualityScore !== null) {
+    accumulator.paletteSplit.quality_score_sum += qualityScore;
+    accumulator.paletteSplit.quality_score_count += 1;
+  }
+  const foregroundAreaPct = safeFiniteNumber(quality.foreground_area_pct);
+  if (foregroundAreaPct !== null) {
+    accumulator.paletteSplit.foreground_area_pct_sum += foregroundAreaPct;
+    accumulator.paletteSplit.foreground_area_pct_count += 1;
+  }
+}
+
 function addCorrectionEvent(accumulator, event, multimodalItems) {
   accumulator.corrections.event_count += 1;
   const originalEventId = typeof event.metadata?.correction_for_event_id === "string"
@@ -444,6 +512,28 @@ function addCorrectionEvent(accumulator, event, multimodalItems) {
   }
 
   accumulator.correctionVersions.set(version, versionItem);
+}
+
+function buildPaletteSplitSummary(accumulator, topLimit) {
+  if (accumulator.paletteSplit.event_count === 0) return zeroPaletteSplit();
+  const qualityCount = accumulator.paletteSplit.quality_score_count;
+  const foregroundCount = accumulator.paletteSplit.foreground_area_pct_count;
+  return {
+    event_count: accumulator.paletteSplit.event_count,
+    success_count: accumulator.paletteSplit.success_count,
+    error_count: accumulator.paletteSplit.error_count,
+    quality_event_count: accumulator.paletteSplit.quality_event_count,
+    avg_quality_score: qualityCount > 0
+      ? roundOne(accumulator.paletteSplit.quality_score_sum / qualityCount)
+      : null,
+    resized_mask_count: accumulator.paletteSplit.resized_mask_count,
+    empty_target_count: accumulator.paletteSplit.empty_target_count,
+    degenerate_target_count: accumulator.paletteSplit.degenerate_target_count,
+    avg_foreground_area_pct: foregroundCount > 0
+      ? roundOne(accumulator.paletteSplit.foreground_area_pct_sum / foregroundCount)
+      : null,
+    top_actual_models: topDimension(accumulator.paletteSplitModels, "actual_model", topLimit),
+  };
 }
 
 export async function runTelemetrySummary({
@@ -500,6 +590,7 @@ export async function runTelemetrySummary({
     corrected_original_event_count: accumulator.correctedOriginalIds.size,
     top_versions: topCorrectionVersions(accumulator.correctionVersions, topLimit),
   };
+  const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
   const queue = {
     queue_bytes: state.queue_bytes,
     dropped_old_count: state.dropped_old_count,
@@ -522,6 +613,7 @@ export async function runTelemetrySummary({
     usage: accumulator.usage,
     multimodal,
     corrections,
+    palette_split: paletteSplit,
     top_projects: topProjects,
     top_commands: topCommands,
     sources,
@@ -589,6 +681,12 @@ export function formatTelemetrySummaryText(summary) {
     `- Correction events: ${formatNumber(summary.corrections?.event_count ?? 0)}`,
     `- Corrected original events: ${formatNumber(summary.corrections?.corrected_original_event_count ?? 0)}`,
     `- Correction media items: ${formatNumber(summary.corrections?.media_item_count ?? 0)}`,
+    "",
+    "Palette split:",
+    `- Events: ${formatNumber(summary.palette_split?.event_count ?? 0)}`,
+    `- Quality events: ${formatNumber(summary.palette_split?.quality_event_count ?? 0)}`,
+    `- Average quality score: ${summary.palette_split?.avg_quality_score ?? "n/a"}`,
+    `- Resized masks: ${formatNumber(summary.palette_split?.resized_mask_count ?? 0)}`,
     "",
     "Recommendations:",
     recommendations,
