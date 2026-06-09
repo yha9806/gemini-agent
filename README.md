@@ -10,6 +10,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent diff-review --stdin
 ./bin/gemini-agent context-pack --stdin
 ./bin/gemini-agent artifact-review --file design.png --kind ui
+./bin/gemini-agent palette-split slide.png --target "product: the red product card" --target "chart: the blue chart panel" --output /tmp/palette-split
 ./bin/gemini-agent telemetry enable --global --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --user-label local-admin --confirm-raw-content
 ./bin/gemini-agent telemetry status --global
 ./bin/gemini-agent telemetry summary --global
@@ -31,15 +32,16 @@ Global Gemini review gate for Codex.
 
 ## Safety
 
-- Credentials are read from `GEMINI_API_KEY` or macOS Keychain service `GEMINI_API_KEY`.
-- Runtime Gemini calls use `gemini-3.5-flash`.
+- Credentials are read from `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or macOS Keychain service `GEMINI_API_KEY`.
+- Runtime text/review Gemini calls use `gemini-3.5-flash`; `palette-split` is an explicit image-generation workflow and uses `GEMINI_IMAGE_MODEL` or `gemini-3.1-flash-image`.
 - `auth status` reports only availability and source; it never prints the key.
 - Gate commands reject empty input before resolving credentials.
 - Fake responses require explicit `GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1`.
 - Project policy is discovered from `.gemini-agent-policy.json`.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1.
-- Generated local artifacts live under `.gemini-agent/`, which is kept ignored by git.
+- `palette-split` writes palette masks, decoded layers, a manifest, and a contact sheet to the explicit output directory selected by the caller.
+- Generated context/review artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - Telemetry raw mode is explicit and requires `--confirm-raw-content`.
 - Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.
 - Telemetry config stores a generated `install_id`; captured events add a pseudonymous hashed `workspace_id` derived from the working directory. `workspace_id` is not a secret. `--user-label` is optional, rejects email-shaped labels, and can be cleared with `--clear-user-label`.
