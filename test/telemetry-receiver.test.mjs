@@ -283,6 +283,83 @@ test("metrics sanitizes invalid correction versions", async () => {
   });
 });
 
+test("metrics and dashboard expose palette split quality without raw identifiers", async () => {
+  await withReceiver({ token: TOKEN }, async ({ url }) => {
+    const batch = telemetryBatch({
+      batch_id: "batch_palette_quality",
+      events: [
+        telemetryEvent(20, {
+          event_id: "palette_private_event",
+          command: "palette-split",
+          payload: {
+            prompt_truncated: false,
+            response_truncated: false,
+            multimodal: [
+              { mime_type: "image/png", byte_size: 123, basename: "private-source.png" },
+            ],
+          },
+          metadata: {
+            actual_model: "gemini-3.1-flash-image",
+            workflow: "palette-split",
+            quality: {
+              quality_score: 90,
+              mask_resized: true,
+              empty_target_count: 0,
+              degenerate_target_count: 1,
+              foreground_area_pct: 12.8,
+            },
+          },
+        }),
+        telemetryEvent(21, {
+          event_id: "palette_legacy_event",
+          command: "palette-split",
+          status: "error",
+          metadata: {
+            actual_model: "gemini-3.1-flash-image",
+            workflow: "palette-split",
+          },
+        }),
+      ],
+    });
+
+    const response = await postJson(url, batch, { Authorization: `Bearer ${TOKEN}` });
+    assert.equal(response.status, 200);
+
+    const metrics = normalizeTelemetryReceiverMetrics(await (await fetch(`${url}/metrics`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json());
+    assert.deepEqual(metrics.palette_split, {
+      event_count: 2,
+      success_count: 1,
+      error_count: 1,
+      quality_event_count: 1,
+      avg_quality_score: 90,
+      resized_mask_count: 1,
+      empty_target_count: 0,
+      degenerate_target_count: 1,
+      avg_foreground_area_pct: 12.8,
+      top_actual_models: [
+        {
+          actual_model: "gemini-3.1-flash-image",
+          event_count: 2,
+          success_count: 1,
+          error_count: 1,
+          unknown_count: 0,
+        },
+      ],
+    });
+
+    const dashboard = await (await fetch(`${url}/dashboard`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).text();
+    assert.match(dashboard, /Palette split/);
+    assert.match(dashboard, /Average quality score: 90/);
+    assert.match(dashboard, /gemini-3\.1-flash-image/);
+    assert.doesNotMatch(dashboard, /palette_private_event/);
+    assert.doesNotMatch(dashboard, /private-source/);
+  });
+});
+
 test("ingest is idempotent when the exact same batch is retried", async () => {
   await withReceiver({ token: TOKEN }, async ({ url }) => {
     const batch = telemetryBatch({

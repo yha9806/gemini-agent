@@ -15,8 +15,10 @@ const DEFAULT_MAX_RAW_BYTES = 100 * 1024 * 1024;
 const DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024;
 const CLOCK_SKEW_WARNING_MS = 60 * 60 * 1000;
 const CORRECTION_COMMAND = "artifact-review-backfill-correction";
+const PALETTE_SPLIT_COMMAND = "palette-split";
 const CORRECTION_VERSION_PATTERN = /^[A-Za-z0-9._-]{1,48}$/;
 const TOP_CORRECTION_VERSION_LIMIT = 10;
+const TOP_PALETTE_MODEL_LIMIT = 10;
 
 function utcNow() {
   return new Date().toISOString();
@@ -119,6 +121,14 @@ function ensureEventColumns(db) {
     ["media_byte_count", "INTEGER NOT NULL DEFAULT 0"],
     ["media_items_with_mime", "INTEGER NOT NULL DEFAULT 0"],
     ["media_items_with_byte_size", "INTEGER NOT NULL DEFAULT 0"],
+    ["palette_split_event", "INTEGER NOT NULL DEFAULT 0"],
+    ["palette_actual_model", "TEXT"],
+    ["palette_quality_event", "INTEGER NOT NULL DEFAULT 0"],
+    ["palette_quality_score", "REAL"],
+    ["palette_mask_resized", "INTEGER NOT NULL DEFAULT 0"],
+    ["palette_empty_target_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["palette_degenerate_target_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["palette_foreground_area_pct", "REAL"],
   ];
   for (const [name, definition] of requiredColumns) {
     if (!columns.has(name)) {
@@ -131,8 +141,22 @@ function safeNonnegativeInteger(value) {
   return Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
+function safeNonnegativeNumber(value) {
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function safeDimension(value, fallback = "unknown") {
+  const text = `${value ?? ""}`.replace(/[\0-\x1F\x7F]/g, " ").trim();
+  if (!text) return fallback;
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
 function safeCorrectionVersion(value) {
   return typeof value === "string" && CORRECTION_VERSION_PATTERN.test(value) ? value : "unknown";
+}
+
+function isPaletteSplitEvent(event) {
+  return event.command === PALETTE_SPLIT_COMMAND || event.metadata?.workflow === PALETTE_SPLIT_COMMAND;
 }
 
 function correctionColumns(event) {
@@ -166,6 +190,34 @@ function correctionColumns(event) {
   };
 }
 
+function paletteColumns(event) {
+  if (!isPaletteSplitEvent(event)) {
+    return {
+      palette_split_event: 0,
+      palette_actual_model: null,
+      palette_quality_event: 0,
+      palette_quality_score: null,
+      palette_mask_resized: 0,
+      palette_empty_target_count: 0,
+      palette_degenerate_target_count: 0,
+      palette_foreground_area_pct: null,
+    };
+  }
+
+  const quality = event.metadata?.quality;
+  const hasQuality = quality && typeof quality === "object" && !Array.isArray(quality);
+  return {
+    palette_split_event: 1,
+    palette_actual_model: safeDimension(event.metadata?.actual_model),
+    palette_quality_event: hasQuality ? 1 : 0,
+    palette_quality_score: hasQuality ? safeNonnegativeNumber(quality.quality_score) : null,
+    palette_mask_resized: hasQuality && quality.mask_resized === true ? 1 : 0,
+    palette_empty_target_count: hasQuality ? safeNonnegativeInteger(quality.empty_target_count) : 0,
+    palette_degenerate_target_count: hasQuality ? safeNonnegativeInteger(quality.degenerate_target_count) : 0,
+    palette_foreground_area_pct: hasQuality ? safeNonnegativeNumber(quality.foreground_area_pct) : null,
+  };
+}
+
 function insertBatch(db, batch, receivedAt, clockSkewWarning) {
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -195,14 +247,23 @@ function insertBatch(db, batch, receivedAt, clockSkewWarning) {
         media_item_count,
         media_byte_count,
         media_items_with_mime,
-        media_items_with_byte_size
+        media_items_with_byte_size,
+        palette_split_event,
+        palette_actual_model,
+        palette_quality_event,
+        palette_quality_score,
+        palette_mask_resized,
+        palette_empty_target_count,
+        palette_degenerate_target_count,
+        palette_foreground_area_pct
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(event_id) DO NOTHING
     `);
     let insertedEvents = 0;
     for (const event of batch.events) {
       const correction = correctionColumns(event);
+      const palette = paletteColumns(event);
       const eventResult = insertEvent.run(
         event.event_id,
         batch.batch_id,
@@ -216,6 +277,14 @@ function insertBatch(db, batch, receivedAt, clockSkewWarning) {
         correction.media_byte_count,
         correction.media_items_with_mime,
         correction.media_items_with_byte_size,
+        palette.palette_split_event,
+        palette.palette_actual_model,
+        palette.palette_quality_event,
+        palette.palette_quality_score,
+        palette.palette_mask_resized,
+        palette.palette_empty_target_count,
+        palette.palette_degenerate_target_count,
+        palette.palette_foreground_area_pct,
       );
       insertedEvents += Number(eventResult.changes);
     }
@@ -317,6 +386,33 @@ function currentMetrics(db) {
     ORDER BY event_count DESC, media_item_count DESC, correction_version ASC
     LIMIT ?
   `).all(CORRECTION_COMMAND, TOP_CORRECTION_VERSION_LIMIT);
+  const paletteSplit = db.prepare(`
+    SELECT
+      COUNT(*) AS event_count,
+      COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
+      COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) AS error_count,
+      COALESCE(SUM(palette_quality_event), 0) AS quality_event_count,
+      ROUND(AVG(palette_quality_score), 1) AS avg_quality_score,
+      COALESCE(SUM(palette_mask_resized), 0) AS resized_mask_count,
+      COALESCE(SUM(palette_empty_target_count), 0) AS empty_target_count,
+      COALESCE(SUM(palette_degenerate_target_count), 0) AS degenerate_target_count,
+      ROUND(AVG(palette_foreground_area_pct), 1) AS avg_foreground_area_pct
+    FROM events
+    WHERE palette_split_event = 1
+  `).get();
+  const paletteModels = db.prepare(`
+    SELECT
+      COALESCE(palette_actual_model, 'unknown') AS actual_model,
+      COUNT(*) AS event_count,
+      COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
+      COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) AS error_count,
+      COALESCE(SUM(CASE WHEN status NOT IN ('success', 'error') THEN 1 ELSE 0 END), 0) AS unknown_count
+    FROM events
+    WHERE palette_split_event = 1
+    GROUP BY COALESCE(palette_actual_model, 'unknown')
+    ORDER BY event_count DESC, actual_model ASC
+    LIMIT ?
+  `).all(TOP_PALETTE_MODEL_LIMIT);
 
   return normalizeTelemetryReceiverMetrics({
     ok: true,
@@ -351,6 +447,26 @@ function currentMetrics(db) {
         media_byte_count: Number(version.media_byte_count),
       })),
     },
+    palette_split: {
+      event_count: Number(paletteSplit.event_count),
+      success_count: Number(paletteSplit.success_count),
+      error_count: Number(paletteSplit.error_count),
+      quality_event_count: Number(paletteSplit.quality_event_count),
+      avg_quality_score: paletteSplit.avg_quality_score == null ? null : Number(paletteSplit.avg_quality_score),
+      resized_mask_count: Number(paletteSplit.resized_mask_count),
+      empty_target_count: Number(paletteSplit.empty_target_count),
+      degenerate_target_count: Number(paletteSplit.degenerate_target_count),
+      avg_foreground_area_pct: paletteSplit.avg_foreground_area_pct == null
+        ? null
+        : Number(paletteSplit.avg_foreground_area_pct),
+      top_actual_models: paletteModels.map((model) => ({
+        actual_model: model.actual_model,
+        event_count: Number(model.event_count),
+        success_count: Number(model.success_count),
+        error_count: Number(model.error_count),
+        unknown_count: Number(model.unknown_count),
+      })),
+    },
   });
 }
 
@@ -370,11 +486,27 @@ function dashboardHtml(metrics) {
       `<li>${escapeHtml(item.correction_version)}: ${item.event_count} events, ${item.media_item_count} media items</li>`
     )).join("")
     : "<li>None</li>";
+  const paletteModelRows = metrics.palette_split.top_actual_models.length
+    ? metrics.palette_split.top_actual_models.map((item) => (
+      `<li>${escapeHtml(item.actual_model)}: ${item.event_count} events, ${item.success_count} success, ${item.error_count} error</li>`
+    )).join("")
+    : "<li>None</li>";
   return `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Telemetry Receiver</title></head>
 <body>
 <h1>Telemetry Receiver</h1>
+<h2>Palette split</h2>
+<ul>
+<li>Palette split events: ${metrics.palette_split.event_count}</li>
+<li>Quality events: ${metrics.palette_split.quality_event_count}</li>
+<li>Average quality score: ${metrics.palette_split.avg_quality_score ?? "n/a"}</li>
+<li>Resized masks: ${metrics.palette_split.resized_mask_count}</li>
+<li>Empty targets: ${metrics.palette_split.empty_target_count}</li>
+<li>Degenerate targets: ${metrics.palette_split.degenerate_target_count}</li>
+<li>Average foreground area: ${metrics.palette_split.avg_foreground_area_pct ?? "n/a"}</li>
+${paletteModelRows}
+</ul>
 <h2>Corrections</h2>
 <ul>
 <li>Correction events: ${metrics.corrections.event_count}</li>

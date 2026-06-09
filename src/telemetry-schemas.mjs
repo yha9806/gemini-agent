@@ -224,6 +224,38 @@ const TelemetryReceiverCorrectionsZodSchema = z.strictObject({
   top_versions: [],
 }));
 
+const TelemetryReceiverPaletteModelZodSchema = z.strictObject({
+  actual_model: z.string().min(1),
+  event_count: z.number().int().nonnegative(),
+  success_count: z.number().int().nonnegative(),
+  error_count: z.number().int().nonnegative(),
+  unknown_count: z.number().int().nonnegative(),
+});
+
+const TelemetryReceiverPaletteSplitZodSchema = z.strictObject({
+  event_count: z.number().int().nonnegative(),
+  success_count: z.number().int().nonnegative(),
+  error_count: z.number().int().nonnegative(),
+  quality_event_count: z.number().int().nonnegative(),
+  avg_quality_score: z.number().nonnegative().nullable().default(null),
+  resized_mask_count: z.number().int().nonnegative(),
+  empty_target_count: z.number().int().nonnegative(),
+  degenerate_target_count: z.number().int().nonnegative(),
+  avg_foreground_area_pct: z.number().nonnegative().nullable().default(null),
+  top_actual_models: z.array(TelemetryReceiverPaletteModelZodSchema).default(() => []),
+}).default(() => ({
+  event_count: 0,
+  success_count: 0,
+  error_count: 0,
+  quality_event_count: 0,
+  avg_quality_score: null,
+  resized_mask_count: 0,
+  empty_target_count: 0,
+  degenerate_target_count: 0,
+  avg_foreground_area_pct: null,
+  top_actual_models: [],
+}));
+
 export const TelemetryReceiverAckZodSchema = z.strictObject({
   ok: z.literal(true),
   batch_id: z.string().min(1),
@@ -241,6 +273,7 @@ export const TelemetryReceiverMetricsZodSchema = z.strictObject({
   status_counts: TelemetryStatusCountsZodSchema,
   clock_skew_warnings: z.number().int().nonnegative().default(0),
   corrections: TelemetryReceiverCorrectionsZodSchema,
+  palette_split: TelemetryReceiverPaletteSplitZodSchema,
 });
 
 const MASK_PATTERNS = [
