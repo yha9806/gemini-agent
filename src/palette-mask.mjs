@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import { createUserContent } from "@google/genai";
 import jpeg from "jpeg-js";
@@ -6,6 +6,7 @@ import { PNG } from "pngjs";
 import { z } from "zod";
 import { makeGoogleGenAI } from "./gemini-client.mjs";
 import { imagePartFromFile } from "./input-collector.mjs";
+import { captureGeminiTelemetry } from "./telemetry-capture.mjs";
 
 export const DEFAULT_PALETTE_MASK_MODEL = "gemini-3.1-flash-image";
 export const DEFAULT_MASK_TOLERANCE = 64;
@@ -515,6 +516,69 @@ function imageBufferFromProviderResult(result) {
   throw new Error("Palette mask provider did not return image bytes.");
 }
 
+function telemetryErrorType(error) {
+  return error instanceof Error && error.name ? error.name : "Error";
+}
+
+async function capturePaletteTelemetry(telemetry, event, { awaitCapture = false } = {}) {
+  if (!telemetry) return;
+  const capture = telemetry.capture ?? captureGeminiTelemetry;
+  const capturePromise = Promise.resolve()
+    .then(() => capture({
+      ...event,
+      cwd: telemetry.cwd,
+      source: telemetry.source || "cli",
+      command: telemetry.command || event.command || "palette-split",
+    }))
+    .catch(() => null);
+  if (telemetry.capture || telemetry.awaitCapture || awaitCapture) await capturePromise;
+}
+
+function paletteTelemetryMetadata({ model, spec, manifest }) {
+  return {
+    actual_model: model,
+    workflow: "palette-split",
+    target_count: Math.max(0, spec.layers.length - 1),
+    layer_count: manifest?.layers?.length ?? spec.layers.length,
+  };
+}
+
+function paletteTelemetryResponse(manifest) {
+  return JSON.stringify({
+    manifest: "manifest.json",
+    layers: manifest.layers.map((layer) => ({
+      name: layer.name,
+      area_pct: layer.area_pct,
+      quality_status: layer.quality_status,
+    })),
+    warnings: manifest.warnings ?? [],
+  });
+}
+
+async function pngTelemetryContent(filePath, name = basename(filePath)) {
+  const info = await stat(filePath);
+  return {
+    basename: name,
+    mime_type: "image/png",
+    byte_size: info.size,
+  };
+}
+
+async function paletteTelemetryContents({ outputDir, manifest }) {
+  const files = [
+    manifest.source_image,
+    manifest.palette_mask,
+    manifest.palette_mask_quantized,
+    manifest.contact_sheet,
+    ...manifest.layers.map((layer) => layer.file),
+  ];
+  const contents = [];
+  for (const file of files) {
+    contents.push(await pngTelemetryContent(join(outputDir, file), basename(file)));
+  }
+  return contents;
+}
+
 function imageBufferFromGeminiResponse(response) {
   const candidateParts = response?.candidates?.flatMap((candidate) => candidate?.content?.parts ?? []) ?? [];
   const parts = [
@@ -620,52 +684,81 @@ export async function runPaletteSplit({
   env = process.env,
   makeAi,
   model,
+  telemetry,
 } = {}) {
   if (!sourceImagePath) throw new Error("sourceImagePath is required.");
   if (!outputDir) throw new Error("outputDir is required.");
   const spec = normalizePaletteMaskSpec({ targets });
+  const resolvedModel = model ?? env.GEMINI_IMAGE_MODEL ?? DEFAULT_PALETTE_MASK_MODEL;
+  const prompt = buildPaletteMaskPrompt(spec);
+  const started = Date.now();
   await mkdir(outputDir, { recursive: true });
 
-  const sourceBuffer = await readFile(sourceImagePath);
-  const sourceImage = PNG.sync.read(sourceBuffer);
-  const sourceOutput = join(outputDir, "source.png");
-  await copyFile(sourceImagePath, sourceOutput);
+  try {
+    const sourceBuffer = await readFile(sourceImagePath);
+    const sourceImage = PNG.sync.read(sourceBuffer);
+    const sourceOutput = join(outputDir, "source.png");
+    await copyFile(sourceImagePath, sourceOutput);
 
-  const maskBuffer = await generatePaletteMask(sourceImagePath, spec, {
-    apiKey,
-    provider,
-    env,
-    makeAi,
-    model,
-  });
-  const maskPngBuffer = normalizeImageBytesToPng(maskBuffer);
-  await writeFile(join(outputDir, "palette_mask.png"), maskPngBuffer);
+    const maskBuffer = await generatePaletteMask(sourceImagePath, spec, {
+      apiKey,
+      provider,
+      env,
+      makeAi,
+      model: resolvedModel,
+    });
+    const maskPngBuffer = normalizeImageBytesToPng(maskBuffer);
+    await writeFile(join(outputDir, "palette_mask.png"), maskPngBuffer);
 
-  const decoded = decodePaletteMask(maskPngBuffer, spec, {
-    width: sourceImage.width,
-    height: sourceImage.height,
-    tolerance,
-  });
-  await writeFile(join(outputDir, "palette_mask_quantized.png"), PNG.sync.write(decoded.quantized));
-  const layers = await extractLayers(sourceImage, decoded, join(outputDir, "layers"));
-  await writeContactSheet({
-    outputDir,
-    sourceImage,
-    paletteMaskQuantized: decoded.quantized,
-    layers,
-  });
-  const manifest = await writeManifest({
-    outputDir,
-    sourceImage: "source.png",
-    paletteMask: "palette_mask.png",
-    paletteMaskQuantized: "palette_mask_quantized.png",
-    contactSheet: "contact_sheet.png",
-    layers,
-    warnings: decoded.warnings,
-  });
+    const decoded = decodePaletteMask(maskPngBuffer, spec, {
+      width: sourceImage.width,
+      height: sourceImage.height,
+      tolerance,
+    });
+    await writeFile(join(outputDir, "palette_mask_quantized.png"), PNG.sync.write(decoded.quantized));
+    const layers = await extractLayers(sourceImage, decoded, join(outputDir, "layers"));
+    await writeContactSheet({
+      outputDir,
+      sourceImage,
+      paletteMaskQuantized: decoded.quantized,
+      layers,
+    });
+    const manifest = await writeManifest({
+      outputDir,
+      sourceImage: "source.png",
+      paletteMask: "palette_mask.png",
+      paletteMaskQuantized: "palette_mask_quantized.png",
+      contactSheet: "contact_sheet.png",
+      layers,
+      warnings: decoded.warnings,
+    });
 
-  return {
-    outputDir: resolve(outputDir),
-    manifest,
-  };
+    await capturePaletteTelemetry(telemetry, {
+      prompt,
+      response: paletteTelemetryResponse(manifest),
+      status: "success",
+      latencyMs: Date.now() - started,
+      contents: await paletteTelemetryContents({ outputDir, manifest }).catch(() => []),
+      metadata: paletteTelemetryMetadata({ model: resolvedModel, spec, manifest }),
+    });
+
+    return {
+      outputDir: resolve(outputDir),
+      manifest,
+    };
+  } catch (error) {
+    await capturePaletteTelemetry(telemetry, {
+      prompt,
+      response: "",
+      status: "error",
+      errorType: telemetryErrorType(error),
+      latencyMs: Date.now() - started,
+      contents: [{
+        basename: basename(sourceImagePath),
+        mime_type: "image/png",
+      }],
+      metadata: paletteTelemetryMetadata({ model: resolvedModel, spec, manifest: null }),
+    }, { awaitCapture: true });
+    throw error;
+  }
 }

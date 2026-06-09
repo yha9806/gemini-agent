@@ -123,6 +123,10 @@ test("captureGeminiTelemetry preserves explicit product telemetry metadata", asy
       total_tokens: 33,
       cost_bucket: "low",
     },
+    metadata: {
+      actual_model: "gemini-3.1-flash-image",
+      workflow: "palette-split",
+    },
     loadConfig: async () => ({ enabled: true, level: "raw", max_queue_bytes: 1024 }),
     appendEvent: async ({ event }) => appended.push(normalizeTelemetryEvent(event)),
   });
@@ -142,6 +146,10 @@ test("captureGeminiTelemetry preserves explicit product telemetry metadata", asy
   assert.equal(appended[0].economics.total_tokens, 33);
   assert.equal(appended[0].economics.latency_bucket, "5_15s");
   assert.equal(appended[0].economics.cost_bucket, "low");
+  assert.deepEqual(appended[0].metadata, {
+    actual_model: "gemini-3.1-flash-image",
+    workflow: "palette-split",
+  });
 });
 
 test("captureGeminiTelemetry routes events to the global queue when only global config exists", async () => {

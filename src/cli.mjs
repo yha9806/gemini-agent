@@ -744,6 +744,7 @@ async function runPaletteSplitCommand(args) {
   const result = await runPaletteSplit({
     ...options,
     apiKey: key.key,
+    telemetry: { cwd: process.cwd(), source: "cli", command: "palette-split" },
   });
   output.write(`${JSON.stringify({
     output_dir: result.outputDir,

@@ -236,6 +236,121 @@ test("runPaletteSplit writes artifacts with a mock provider", async () => {
   });
 });
 
+test("runPaletteSplit captures palette workflow telemetry", async () => {
+  await withTempDir(async (dir) => {
+    const sourcePath = join(dir, "slide.png");
+    await writePng(sourcePath, pngFromPixels(4, 2, [
+      [0, 0, 0],
+      [200, 0, 0],
+      [0, 0, 200],
+      [0, 0, 0],
+      [0, 0, 0],
+      [200, 0, 0],
+      [0, 0, 200],
+      [0, 0, 0],
+    ]));
+    const maskBuffer = pngBuffer(pngFromPixels(4, 2, [
+      [0, 0, 0],
+      [255, 0, 0],
+      [0, 255, 0],
+      [0, 0, 0],
+      [0, 0, 0],
+      [255, 0, 0],
+      [0, 255, 0],
+      [0, 0, 0],
+    ]));
+    const captured = [];
+
+    await runPaletteSplit({
+      sourceImagePath: sourcePath,
+      targets: [
+        "product: the red product card on the left",
+        "chart: the blue chart panel on the right",
+      ],
+      outputDir: join(dir, "out"),
+      provider: async () => maskBuffer,
+      model: "test-image-model",
+      telemetry: {
+        cwd: dir,
+        source: "cli",
+        command: "palette-split",
+        capture: async (event) => captured.push(event),
+      },
+    });
+
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].cwd, dir);
+    assert.equal(captured[0].source, "cli");
+    assert.equal(captured[0].command, "palette-split");
+    assert.equal(captured[0].status, "success");
+    assert.match(captured[0].prompt, /product: #ff0000/);
+    assert.match(captured[0].response, /"manifest":"manifest.json"/);
+    assert.deepEqual(captured[0].metadata, {
+      actual_model: "test-image-model",
+      workflow: "palette-split",
+      target_count: 2,
+      layer_count: 3,
+    });
+    assert.deepEqual(captured[0].contents.map((item) => item.basename), [
+      "source.png",
+      "palette_mask.png",
+      "palette_mask_quantized.png",
+      "contact_sheet.png",
+      "background.png",
+      "product.png",
+      "chart.png",
+    ]);
+    assert.equal(captured[0].contents.every((item) => item.mime_type === "image/png"), true);
+    assert.equal(captured[0].contents.every((item) => Number.isInteger(item.byte_size) && item.byte_size > 0), true);
+  });
+});
+
+test("runPaletteSplit captures palette workflow telemetry when provider fails", async () => {
+  await withTempDir(async (dir) => {
+    const sourcePath = join(dir, "slide.png");
+    await writePng(sourcePath, pngFromPixels(2, 1, [
+      [200, 0, 0],
+      [0, 0, 0],
+    ]));
+    const captured = [];
+
+    await assert.rejects(
+      () => runPaletteSplit({
+        sourceImagePath: sourcePath,
+        targets: ["product: the red product card on the left"],
+        outputDir: join(dir, "out"),
+        provider: async () => {
+          throw new Error("image provider unavailable");
+        },
+        model: "test-image-model",
+        telemetry: {
+          cwd: dir,
+          source: "cli",
+          command: "palette-split",
+          capture: async (event) => captured.push(event),
+        },
+      }),
+      /image provider unavailable/,
+    );
+
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].status, "error");
+    assert.equal(captured[0].errorType, "Error");
+    assert.equal(captured[0].response, "");
+    assert.match(captured[0].prompt, /product: #ff0000/);
+    assert.deepEqual(captured[0].metadata, {
+      actual_model: "test-image-model",
+      workflow: "palette-split",
+      target_count: 1,
+      layer_count: 2,
+    });
+    assert.deepEqual(captured[0].contents, [{
+      basename: "slide.png",
+      mime_type: "image/png",
+    }]);
+  });
+});
+
 test("runPaletteSplit normalizes a mock JPEG palette mask to PNG", async () => {
   await withTempDir(async (dir) => {
     const sourcePath = join(dir, "slide.png");

@@ -230,6 +230,7 @@ async function buildTelemetryEvent({
   context,
   outcome,
   economics,
+  metadata,
 }) {
   const capturedPrompt = truncateTelemetryText(prompt, maxEventBytes);
   const capturedResponse = truncateTelemetryText(response, maxEventBytes);
@@ -270,6 +271,7 @@ async function buildTelemetryEvent({
     },
     outcome: outcome && typeof outcome === "object" ? outcome : undefined,
     economics: resolvedEconomics,
+    metadata: metadata && typeof metadata === "object" ? metadata : undefined,
   };
 }
 
@@ -290,6 +292,7 @@ async function captureGeminiTelemetryTask({
   context = null,
   outcome = null,
   economics = null,
+  metadata = null,
   loadConfig = loadTelemetryConfigContext,
   appendEvent = appendTelemetryEvent,
   configCacheTtlMs = DEFAULT_CONFIG_CACHE_TTL_MS,
@@ -318,6 +321,7 @@ async function captureGeminiTelemetryTask({
     context,
     outcome,
     economics,
+    metadata,
   });
   await appendEvent({ cwd: telemetryContext.storageCwd, event, maxQueueBytes: config.max_queue_bytes });
   return { queued: true, event_id: event.event_id };
