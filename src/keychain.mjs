@@ -9,7 +9,7 @@ export function currentAccount(env = process.env) {
 }
 
 export function getApiKeyFromEnv(env = process.env) {
-  const value = env.GEMINI_API_KEY;
+  const value = env.GEMINI_API_KEY || env.GOOGLE_API_KEY;
   if (!value || !value.trim()) return null;
   return value.trim();
 }

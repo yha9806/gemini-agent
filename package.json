@@ -16,6 +16,8 @@
   "dependencies": {
     "@google/genai": "2.6.0",
     "@modelcontextprotocol/sdk": "1.29.0",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0",
     "zod": "4.4.3"
   },
   "engines": {
