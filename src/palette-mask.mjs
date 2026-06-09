@@ -148,6 +148,9 @@ export function normalizePaletteMaskSpec(input) {
     let color = layer.color;
     if (!color) {
       while (usedColors.has(FOREGROUND_COLORS[colorIndex])) colorIndex += 1;
+      if (colorIndex >= FOREGROUND_COLORS.length) {
+        throw new Error("Too many palette targets without explicit colors.");
+      }
       color = FOREGROUND_COLORS[colorIndex];
       colorIndex += 1;
     }

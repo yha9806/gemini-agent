@@ -72,6 +72,18 @@ test("buildPaletteMaskPrompt includes palette colors and target descriptions", (
   assert.match(prompt, /Return only the palette mask image/);
 });
 
+test("normalizePaletteMaskSpec rejects too many auto-colored targets clearly", () => {
+  assert.throws(
+    () => normalizePaletteMaskSpec({
+      targets: Array.from({ length: 11 }, (_, index) => ({
+        name: `target_${index}`,
+        description: `target ${index}`,
+      })),
+    }),
+    /Too many palette targets without explicit colors/,
+  );
+});
+
 test("decodePaletteMask decodes exact RGB ownership masks", () => {
   const mask = pngFromPixels(2, 2, [
     [0, 0, 0],
