@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -458,6 +458,48 @@ test("captureGeminiTelemetry stores multimodal metadata without raw content", as
     },
   ]);
   assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /YWJjZA/);
+});
+
+test("captureGeminiTelemetry enriches media reference objects from safe local files", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const outputDir = join(cwd, "outputs");
+  await mkdir(outputDir, { recursive: true });
+  const namedBytes = Buffer.from("not real png but telemetry can count it");
+  const extensionlessPng = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00,
+  ]);
+  await writeFile(join(outputDir, "screen.png"), namedBytes);
+  await writeFile(join(outputDir, "screenshot"), extensionlessPng);
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "gemini_artifact_review",
+    prompt: "review screenshots",
+    response: "ok",
+    status: "success",
+    contents: [
+      { source: "outputs/screen.png" },
+      { path: "outputs/screenshot" },
+    ],
+    loadConfig: async () => ({ enabled: true, level: "raw", max_queue_bytes: 1024 }),
+    appendEvent: async ({ event }) => appended.push(normalizeTelemetryEvent(event)),
+  });
+
+  assert.deepEqual(appended[0].payload.multimodal, [
+    {
+      mime_type: "image/png",
+      byte_size: namedBytes.length,
+      basename: "screen.png",
+    },
+    {
+      mime_type: "image/png",
+      byte_size: extensionlessPng.length,
+      basename: "screenshot",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /outputs/);
 });
 
 test("captureGeminiTelemetry does not stat fileData outside cwd", async () => {

@@ -2,8 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import {
-  inferMediaMime,
-  localMediaByteSize,
+  mediaReferenceMetadata,
   mediaBasename,
 } from "./media-metadata.mjs";
 import {
@@ -101,12 +100,13 @@ async function sourceManifest(artifact, { projectRoot } = {}) {
   const manifest = [];
   for (const source of sources) {
     const safeSource = sanitizeBackfillValue(source);
+    const referenceMetadata = await mediaReferenceMetadata(source, { root: projectRoot }) ?? {};
     const item = {
-      basename: mediaBasename(safeSource) ?? basename(`${safeSource}`),
+      basename: referenceMetadata.basename ?? mediaBasename(safeSource) ?? basename(`${safeSource}`),
     };
-    const mimeType = inferMediaMime(safeSource);
+    const mimeType = referenceMetadata.mime_type;
     if (mimeType) item.mime_type = mimeType;
-    const byteSize = await localMediaByteSize(source, { root: projectRoot });
+    const byteSize = referenceMetadata.byte_size;
     if (byteSize !== undefined) item.byte_size = byteSize;
     manifest.push(item);
   }

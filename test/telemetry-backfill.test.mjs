@@ -113,6 +113,39 @@ test("artifactReviewsToRawTelemetryBatch enriches media manifest from artifact s
   assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
 });
 
+test("artifactReviewsToRawTelemetryBatch infers extensionless artifact source MIME from magic bytes", async () => {
+  const projectRoot = await tempDir();
+  const artifactsDir = join(projectRoot, ".gemini-agent", "artifacts");
+  const sourceDir = join(projectRoot, "outputs");
+  await mkdir(artifactsDir, { recursive: true });
+  await mkdir(sourceDir, { recursive: true });
+  const sourceBytes = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00,
+  ]);
+  await writeFile(join(sourceDir, "screenshot"), sourceBytes);
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact({
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-06-03T14:55:51.114Z",
+      sources: ["outputs/screenshot"],
+      omitted_sources: [],
+    },
+  }));
+
+  const batch = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_extensionless_media_test",
+  });
+
+  assert.deepEqual(batch.events[0].media_manifest, [{
+    basename: "screenshot",
+    mime_type: "image/png",
+    byte_size: sourceBytes.length,
+  }]);
+});
+
 test("artifactReviewsToRawTelemetryBatch creates deterministic correction events", async () => {
   const artifactsDir = await tempDir();
   await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact());

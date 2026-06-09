@@ -5,6 +5,7 @@ import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
 import {
   inferMediaMime,
   localMediaByteSize,
+  mediaReferenceMetadata,
   mediaBasename,
 } from "./media-metadata.mjs";
 import {
@@ -20,6 +21,21 @@ const VALID_SOURCES = new Set(["cli", "mcp", "validate"]);
 const VALID_STATUSES = new Set(["success", "error"]);
 const BASE64_BYTE_SIZE_LIMIT = 1024 * 1024;
 const DEFAULT_CONFIG_CACHE_TTL_MS = 1000;
+const MEDIA_REFERENCE_KEYS = [
+  "source",
+  "path",
+  "file",
+  "filePath",
+  "file_path",
+  "uri",
+  "url",
+  "fileUri",
+  "file_uri",
+  "basename",
+  "name",
+  "displayName",
+  "display_name",
+];
 
 let pendingCaptures = new Set();
 let configCache = new WeakMap();
@@ -130,6 +146,27 @@ function metadataFromInlineData(inlineData) {
   return Object.keys(metadata).length ? metadata : null;
 }
 
+async function metadataFromMediaReference(value, { cwd } = {}) {
+  if (!value || typeof value !== "object") return null;
+  const reference = MEDIA_REFERENCE_KEYS
+    .map((key) => value[key])
+    .find((item) => typeof item === "string" && item.trim());
+  const metadata = reference ? { ...(await mediaReferenceMetadata(reference, { root: cwd }) ?? {}) } : {};
+
+  const mimeType = value.mimeType ?? value.mime_type;
+  if (typeof mimeType === "string" && mimeType.trim()) metadata.mime_type = mimeType;
+  const byteSize = value.byteSize ?? value.byte_size ?? value.size;
+  if (Number.isInteger(byteSize) && byteSize >= 0) metadata.byte_size = byteSize;
+  const name = value.displayName ?? value.display_name ?? value.name ?? value.basename;
+  if (typeof name === "string" && name.trim()) metadata.basename = basename(name);
+  if (!metadata.mime_type) {
+    const inferredMimeType = inferMediaMime(metadata.basename ?? reference);
+    if (inferredMimeType) metadata.mime_type = inferredMimeType;
+  }
+  maybeAddHash(metadata, value);
+  return Object.keys(metadata).length ? metadata : null;
+}
+
 async function metadataFromFileData(fileData, { cwd } = {}) {
   if (!fileData || typeof fileData !== "object") return null;
   const metadata = {};
@@ -166,6 +203,8 @@ async function collectMultimodalMetadata(value, { cwd } = {}, output = []) {
   if (inlineMetadata) output.push(inlineMetadata);
   const fileMetadata = await metadataFromFileData(value.fileData ?? value.file_data, { cwd });
   if (fileMetadata) output.push(fileMetadata);
+  const referenceMetadata = await metadataFromMediaReference(value, { cwd });
+  if (referenceMetadata) output.push(referenceMetadata);
 
   if (Array.isArray(value.parts)) await collectMultimodalMetadata(value.parts, { cwd }, output);
   if (Array.isArray(value.contents)) await collectMultimodalMetadata(value.contents, { cwd }, output);
