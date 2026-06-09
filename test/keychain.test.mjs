@@ -27,6 +27,8 @@ async function withEmptyPath(callback) {
 
 test("reads API key from environment without trimming internal characters", () => {
   assert.equal(getApiKeyFromEnv({ GEMINI_API_KEY: "  abc-123  " }), "abc-123");
+  assert.equal(getApiKeyFromEnv({ GOOGLE_API_KEY: "  google-123  " }), "google-123");
+  assert.equal(getApiKeyFromEnv({ GEMINI_API_KEY: " gemini-123 ", GOOGLE_API_KEY: " google-123 " }), "gemini-123");
   assert.equal(getApiKeyFromEnv({}), null);
 });
 

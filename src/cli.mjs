@@ -15,6 +15,7 @@ import {
   resolveCwdFilePath,
 } from "./input-collector.mjs";
 import { loadProjectPolicy } from "./policies.mjs";
+import { parsePaletteSplitArgs, runPaletteSplit } from "./palette-mask.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 import { drainTelemetryCapture } from "./telemetry-capture.mjs";
@@ -73,6 +74,7 @@ function printUsage() {
     "  gemini-agent ask <prompt>",
     "  gemini-agent context-pack [--stdin] [--file <path> ...] [--diff] [--write-artifact] [text]",
     "  gemini-agent artifact-review --file <path> [--kind image|ui|design|architecture|research] [--write-artifact]",
+    "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent plan-critique (--file <path> | --stdin | <text>)",
     "  gemini-agent patch-precheck (--file <path> | --stdin | <text>)",
     "  gemini-agent diff-review (--file <path> | --stdin | <text>)",
@@ -735,6 +737,20 @@ async function runArtifactReviewCommand(args) {
   output.write(artifactReviewToPrettyJson(review));
 }
 
+async function runPaletteSplitCommand(args) {
+  const options = parsePaletteSplitArgs(args);
+  const key = await resolveApiKey();
+  if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+  const result = await runPaletteSplit({
+    ...options,
+    apiKey: key.key,
+  });
+  output.write(`${JSON.stringify({
+    output_dir: result.outputDir,
+    manifest: "manifest.json",
+  }, null, 2)}\n`);
+}
+
 async function requireEnabledTelemetryContextForOptions(options) {
   const context = await loadTelemetryConfigContext({
     cwd: process.cwd(),
@@ -1192,6 +1208,10 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (command === "artifact-review") {
     await runArtifactReviewCommand(args);
+    return;
+  }
+  if (command === "palette-split") {
+    await runPaletteSplitCommand(args);
     return;
   }
   if (GATE_COMMANDS.has(command)) {
