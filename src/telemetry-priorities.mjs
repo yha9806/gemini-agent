@@ -80,13 +80,42 @@ function commaJoin(items) {
 }
 
 function weakMultimodalFieldNames(multimodalCoverage, threshold = 0.75) {
-  return [
-    ["MIME", multimodalCoverage.mime],
-    ["byte-size", multimodalCoverage.byte_size],
-    ["media-kind", multimodalCoverage.kind],
-  ]
-    .filter(([, value]) => value !== null && value < threshold)
-    .map(([name]) => name);
+  return multimodalFieldGaps(multimodalCoverage, null, threshold)
+    .map((item) => item.name);
+}
+
+function nonnegativeMetric(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+const MULTIMODAL_FIELD_CONFIG = [
+  { name: "MIME", key: "mime", missingKey: "unknown_mime_items" },
+  { name: "byte-size", key: "byte_size", missingKey: "unknown_byte_size_items" },
+  { name: "media-kind", key: "kind", missingKey: "unknown_kind_items" },
+];
+
+function topMissingMultimodalCommand(multimodal, missingKey) {
+  const rows = Array.isArray(multimodal?.top_commands) ? multimodal.top_commands : [];
+  return rows
+    .map((item) => ({
+      command: `${item?.command ?? "unknown"}`,
+      missing: nonnegativeMetric(item?.[missingKey]),
+    }))
+    .filter((item) => item.missing > 0)
+    .sort((left, right) => (
+      right.missing - left.missing
+      || left.command.localeCompare(right.command)
+    ))[0] ?? null;
+}
+
+function multimodalFieldGaps(multimodalCoverage, multimodal, threshold = 0.75) {
+  return MULTIMODAL_FIELD_CONFIG
+    .map((item) => ({
+      ...item,
+      coverage: multimodalCoverage[item.key],
+      topCommand: topMissingMultimodalCommand(multimodal, item.missingKey),
+    }))
+    .filter((item) => item.coverage !== null && item.coverage < threshold);
 }
 
 function multimodalFillClause(multimodalCoverage) {
@@ -158,7 +187,25 @@ function deliveryPriority(summary) {
   });
 }
 
-function instrumentationPriority(summary, economics, multimodalCoverage) {
+function multimodalGapEvidence(gaps) {
+  return gaps
+    .filter((item) => item.topCommand)
+    .map((item) => (
+      `Top adjusted multimodal ${item.name} gap: ${item.topCommand.command} missing ${formatNumber(item.topCommand.missing)} item${item.topCommand.missing === 1 ? "" : "s"}`
+    ));
+}
+
+function multimodalGapAction(gaps) {
+  const actionable = gaps.filter((item) => item.topCommand);
+  if (actionable.length === 0) return null;
+  const fields = commaJoin(actionable.map((item) => item.name));
+  const commands = [...new Set(actionable.map((item) => item.topCommand.command))];
+  return commands.length === 1
+    ? `Fix multimodal ${fields} capture/backfill for ${commands[0]}.`
+    : `Fix multimodal ${fields} capture/backfill for top gap commands.`;
+}
+
+function instrumentationPriority(summary, economics, multimodalCoverage, multimodal) {
   const usage = adjustedUsageApplicableCoverage(economics);
   const rawUsage = usageApplicableCoverage(economics);
   const suspectedFixtures = economics.totals.suspected_test_fixture_event_count ?? 0;
@@ -166,6 +213,8 @@ function instrumentationPriority(summary, economics, multimodalCoverage) {
   const usageWeak = usage !== null && usage < 0.8;
   const multimodalWeak = multimodalCoverage.min !== null && multimodalCoverage.min < 0.75;
   const multimodalClause = multimodalWeak ? multimodalFillClause(multimodalCoverage) : null;
+  const multimodalGaps = multimodalWeak ? multimodalFieldGaps(multimodalCoverage, multimodal) : [];
+  const specificMultimodalAction = multimodalGapAction(multimodalGaps);
   const reasons = [];
   if (usageWeak) {
     reasons.push(`Adjusted usage-applicable coverage: ${formatPercent(usage)}`);
@@ -181,6 +230,7 @@ function instrumentationPriority(summary, economics, multimodalCoverage) {
   }
   if (multimodalWeak) {
     reasons.push(`Multimodal metadata minimum coverage: ${formatPercent(multimodalCoverage.min)}`);
+    reasons.push(...multimodalGapEvidence(multimodalGaps));
   }
   if (summary.invalid_events.count > 0) {
     reasons.push(`Invalid telemetry files: ${formatNumber(summary.invalid_events.count)}`);
@@ -196,7 +246,7 @@ function instrumentationPriority(summary, economics, multimodalCoverage) {
       : usageWeak
         ? "Fill token usage fields in capture paths."
         : multimodalWeak
-          ? `${multimodalClause.charAt(0).toUpperCase()}${multimodalClause.slice(1)}.`
+          ? specificMultimodalAction ?? `${multimodalClause.charAt(0).toUpperCase()}${multimodalClause.slice(1)}.`
           : "Repair invalid telemetry files before making stronger product claims.",
     evidence: reasons,
   });
@@ -222,10 +272,6 @@ function economicsPriority(economics) {
       `Success rate: ${formatPercent(candidate.success_rate)}`,
     ],
   });
-}
-
-function nonnegativeMetric(value) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
 function nullableMetricRatio(value) {
@@ -300,11 +346,12 @@ function multimodalPriority(summary, multimodalCoverage) {
 
 function buildPriorities({ summary, economics }) {
   const errorRate = statusErrorRate(summary);
-  const multimodal = mediaCoverage(summary.multimodal_adjusted ?? summary.multimodal);
+  const multimodalAggregate = summary.multimodal_adjusted ?? summary.multimodal;
+  const multimodal = mediaCoverage(multimodalAggregate);
   const rows = [
     reliabilityPriority(summary, errorRate),
     deliveryPriority(summary),
-    instrumentationPriority(summary, economics, multimodal),
+    instrumentationPriority(summary, economics, multimodal, multimodalAggregate),
     economicsPriority(economics),
     workflowPriority(economics),
     multimodalPriority(summary, multimodal),

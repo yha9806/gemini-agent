@@ -539,8 +539,11 @@ test("runTelemetryPriorities does not recommend usage fixes when only multimodal
     assert.ok(instrumentation);
     assert.equal(
       instrumentation.action,
-      "Fill multimodal MIME, byte-size, and media-kind fields in capture paths.",
+      "Fix multimodal MIME, byte-size, and media-kind capture/backfill for artifact-review.",
     );
+    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted multimodal MIME gap: artifact-review missing 1 item"));
+    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted multimodal byte-size gap: artifact-review missing 1 item"));
+    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted multimodal media-kind gap: artifact-review missing 1 item"));
     assert.doesNotMatch(instrumentation.action, /Fix token usage/);
     assert.doesNotMatch(serialized, /private-weak-metadata\.png/);
   } finally {
@@ -602,10 +605,60 @@ test("runTelemetryPriorities names only weak adjusted multimodal metadata fields
     assert.ok(instrumentation);
     assert.equal(
       instrumentation.action,
-      "Fill multimodal byte-size fields in capture paths.",
+      "Fix multimodal byte-size capture/backfill for artifact-review.",
     );
+    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted multimodal byte-size gap: artifact-review missing 1 item"));
     assert.doesNotMatch(instrumentation.action, /MIME|media-kind/);
     assert.doesNotMatch(serialized, /private-adjusted-byte-gap|media-adjusted/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities breaks multimodal gap ties deterministically", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    for (const [index, command] of [[70, "gemini-artifact-review"], [71, "artifact-review"]]) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(index, {
+          command,
+          payload: {
+            prompt_truncated: false,
+            response_truncated: false,
+            multimodal: [{ basename: `private-${command}.png` }],
+          },
+          economics: {
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 150,
+            codex_tokens_saved_estimate: 100,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const serialized = JSON.stringify(report);
+    const instrumentation = report.priorities.find((item) => item.kind === "instrumentation");
+
+    assert.ok(instrumentation);
+    assert.equal(
+      instrumentation.action,
+      "Fix multimodal MIME, byte-size, and media-kind capture/backfill for artifact-review.",
+    );
+    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted multimodal byte-size gap: artifact-review missing 1 item"));
+    assert.doesNotMatch(serialized, /private-artifact-review|private-gemini-artifact-review|evt_priority_000070/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
