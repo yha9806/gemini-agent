@@ -58,6 +58,10 @@ function zeroMultimodal() {
     byte_count: 0,
     unknown_mime_items: 0,
     unknown_byte_size_items: 0,
+    unknown_kind_items: 0,
+    media_items_with_mime: 0,
+    media_items_with_byte_size: 0,
+    media_items_with_kind: 0,
   };
 }
 
@@ -144,6 +148,20 @@ function updateDimension(map, key, status) {
   map.set(safeKey, item);
 }
 
+function safeOptionalDimension(value) {
+  const raw = `${value ?? ""}`.trim();
+  if (!raw || raw.toLowerCase() === "unknown") return null;
+  if (/[^\s@]+@[^\s@]+\.[^\s@]+/.test(raw)) return null;
+  const safe = sanitizeDimension(raw);
+  return safe && safe.toLowerCase() !== "unknown" ? safe : null;
+}
+
+function updateOptionalDimension(map, key, status) {
+  const safeKey = safeOptionalDimension(key);
+  if (!safeKey) return;
+  updateDimension(map, safeKey, status);
+}
+
 function canonicalCommand(value) {
   const sanitized = sanitizeDimension(value);
   return sanitized.toLowerCase().replaceAll("_", "-");
@@ -200,6 +218,39 @@ function topMediaMime(map, limit) {
     .slice(0, limit)
     .map((item) => ({
       mime_type: item.key,
+      event_count: item.event_count,
+      item_count: item.item_count,
+      byte_count: item.byte_count,
+    }));
+}
+
+function updateMediaKind(map, mediaKind, byteSize, seenInEvent) {
+  const key = sanitizeDimension(mediaKind, "unknown");
+  const item = map.get(key) ?? {
+    key,
+    event_count: 0,
+    item_count: 0,
+    byte_count: 0,
+  };
+  if (!seenInEvent.has(key)) {
+    item.event_count += 1;
+    seenInEvent.add(key);
+  }
+  item.item_count += 1;
+  item.byte_count += byteSize;
+  map.set(key, item);
+}
+
+function topMediaKind(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.item_count - left.item_count
+      || right.event_count - left.event_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      media_kind: item.key,
       event_count: item.event_count,
       item_count: item.item_count,
       byte_count: item.byte_count,
@@ -292,6 +343,18 @@ function buildRecommendations({ commands, counts, statusCounts, queue, usage, mu
       message: "Some multimodal metadata has unknown MIME types; improve artifact capture so design analytics can segment images, PDFs, and screenshots.",
     });
   }
+  if (multimodal.item_count > 0 && multimodal.unknown_byte_size_items / multimodal.item_count > 0.25) {
+    recommendations.push({
+      kind: "instrumentation",
+      message: "Some multimodal metadata is missing byte sizes; improve media capture so cost and storage analytics can measure payload volume.",
+    });
+  }
+  if (multimodal.item_count >= 5 && multimodal.unknown_kind_items / multimodal.item_count > 0.5) {
+    recommendations.push({
+      kind: "instrumentation",
+      message: "Most multimodal metadata is missing media kind; classify screenshots, designs, documents, and images before making quality claims.",
+    });
+  }
   return recommendations;
 }
 
@@ -377,10 +440,13 @@ function createAccumulator(invalidSampleLimit) {
     multimodal: zeroMultimodal(),
     corrections: zeroCorrections(),
     projects: createDimensionMap(),
+    workspaces: createDimensionMap(),
+    userLabels: createDimensionMap(),
     commands: createDimensionMap(),
     sources: createDimensionMap(),
     models: createDimensionMap(),
     mediaMimes: createDimensionMap(),
+    mediaKinds: createDimensionMap(),
     correctionVersions: createDimensionMap(),
     correctedOriginalIds: new Set(),
     paletteSplit: {
@@ -415,6 +481,8 @@ function addEvent(accumulator, state, event) {
   const status = event.status === "success" || event.status === "error" ? event.status : "unknown";
   updateStatusCounts(accumulator.statusCounts, status);
   updateDimension(accumulator.projects, event.project_id, status);
+  updateOptionalDimension(accumulator.workspaces, event.context?.workspace_id, status);
+  updateOptionalDimension(accumulator.userLabels, event.context?.user_label, status);
   updateCommandDimension(accumulator.commands, event.command, status);
   updateDimension(accumulator.sources, event.source, status);
   updateDimension(accumulator.models, event.model, status);
@@ -433,18 +501,28 @@ function addEvent(accumulator, state, event) {
   } else if (multimodalItems.length > 0) {
     accumulator.multimodal.event_count += 1;
     const seenMimes = new Set();
+    const seenKinds = new Set();
     for (const item of multimodalItems) {
       const mimeType = typeof item?.mime_type === "string" && item.mime_type.trim()
         ? item.mime_type
+        : "unknown";
+      const mediaKind = typeof item?.media_kind === "string" && item.media_kind.trim()
+        ? item.media_kind
         : "unknown";
       const byteSize = safeInteger(item?.byte_size);
       accumulator.multimodal.item_count += 1;
       accumulator.multimodal.byte_count += byteSize;
       if (mimeType === "unknown") accumulator.multimodal.unknown_mime_items += 1;
+      else accumulator.multimodal.media_items_with_mime += 1;
       if (!Number.isInteger(item?.byte_size) || item.byte_size < 0) {
         accumulator.multimodal.unknown_byte_size_items += 1;
+      } else {
+        accumulator.multimodal.media_items_with_byte_size += 1;
       }
+      if (mediaKind === "unknown") accumulator.multimodal.unknown_kind_items += 1;
+      else accumulator.multimodal.media_items_with_kind += 1;
       updateMediaMime(accumulator.mediaMimes, mimeType, byteSize, seenMimes);
+      updateMediaKind(accumulator.mediaKinds, mediaKind, byteSize, seenKinds);
     }
   }
 
@@ -586,6 +664,8 @@ export async function runTelemetrySummary({
   }
 
   const topProjects = topDimension(accumulator.projects, "project_id", topLimit);
+  const topWorkspaces = topDimension(accumulator.workspaces, "workspace_id", topLimit);
+  const topUserLabels = topDimension(accumulator.userLabels, "user_label", topLimit);
   const topCommands = topDimension(accumulator.commands, "command", topLimit);
   const allCommands = topDimension(accumulator.commands, "command", accumulator.commands.size);
   const sources = topDimension(accumulator.sources, "source", topLimit);
@@ -593,6 +673,7 @@ export async function runTelemetrySummary({
   const multimodal = {
     ...accumulator.multimodal,
     top_media_mime: topMediaMime(accumulator.mediaMimes, topLimit),
+    top_media_kind: topMediaKind(accumulator.mediaKinds, topLimit),
   };
   const corrections = {
     ...accumulator.corrections,
@@ -624,6 +705,8 @@ export async function runTelemetrySummary({
     corrections,
     palette_split: paletteSplit,
     top_projects: topProjects,
+    top_workspaces: topWorkspaces,
+    top_user_labels: topUserLabels,
     top_commands: topCommands,
     sources,
     models,
@@ -668,6 +751,12 @@ export function formatTelemetrySummaryText(summary) {
     "Top projects:",
     formatTopRows(summary.top_projects, "project_id"),
     "",
+    "Top workspaces:",
+    formatTopRows(summary.top_workspaces ?? [], "workspace_id"),
+    "",
+    "Top user labels:",
+    formatTopRows(summary.top_user_labels ?? [], "user_label"),
+    "",
     "Top commands:",
     formatTopRows(summary.top_commands, "command"),
     "",
@@ -685,6 +774,8 @@ export function formatTelemetrySummaryText(summary) {
     `- Media items: ${formatNumber(summary.multimodal?.item_count ?? 0)}`,
     `- Media bytes: ${formatNumber(summary.multimodal?.byte_count ?? 0)}`,
     `- Unknown MIME items: ${formatNumber(summary.multimodal?.unknown_mime_items ?? 0)}`,
+    `- Unknown byte-size items: ${formatNumber(summary.multimodal?.unknown_byte_size_items ?? 0)}`,
+    `- Unknown media-kind items: ${formatNumber(summary.multimodal?.unknown_kind_items ?? 0)}`,
     "",
     "Corrections:",
     `- Correction events: ${formatNumber(summary.corrections?.event_count ?? 0)}`,

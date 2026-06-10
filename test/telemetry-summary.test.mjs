@@ -130,8 +130,45 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     top_actual_models: [],
   });
   assert.deepEqual(result.top_projects, []);
+  assert.deepEqual(result.top_workspaces, []);
+  assert.deepEqual(result.top_user_labels, []);
   assert.deepEqual(result.top_commands, []);
   assert.equal(await pathExists(join(cwd, ".gemini-agent/telemetry/queue")), false);
+});
+
+test("runTelemetrySummary reports workspace and user label dimensions safely", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(61, {
+      context: { workspace_id: "ws_vulca", user_label: "vulca-operator", cwd: "[PATH]/vulca" },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(62, {
+      context: { workspace_id: "ws_vulca", user_label: "person@example.com", cwd: "[PATH]/vulca" },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+
+  assert.deepEqual(summary.top_workspaces, [
+    { workspace_id: "ws_vulca", event_count: 2, success_count: 2, error_count: 0, unknown_count: 0 },
+  ]);
+  assert.deepEqual(summary.top_user_labels, [
+    { user_label: "vulca-operator", event_count: 1, success_count: 1, error_count: 0, unknown_count: 0 },
+  ]);
+  assert.doesNotMatch(JSON.stringify(summary), /person@example.com|\[PATH\]/);
+  assert.doesNotMatch(text, /person@example.com|\[PATH\]/);
 });
 
 test("runTelemetrySummary aggregates pending sent failed quarantine dimensions and usage", async () => {
@@ -331,8 +368,8 @@ test("runTelemetrySummary aggregates multimodal metadata without exposing media 
         prompt_truncated: false,
         response_truncated: false,
         multimodal: [
-          { mime_type: "image/png", byte_size: 1024, basename: "secret-customer-screen.png" },
-          { mime_type: "image/png", byte_size: 2048 },
+          { mime_type: "image/png", byte_size: 1024, basename: "secret-customer-screen.png", media_kind: "image" },
+          { mime_type: "image/png", byte_size: 2048, media_kind: "image" },
         ],
       },
     }),
@@ -345,9 +382,9 @@ test("runTelemetrySummary aggregates multimodal metadata without exposing media 
         prompt_truncated: false,
         response_truncated: false,
         multimodal: [
-          { mime_type: "image/jpeg", byte_size: 512 },
+          { mime_type: "image/jpeg", byte_size: 512, media_kind: "image" },
           { byte_size: 128, basename: "private-artifact.jpg" },
-          { mime_type: "application/pdf" },
+          { mime_type: "application/pdf", media_kind: "document" },
         ],
       },
     }),
@@ -369,11 +406,20 @@ test("runTelemetrySummary aggregates multimodal metadata without exposing media 
     byte_count: 3712,
     unknown_mime_items: 1,
     unknown_byte_size_items: 1,
+    unknown_kind_items: 1,
+    media_items_with_mime: 4,
+    media_items_with_byte_size: 4,
+    media_items_with_kind: 4,
     top_media_mime: [
       { mime_type: "image/png", event_count: 1, item_count: 2, byte_count: 3072 },
       { mime_type: "application/pdf", event_count: 1, item_count: 1, byte_count: 0 },
       { mime_type: "image/jpeg", event_count: 1, item_count: 1, byte_count: 512 },
       { mime_type: "unknown", event_count: 1, item_count: 1, byte_count: 128 },
+    ],
+    top_media_kind: [
+      { media_kind: "image", event_count: 2, item_count: 3, byte_count: 3584 },
+      { media_kind: "document", event_count: 1, item_count: 1, byte_count: 0 },
+      { media_kind: "unknown", event_count: 1, item_count: 1, byte_count: 128 },
     ],
   });
   assert.match(text, /Multimodal:/);
@@ -527,8 +573,15 @@ test("runTelemetrySummary reports correction overlays without polluting original
     byte_count: 0,
     unknown_mime_items: 1,
     unknown_byte_size_items: 1,
+    unknown_kind_items: 1,
+    media_items_with_mime: 0,
+    media_items_with_byte_size: 0,
+    media_items_with_kind: 0,
     top_media_mime: [
       { mime_type: "unknown", event_count: 1, item_count: 1, byte_count: 0 },
+    ],
+    top_media_kind: [
+      { media_kind: "unknown", event_count: 1, item_count: 1, byte_count: 0 },
     ],
   });
   assert.deepEqual(summary.corrections, {
