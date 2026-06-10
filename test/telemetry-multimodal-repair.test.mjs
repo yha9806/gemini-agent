@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { appendTelemetryEvent, telemetryQueueDirs } from "../src/telemetry-queue.mjs";
 import {
+  formatTelemetryMultimodalRepairMetadataText,
   formatTelemetryMultimodalRepairText,
   runTelemetryMultimodalRepairKind,
+  runTelemetryMultimodalRepairMetadata,
 } from "../src/telemetry-multimodal-repair.mjs";
 
 async function temporaryWorkspace(prefix = "gemini-agent-telemetry-multimodal-repair-") {
@@ -214,4 +216,110 @@ test("runTelemetryMultimodalRepairKind enforces version and limit safety", async
     () => runTelemetryMultimodalRepairKind({ correctionVersion: "media-kind-v1", limit: 0 }),
     /limit must be a positive integer/,
   );
+});
+
+test("runTelemetryMultimodalRepairMetadata infers safe MIME and kind without fabricating byte size", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(30, {
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [
+            { basename: "media-aaa111.PNG" },
+            { basename: "media-bbb222.Jpeg", byte_size: 18, media_kind: "unknown" },
+          ],
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(31, {
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "media-ccc333.dat" }],
+        },
+      }),
+    });
+
+    const report = await runTelemetryMultimodalRepairMetadata({
+      cwd,
+      scope: "local",
+      correctionVersion: "media-v2",
+      dryRun: true,
+      now: new Date("2026-06-10T10:00:00.000Z"),
+    });
+    const text = formatTelemetryMultimodalRepairMetadataText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.dry_run, true);
+    assert.equal(report.scanned_events, 2);
+    assert.equal(report.repairable_events, 1);
+    assert.equal(report.repairable_media_items, 2);
+    assert.equal(report.preview.top_inferred_media_mime[0].mime_type, "image/jpeg");
+    assert.equal(report.preview.top_inferred_media_mime[0].item_count, 1);
+    assert.equal(report.preview.top_inferred_media_mime.some((item) => item.mime_type === "image/png"), true);
+    assert.equal(report.preview.missing_byte_size_items, 1);
+    assert.match(text, /Telemetry Multimodal Metadata Repair/);
+    assert.doesNotMatch(serialized, /private repair prompt/);
+    assert.doesNotMatch(serialized, /private repair response/);
+    assert.doesNotMatch(serialized, /evt_repair_/);
+    assert.doesNotMatch(serialized, /media-aaa111|media-bbb222|media-ccc333/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryMultimodalRepairMetadata writes idempotent metadata correction events", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(40, {
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "media-ddd444.png" }],
+        },
+      }),
+    });
+
+    const first = await runTelemetryMultimodalRepairMetadata({
+      cwd,
+      scope: "local",
+      correctionVersion: "media-v2",
+      dryRun: false,
+      now: new Date("2026-06-10T10:00:00.000Z"),
+    });
+    const second = await runTelemetryMultimodalRepairMetadata({
+      cwd,
+      scope: "local",
+      correctionVersion: "media-v2",
+      dryRun: false,
+      now: new Date("2026-06-10T10:01:00.000Z"),
+    });
+
+    assert.equal(first.queued_count, 1);
+    assert.equal(first.skipped_existing_count, 0);
+    assert.equal(second.queued_count, 0);
+    assert.equal(second.skipped_existing_count, 1);
+    assert.equal(second.repairable_events, 0);
+
+    const files = await readdir(telemetryQueueDirs(cwd).pending);
+    const events = await Promise.all(files.sort().map(async (file) => (
+      JSON.parse(await readFile(join(telemetryQueueDirs(cwd).pending, file), "utf8"))
+    )));
+    const correction = events.find((event) => event.command === "artifact-review-backfill-correction");
+    assert.equal(correction.metadata.correction_reason, "media_metadata_inference");
+    assert.equal(correction.prompt, "Multimodal media metadata correction.");
+    assert.deepEqual(correction.payload.multimodal, [
+      { mime_type: "image/png", basename: "media-ddd444.png", media_kind: "image" },
+    ]);
+    assert.equal(Object.hasOwn(correction.payload.multimodal[0], "byte_size"), false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });

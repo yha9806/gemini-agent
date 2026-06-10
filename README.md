@@ -28,6 +28,8 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry priorities --global --json
 ./bin/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run
 ./bin/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --write --json
+./bin/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run
+./bin/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --write --json
 ./bin/gemini-agent telemetry validate --global --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
 ./bin/gemini-agent telemetry flush --global
 ./bin/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000
@@ -67,6 +69,7 @@ Global Gemini review gate for Codex.
 - `telemetry economics` estimates Gemini cost and Codex token savings from aggregate usage metadata; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - `telemetry priorities` combines aggregate economics, reliability, delivery, instrumentation, and multimodal metadata signals into a development priority list; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - `telemetry multimodal repair-kind` creates correction events for historical multimodal telemetry with missing media kinds; it is dry-run by default, does not rewrite existing telemetry files, and reports aggregate counts without raw prompt, response text, event ids, paths, or media file names.
+- `telemetry multimodal repair-metadata` creates safe MIME and media-kind corrections for historical multimodal telemetry; it does not fabricate missing byte sizes, is dry-run by default, does not rewrite existing telemetry files, and reports aggregate counts without raw prompt, response text, event ids, paths, or media file names.
 - The telemetry receiver `/metrics` and `/dashboard` endpoints expose aggregate correction and palette-split quality metrics without raw event ids or media file names.
 - Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
 - Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.

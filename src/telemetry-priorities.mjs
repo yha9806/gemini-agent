@@ -73,6 +73,29 @@ function mediaCoverage(multimodal) {
   };
 }
 
+function commaJoin(items) {
+  if (items.length <= 1) return items[0] ?? "";
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
+}
+
+function weakMultimodalFieldNames(multimodalCoverage, threshold = 0.75) {
+  return [
+    ["MIME", multimodalCoverage.mime],
+    ["byte-size", multimodalCoverage.byte_size],
+    ["media-kind", multimodalCoverage.kind],
+  ]
+    .filter(([, value]) => value !== null && value < threshold)
+    .map(([name]) => name);
+}
+
+function multimodalFillClause(multimodalCoverage) {
+  const fields = weakMultimodalFieldNames(multimodalCoverage);
+  return fields.length > 0
+    ? `fill multimodal ${commaJoin(fields)} fields in capture paths`
+    : null;
+}
+
 function priority({
   kind,
   severity,
@@ -142,6 +165,7 @@ function instrumentationPriority(summary, economics, multimodalCoverage) {
   const topUsageGap = economics.usage_gap_commands?.[0] ?? null;
   const usageWeak = usage !== null && usage < 0.8;
   const multimodalWeak = multimodalCoverage.min !== null && multimodalCoverage.min < 0.75;
+  const multimodalClause = multimodalWeak ? multimodalFillClause(multimodalCoverage) : null;
   const reasons = [];
   if (usageWeak) {
     reasons.push(`Adjusted usage-applicable coverage: ${formatPercent(usage)}`);
@@ -168,11 +192,11 @@ function instrumentationPriority(summary, economics, multimodalCoverage) {
     score: 88,
     title: "Improve telemetry instrumentation before making stronger product claims.",
     action: usageWeak && topUsageGap
-      ? `Fix token usage capture for ${topUsageGap.command}; fill multimodal MIME, byte-size, and media-kind fields in capture paths.`
+      ? `Fix token usage capture for ${topUsageGap.command}${multimodalClause ? `; ${multimodalClause}` : ""}.`
       : usageWeak
         ? "Fill token usage fields in capture paths."
         : multimodalWeak
-          ? "Fill multimodal MIME, byte-size, and media-kind fields in capture paths."
+          ? `${multimodalClause.charAt(0).toUpperCase()}${multimodalClause.slice(1)}.`
           : "Repair invalid telemetry files before making stronger product claims.",
     evidence: reasons,
   });

@@ -107,6 +107,12 @@ function itemReference(item) {
   return item?.basename ?? item?.name ?? item?.displayName ?? item?.display_name ?? null;
 }
 
+function inferMimeForMediaItem(item) {
+  return normalizeMimeType(item?.mime_type ?? item?.mimeType)
+    ?? inferMediaMime(itemReference(item))
+    ?? null;
+}
+
 function inferKindForMediaItem(item, { command, index }) {
   const existing = safeMediaKind(item?.media_kind ?? item?.mediaKind);
   if (existing && existing !== "unknown") return existing;
@@ -114,8 +120,7 @@ function inferKindForMediaItem(item, { command, index }) {
   if (normalizedCommand === "palette-split") {
     return index === 0 ? "image" : "design";
   }
-  const mimeType = normalizeMimeType(item?.mime_type ?? item?.mimeType)
-    ?? inferMediaMime(itemReference(item));
+  const mimeType = inferMimeForMediaItem(item);
   const inferred = inferMediaKind({ mimeType, reference: itemReference(item) });
   return VALID_MEDIA_KINDS.has(inferred) ? inferred : "unknown";
 }
@@ -125,9 +130,19 @@ function mediaItemNeedsRepair(item) {
   return !existing || existing === "unknown";
 }
 
+function mediaItemNeedsMetadataRepair(item, context) {
+  const existingMimeType = normalizeMimeType(item?.mime_type ?? item?.mimeType);
+  const inferredMimeType = inferMimeForMediaItem(item);
+  const canImproveMime = !existingMimeType && Boolean(inferredMimeType);
+  const existingKind = safeMediaKind(item?.media_kind ?? item?.mediaKind);
+  const inferredKind = inferKindForMediaItem(item, context);
+  const canImproveKind = (!existingKind || existingKind === "unknown") && inferredKind !== "unknown";
+  return canImproveMime || canImproveKind;
+}
+
 function repairedMediaItem(item, context) {
   const next = {};
-  const mimeType = normalizeMimeType(item?.mime_type ?? item?.mimeType);
+  const mimeType = inferMimeForMediaItem(item);
   if (mimeType) next.mime_type = mimeType;
   const byteSize = item?.byte_size ?? item?.byteSize ?? item?.size;
   if (Number.isInteger(byteSize) && byteSize >= 0) next.byte_size = byteSize;
@@ -152,12 +167,34 @@ function topMediaKind(counts) {
     .sort((left, right) => right.item_count - left.item_count || left.media_kind.localeCompare(right.media_kind));
 }
 
-function buildCorrectionEvent(event, { correctionVersion, now }) {
+function mediaMimeCounts(items) {
+  const counts = new Map();
+  for (const item of items) {
+    const mimeType = item.mime_type ?? "unknown";
+    counts.set(mimeType, (counts.get(mimeType) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function topMediaMime(counts) {
+  return [...counts.entries()]
+    .map(([mimeType, itemCount]) => ({ mime_type: mimeType, item_count: itemCount }))
+    .sort((left, right) => right.item_count - left.item_count || left.mime_type.localeCompare(right.mime_type));
+}
+
+function missingByteSizeCount(items) {
+  return items.filter((item) => !Number.isInteger(item.byte_size) || item.byte_size < 0).length;
+}
+
+function buildCorrectionEvent(event, { correctionVersion, now, correctionReason = "media_kind_inference" }) {
   const originalItems = Array.isArray(event.payload?.multimodal) ? event.payload.multimodal : [];
   const repairedItems = originalItems.map((item, index) => repairedMediaItem(item, {
     command: event.command,
     index,
   }));
+  const correctionText = correctionReason === "media_metadata_inference"
+    ? "Multimodal media metadata correction."
+    : "Multimodal media kind correction.";
   return normalizeTelemetryEvent({
     schema_version: 1,
     event_id: correctionEventId(event.event_id, correctionVersion),
@@ -167,8 +204,8 @@ function buildCorrectionEvent(event, { correctionVersion, now }) {
     source: "cli",
     command: CORRECTION_COMMAND,
     model: "gemini-3.5-flash",
-    prompt: "Multimodal media kind correction.",
-    response: "Multimodal media kind correction.",
+    prompt: correctionText,
+    response: correctionText,
     status: "success",
     error_type: null,
     latency_ms: 0,
@@ -197,16 +234,23 @@ function buildCorrectionEvent(event, { correctionVersion, now }) {
     metadata: {
       correction_for_event_id: event.event_id,
       correction_version: correctionVersion,
-      correction_reason: "media_kind_inference",
+      correction_reason: correctionReason,
       corrected_command: canonicalCommand(event.command),
     },
   });
 }
 
-function needsCorrection(event) {
+function needsCorrection(event, { mode = "kind" } = {}) {
   if (event.command === CORRECTION_COMMAND) return false;
   const items = Array.isArray(event.payload?.multimodal) ? event.payload.multimodal : [];
-  return items.length > 0 && items.some(mediaItemNeedsRepair);
+  if (items.length === 0) return false;
+  if (mode === "metadata") {
+    return items.some((item, index) => mediaItemNeedsMetadataRepair(item, {
+      command: event.command,
+      index,
+    }));
+  }
+  return items.some(mediaItemNeedsRepair);
 }
 
 async function visitTelemetryEvents(storageCwd, visitor) {
@@ -230,13 +274,13 @@ async function visitTelemetryEvents(storageCwd, visitor) {
   return { scannedEvents, invalidFiles };
 }
 
-async function loadRepairContext(storageCwd, correctionVersion, limit) {
+async function loadRepairContext(storageCwd, correctionVersion, limit, { mode = "kind" } = {}) {
   const existingCorrections = new Set();
   const candidates = [];
   const scan = await visitTelemetryEvents(storageCwd, async (event) => {
     const key = originalCorrectionKey(event);
     if (key) existingCorrections.add(key);
-    if (needsCorrection(event)) candidates.push(event);
+    if (needsCorrection(event, { mode })) candidates.push(event);
   });
   const originals = [];
   let skippedExistingCount = 0;
@@ -293,11 +337,12 @@ export async function runTelemetryMultimodalRepairKind({
   assertPositiveInteger(limit, "limit");
 
   const context = await resolveRepairStorage({ cwd, home, scope });
-  const repairContext = await loadRepairContext(context.storageCwd, version, limit);
+  const repairContext = await loadRepairContext(context.storageCwd, version, limit, { mode: "kind" });
   const selectedOriginals = repairContext.originals;
   const corrections = selectedOriginals.map((event) => buildCorrectionEvent(event, {
     correctionVersion: version,
     now,
+    correctionReason: "media_kind_inference",
   }));
   const repairedItems = corrections.flatMap((event) => event.payload.multimodal);
   const kindCounts = mediaKindCounts(repairedItems);
@@ -338,6 +383,69 @@ export async function runTelemetryMultimodalRepairKind({
   };
 }
 
+export async function runTelemetryMultimodalRepairMetadata({
+  cwd = process.cwd(),
+  home,
+  scope = "auto",
+  correctionVersion,
+  dryRun = true,
+  limit = DEFAULT_LIMIT,
+  now = new Date(),
+} = {}) {
+  const version = normalizeCorrectionVersion(correctionVersion);
+  assertPositiveInteger(limit, "limit");
+
+  const context = await resolveRepairStorage({ cwd, home, scope });
+  const repairContext = await loadRepairContext(context.storageCwd, version, limit, { mode: "metadata" });
+  const selectedOriginals = repairContext.originals;
+  const corrections = selectedOriginals.map((event) => buildCorrectionEvent(event, {
+    correctionVersion: version,
+    now,
+    correctionReason: "media_metadata_inference",
+  }));
+  const repairedItems = corrections.flatMap((event) => event.payload.multimodal);
+  const kindCounts = mediaKindCounts(repairedItems);
+  const mimeCounts = mediaMimeCounts(repairedItems);
+
+  let queuedCount = 0;
+  let skippedDuplicateCount = 0;
+  if (!dryRun && corrections.length > 0) {
+    const result = await appendTelemetryEventsIfNew({
+      cwd: context.storageCwd,
+      events: corrections,
+      maxQueueBytes: context.config?.max_queue_bytes,
+    });
+    queuedCount = result.queued.length;
+    skippedDuplicateCount = result.skipped.length;
+  }
+
+  return {
+    ok: true,
+    scope: context.scope,
+    storage_cwd: context.storageCwd,
+    dry_run: dryRun,
+    correction_version: version,
+    scanned_events: repairContext.scannedEvents,
+    invalid_file_count: repairContext.invalidFiles,
+    repairable_events: selectedOriginals.length,
+    repairable_media_items: repairedItems.length,
+    skipped_existing_count: repairContext.skippedExistingCount + skippedDuplicateCount,
+    limited_count: repairContext.limitedCount,
+    queued_count: queuedCount,
+    preview: {
+      top_inferred_media_mime: topMediaMime(mimeCounts),
+      top_inferred_media_kind: topMediaKind(kindCounts),
+      missing_byte_size_items: missingByteSizeCount(repairedItems),
+    },
+    limitations: [
+      "This command creates correction events and does not rewrite existing telemetry files.",
+      "MIME and media kind are inferred only from existing safe metadata such as synthetic basenames and MIME fields.",
+      "Missing byte sizes are not fabricated; byte_size is preserved only when the original telemetry item already had it.",
+      "Output is aggregate-only and does not reveal raw prompt, response, event ids, paths, or media file names.",
+    ],
+  };
+}
+
 function formatNumber(value) {
   return new Intl.NumberFormat("en-US").format(value);
 }
@@ -346,6 +454,13 @@ function formatKindRows(rows) {
   if (rows.length === 0) return "None";
   return rows.map((item, index) => (
     `${index + 1}. ${item.media_kind}: ${formatNumber(item.item_count)} media items`
+  )).join("\n");
+}
+
+function formatMimeRows(rows) {
+  if (rows.length === 0) return "None";
+  return rows.map((item, index) => (
+    `${index + 1}. ${item.mime_type}: ${formatNumber(item.item_count)} media items`
   )).join("\n");
 }
 
@@ -363,6 +478,34 @@ export function formatTelemetryMultimodalRepairText(report) {
     `Queued corrections: ${formatNumber(report.queued_count)}`,
     `Skipped existing corrections: ${formatNumber(report.skipped_existing_count)}`,
     `Limited events: ${formatNumber(report.limited_count)}`,
+    "",
+    "Inferred media kind preview:",
+    formatKindRows(report.preview.top_inferred_media_kind),
+    "",
+    "Limitations:",
+    ...report.limitations.map((item) => `- ${item}`),
+    "",
+  ].join("\n");
+}
+
+export function formatTelemetryMultimodalRepairMetadataText(report) {
+  return [
+    "Telemetry Multimodal Metadata Repair",
+    "",
+    `Scope: ${report.scope}`,
+    `Storage: ${report.storage_cwd}`,
+    `Mode: ${report.dry_run ? "dry-run" : "write"}`,
+    `Correction version: ${report.correction_version}`,
+    `Scanned events: ${formatNumber(report.scanned_events)}`,
+    `Repairable events: ${formatNumber(report.repairable_events)}`,
+    `Repairable media items: ${formatNumber(report.repairable_media_items)}`,
+    `Queued corrections: ${formatNumber(report.queued_count)}`,
+    `Skipped existing corrections: ${formatNumber(report.skipped_existing_count)}`,
+    `Limited events: ${formatNumber(report.limited_count)}`,
+    `Missing byte-size items after repair: ${formatNumber(report.preview.missing_byte_size_items)}`,
+    "",
+    "Inferred MIME preview:",
+    formatMimeRows(report.preview.top_inferred_media_mime),
     "",
     "Inferred media kind preview:",
     formatKindRows(report.preview.top_inferred_media_kind),

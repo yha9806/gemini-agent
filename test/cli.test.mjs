@@ -1597,6 +1597,50 @@ test("telemetry multimodal repair-kind --write queues corrections without exposi
   }
 });
 
+test("telemetry multimodal repair-metadata dry-runs aggregate-only MIME repairs", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-multimodal-metadata-repair-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(103, {
+        command: "artifact-review-backfill",
+        prompt: "raw metadata repair prompt should not print",
+        response: "raw metadata repair response should not print",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "media-private-screenshot.PNG" }],
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "multimodal",
+      "repair-metadata",
+      "--correction-version",
+      "media-v2",
+      "--dry-run",
+    ], { cwd });
+
+    assert.equal(stderr, "");
+    assert.match(stdout, /Telemetry Multimodal Metadata Repair/);
+    assert.match(stdout, /Repairable events: 1/);
+    assert.match(stdout, /image\/png: 1 media items/);
+    assert.doesNotMatch(stdout, /raw metadata repair prompt should not print/);
+    assert.doesNotMatch(stdout, /raw metadata repair response should not print/);
+    assert.doesNotMatch(stdout, /evt_cli_103|media-private-screenshot/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry multimodal repair-kind rejects unsafe arguments", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-multimodal-repair-args-"));
   try {
@@ -1621,6 +1665,14 @@ test("telemetry multimodal repair-kind rejects unsafe arguments", async () => {
       (error) => {
         assert.equal(error.code, 1);
         assert.match(error.stderr, /--dry-run and --write cannot be used together/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "multimodal", "repair-metadata", "--correction-version", "bad/version"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--correction-version contains invalid characters/);
         return true;
       },
     );

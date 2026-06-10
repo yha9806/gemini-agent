@@ -54,6 +54,8 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --write --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global --json$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent artifact-review --file before\.png --file after\.png --kind ui --review-mode comparison$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000$/m);
   assert.match(readme, /project\/workspace attribution/);
@@ -65,6 +67,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /writes confirmed raw telemetry to a local JSONL file/);
   assert.match(readme, /local sent-telemetry retention with dry-run by default/);
   assert.match(readme, /estimates Gemini cost and Codex token savings/);
+  assert.match(readme, /safe MIME and media-kind corrections for historical multimodal telemetry/);
   assert.match(
     readme,
     /^\.\/bin\/gemini-agent telemetry install-scheduler --global --target launchd --name gemini-agent-main --schedule daily@09:00 --batch-size 1 --timeout-ms 20000 --env-file ~\/\.gemini-agent\/telemetry\.env --dry-run$/m,

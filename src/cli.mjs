@@ -31,8 +31,10 @@ import {
   runTelemetryPriorities,
 } from "./telemetry-priorities.mjs";
 import {
+  formatTelemetryMultimodalRepairMetadataText,
   formatTelemetryMultimodalRepairText,
   runTelemetryMultimodalRepairKind,
+  runTelemetryMultimodalRepairMetadata,
 } from "./telemetry-multimodal-repair.mjs";
 import {
   formatTelemetrySummaryText,
@@ -124,6 +126,7 @@ function printUsage() {
     "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry priorities [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry multimodal repair-kind --correction-version <id> [--global] [--dry-run|--write] [--limit <n>] [--json]",
+    "  gemini-agent telemetry multimodal repair-metadata --correction-version <id> [--global] [--dry-run|--write] [--limit <n>] [--json]",
     "  gemini-agent telemetry doctor [--global] [--json]",
     "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry retry-failed [--global] --reason <reason> [--dry-run|--write] [--batch-size <n>]",
@@ -718,7 +721,7 @@ function parseTelemetryPrioritiesOptions(args) {
   return options;
 }
 
-function parseTelemetryMultimodalRepairKindOptions(args) {
+function parseTelemetryMultimodalRepairOptions(args, { subcommand = "repair-kind" } = {}) {
   const options = {
     dryRun: true,
     global: false,
@@ -753,13 +756,21 @@ function parseTelemetryMultimodalRepairKindOptions(args) {
       options.limit = positiveIntegerOption(value, "--limit");
       index += 1;
     } else {
-      throw new Error(`Unknown telemetry multimodal repair-kind argument: ${arg}`);
+      throw new Error(`Unknown telemetry multimodal ${subcommand} argument: ${arg}`);
     }
   }
 
   if (sawDryRun && sawWrite) throw new Error("--dry-run and --write cannot be used together.");
   if (!options.correctionVersion) throw new Error("--correction-version is required.");
   return options;
+}
+
+function parseTelemetryMultimodalRepairKindOptions(args) {
+  return parseTelemetryMultimodalRepairOptions(args, { subcommand: "repair-kind" });
+}
+
+function parseTelemetryMultimodalRepairMetadataOptions(args) {
+  return parseTelemetryMultimodalRepairOptions(args, { subcommand: "repair-metadata" });
 }
 
 function parseTelemetryQuarantineOptions(args) {
@@ -1558,8 +1569,25 @@ async function runTelemetryMultimodal(args = []) {
     output.write(formatTelemetryMultimodalRepairText(report));
     return;
   }
+  if (subcommand === "repair-metadata") {
+    const options = parseTelemetryMultimodalRepairMetadataOptions(subArgs);
+    const report = await runTelemetryMultimodalRepairMetadata({
+      cwd: process.cwd(),
+      home: process.env.HOME,
+      scope: telemetryScope(options),
+      correctionVersion: options.correctionVersion,
+      dryRun: options.dryRun,
+      limit: options.limit,
+    });
+    if (options.json) {
+      output.write(`${JSON.stringify(report, null, 2)}\n`);
+      return;
+    }
+    output.write(formatTelemetryMultimodalRepairMetadataText(report));
+    return;
+  }
 
-  throw new Error("telemetry multimodal requires repair-kind.");
+  throw new Error("telemetry multimodal requires repair-kind or repair-metadata.");
 }
 
 async function runTelemetryQuarantine(args = []) {

@@ -434,6 +434,69 @@ test("runTelemetryPriorities does not recommend usage fixes when only multimodal
   }
 });
 
+test("runTelemetryPriorities names only weak adjusted multimodal metadata fields", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const original = telemetryEvent(60, {
+      command: "artifact-review",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ basename: "private-adjusted-byte-gap.png" }],
+      },
+      economics: {
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        codex_tokens_saved_estimate: 100,
+      },
+    });
+    await appendTelemetryEvent({ cwd, event: original });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(61, {
+        command: "artifact-review-backfill-correction",
+        prompt: "metadata correction",
+        response: "metadata correction",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", basename: "media-adjusted.png", media_kind: "image" }],
+        },
+        metadata: {
+          correction_for_event_id: original.event_id,
+          correction_version: "media-v2",
+          correction_reason: "media_metadata_inference",
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const serialized = JSON.stringify(report);
+    const instrumentation = report.priorities.find((item) => item.kind === "instrumentation");
+
+    assert.ok(instrumentation);
+    assert.equal(
+      instrumentation.action,
+      "Fill multimodal byte-size fields in capture paths.",
+    );
+    assert.doesNotMatch(instrumentation.action, /MIME|media-kind/);
+    assert.doesNotMatch(serialized, /private-adjusted-byte-gap|media-adjusted/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities does not warn on usage when no events need usage metadata", async () => {
   const cwd = await temporaryWorkspace();
   try {
