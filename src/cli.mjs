@@ -62,6 +62,8 @@ const GATE_COMMANDS = new Map([
 ]);
 
 const ARTIFACT_KINDS = new Set(["image", "ui", "design", "architecture", "research"]);
+const ARTIFACT_REVIEW_MODES = new Set(["single", "comparison"]);
+const MAX_ARTIFACT_REVIEW_FILES = 4;
 const DEFAULT_TELEMETRY_ENDPOINT = "http://127.0.0.1:8787/ingest";
 const DEFAULT_TELEMETRY_TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
 const TELEMETRY_CONFIG_PATH = join(".gemini-agent", "telemetry", "config.json");
@@ -80,7 +82,7 @@ function printUsage() {
     "  gemini-agent auth delete",
     "  gemini-agent ask <prompt>",
     "  gemini-agent context-pack [--stdin] [--file <path> ...] [--diff] [--write-artifact] [text]",
-    "  gemini-agent artifact-review --file <path> [--kind image|ui|design|architecture|research] [--write-artifact]",
+    "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent plan-critique (--file <path> | --stdin | <text>)",
     "  gemini-agent patch-precheck (--file <path> | --stdin | <text>)",
@@ -768,8 +770,9 @@ async function parseCommonInputArgs(args) {
 }
 
 function parseArtifactArgs(args) {
-  let file = "";
+  const files = [];
   let artifactKind = "image";
+  let reviewMode = null;
   let writeArtifact = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -777,7 +780,7 @@ function parseArtifactArgs(args) {
     if (arg === "--file") {
       const path = args[index + 1];
       if (!path || path.startsWith("--")) throw new Error("--file requires a path.");
-      file = path;
+      files.push(path);
       index += 1;
     } else if (arg === "--kind") {
       const kind = args[index + 1];
@@ -787,6 +790,12 @@ function parseArtifactArgs(args) {
       }
       artifactKind = kind;
       index += 1;
+    } else if (arg === "--review-mode") {
+      const mode = args[index + 1];
+      if (!mode || mode.startsWith("--")) throw new Error("--review-mode must be single or comparison.");
+      if (!ARTIFACT_REVIEW_MODES.has(mode)) throw new Error("--review-mode must be single or comparison.");
+      reviewMode = mode;
+      index += 1;
     } else if (arg === "--write-artifact") {
       writeArtifact = true;
     } else {
@@ -794,8 +803,11 @@ function parseArtifactArgs(args) {
     }
   }
 
-  if (!file) throw new Error("--file requires a path.");
-  return { file, artifactKind, writeArtifact };
+  if (files.length === 0) throw new Error("--file requires a path.");
+  if (files.length > MAX_ARTIFACT_REVIEW_FILES) {
+    throw new Error(`artifact-review supports at most ${MAX_ARTIFACT_REVIEW_FILES} files.`);
+  }
+  return { file: files[0], files, artifactKind, reviewMode, writeArtifact };
 }
 
 async function prevalidateArtifactFile(file, cwd = process.cwd()) {
@@ -884,9 +896,11 @@ async function runContextPackCommand(args) {
 }
 
 async function runArtifactReviewCommand(args) {
-  const { file, artifactKind, writeArtifact } = parseArtifactArgs(args);
+  const { file, files, artifactKind, reviewMode, writeArtifact } = parseArtifactArgs(args);
   const cwd = process.cwd();
-  await prevalidateArtifactFile(file, cwd);
+  for (const source of files) {
+    await prevalidateArtifactFile(source, cwd);
+  }
   const fakeAllowed = allowFakeResponse(process.env);
   if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
     throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
@@ -897,7 +911,9 @@ async function runArtifactReviewCommand(args) {
     apiKey: key.key,
     cwd,
     file,
+    files,
     artifactKind,
+    reviewMode,
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,

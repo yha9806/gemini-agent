@@ -520,6 +520,40 @@ test("artifact-review accepts image file and prints JSON", async () => {
   assert.deepEqual(parsed.summary, ["Dashboard screenshot"]);
 });
 
+test("artifact-review accepts multiple image files for comparison", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  await writeFile(join(dir, "before.png"), png);
+  await writeFile(join(dir, "after.png"), png);
+
+  const { stdout } = await execFileAsync(bin, [
+    "artifact-review",
+    "--file",
+    "before.png",
+    "--file",
+    "after.png",
+    "--kind",
+    "ui",
+    "--review-mode",
+    "comparison",
+  ], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeArtifactReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.kind, "artifact_review");
+  assert.equal(parsed.artifact_type, "design");
+  assert.deepEqual(parsed.metadata.sources, ["before.png", "after.png"]);
+  assert.equal(parsed.metadata.review_mode, "comparison");
+});
+
 test("artifact-review rejects unsupported artifact before auth lookup", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   await writeFile(join(dir, "archive.zip"), "zip");
@@ -532,6 +566,76 @@ test("artifact-review rejects unsupported artifact before auth lookup", async ()
     (error) => {
       assert.equal(error.code, 1);
       assert.match(error.stderr, /Unsupported artifact file type/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("artifact-review rejects unsupported first file before auth lookup when multiple files are provided", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await writeFile(join(dir, "archive.zip"), "zip");
+  await writeFile(join(dir, "after.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+  await assert.rejects(
+    execFileAsync(bin, ["artifact-review", "--file", "archive.zip", "--file", "after.png"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unsupported artifact file type/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("artifact-review rejects invalid review mode before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await writeFile(join(dir, "design.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+  await assert.rejects(
+    execFileAsync(bin, ["artifact-review", "--file", "design.png", "--review-mode", "audit"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--review-mode must be single or comparison/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("artifact-review rejects too many files before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  for (const name of ["a.png", "b.png", "c.png", "d.png", "e.png"]) {
+    await writeFile(join(dir, name), png);
+  }
+
+  await assert.rejects(
+    execFileAsync(bin, [
+      "artifact-review",
+      "--file",
+      "a.png",
+      "--file",
+      "b.png",
+      "--file",
+      "c.png",
+      "--file",
+      "d.png",
+      "--file",
+      "e.png",
+    ], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /at most 4 files/);
       assert.doesNotMatch(error.stderr, /Gemini API key/);
       return true;
     },
