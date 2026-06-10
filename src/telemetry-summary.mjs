@@ -351,6 +351,10 @@ function successRate(item) {
   return item.event_count > 0 ? item.success_count / item.event_count : 0;
 }
 
+function mediaKindCoverage(multimodal) {
+  return multimodal.item_count > 0 ? multimodal.media_items_with_kind / multimodal.item_count : 0;
+}
+
 function commandLooksLikeArtifactReview(command) {
   return /artifact[_-]?review/i.test(command);
 }
@@ -363,7 +367,15 @@ function isPaletteSplitEvent(event) {
   return event.command === "palette-split" || event.metadata?.workflow === "palette-split";
 }
 
-function buildRecommendations({ commands, counts, statusCounts, queue, usage, multimodal }) {
+function buildRecommendations({
+  commands,
+  counts,
+  statusCounts,
+  queue,
+  usage,
+  multimodal,
+  multimodalAdjusted,
+}) {
   const recommendations = [];
   const artifactReview = commands
     .filter((item) => commandLooksLikeArtifactReview(item.command))
@@ -422,10 +434,26 @@ function buildRecommendations({ commands, counts, statusCounts, queue, usage, mu
       message: "Some multimodal metadata is missing byte sizes; improve media capture so cost and storage analytics can measure payload volume.",
     });
   }
-  if (multimodal.item_count >= 5 && multimodal.unknown_kind_items / multimodal.item_count > 0.5) {
+  const rawKindCoverage = mediaKindCoverage(multimodal);
+  const adjustedKindCoverage = mediaKindCoverage(multimodalAdjusted ?? zeroAdjustedMultimodal());
+  const recommendationItemCount = Math.max(
+    multimodal.item_count,
+    multimodalAdjusted?.item_count ?? 0,
+  );
+  if (recommendationItemCount >= 5 && rawKindCoverage < 0.5 && adjustedKindCoverage < 0.5) {
     recommendations.push({
       kind: "instrumentation",
       message: "Most multimodal metadata is missing media kind; classify screenshots, designs, documents, and images before making quality claims.",
+    });
+  } else if (
+    recommendationItemCount >= 5
+    && rawKindCoverage < 0.5
+    && adjustedKindCoverage >= 0.5
+    && adjustedKindCoverage - rawKindCoverage >= 0.25
+  ) {
+    recommendations.push({
+      kind: "instrumentation",
+      message: "Correction-aware multimodal coverage is materially better; keep correction-aware reporting and prioritize backfill operationalization.",
     });
   }
   return recommendations;
@@ -897,6 +925,7 @@ export async function runTelemetrySummary({
       queue,
       usage: accumulator.usage,
       multimodal,
+      multimodalAdjusted,
     }),
     limitations: [
       "Local summary only includes telemetry files available on this machine.",

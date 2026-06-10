@@ -949,6 +949,106 @@ test("runTelemetrySummary falls back to lexical correction versions and valid ti
   assert.equal(summary.multimodal_adjusted.superseded_correction_event_count, 2);
 });
 
+test("runTelemetrySummary recommendations use adjusted media-kind coverage", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  for (let index = 1; index <= 6; index += 1) {
+    const originalId = `artifact_original_recommendation_${index}`;
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(430 + index, {
+        event_id: originalId,
+        command: "artifact-review-backfill",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [],
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(440 + index, {
+        event_id: `artifact_correction_recommendation_${index}`,
+        command: "artifact-review-backfill-correction",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", byte_size: index, media_kind: "screenshot" }],
+        },
+        metadata: {
+          correction_for_event_id: originalId,
+          correction_version: "media-v1",
+        },
+      }),
+    });
+  }
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const messages = summary.recommendations.map((item) => item.message).join("\n");
+
+  assert.equal(summary.multimodal.item_count, 0);
+  assert.equal(summary.multimodal_adjusted.item_count, 6);
+  assert.match(messages, /Correction-aware multimodal coverage is materially better/);
+  assert.doesNotMatch(messages, /Most multimodal metadata is missing media kind/);
+});
+
+test("runTelemetrySummary handles malformed correction payloads without leaking identifiers", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(451, {
+      event_id: "artifact_original_malformed",
+      command: "artifact-review-backfill",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ basename: "private-malformed.png" }],
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(452, {
+      event_id: "artifact_correction_missing_target",
+      command: "artifact-review-backfill-correction",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [],
+      },
+      metadata: {
+        correction_version: "media-v1",
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = JSON.stringify(summary);
+
+  assert.equal(summary.multimodal_adjusted.correction_event_count, 1);
+  assert.equal(summary.multimodal_adjusted.orphan_correction_event_count, 1);
+  assert.equal(summary.multimodal_adjusted.applied_correction_event_count, 0);
+  assert.doesNotMatch(serialized, /artifact_original_malformed/);
+  assert.doesNotMatch(serialized, /artifact_correction_missing_target/);
+  assert.doesNotMatch(serialized, /private-malformed/);
+  assert.doesNotMatch(text, /private-malformed/);
+});
+
 test("runTelemetrySummary reports invalid events with bounded POSIX samples", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({
