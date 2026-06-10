@@ -338,6 +338,46 @@ test("diff-review accepts file input and prints JSON", async () => {
   assert.deepEqual(parsed.notes, ["fake ok"]);
 });
 
+test("diff-review --diff reads current git diff and prints JSON", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await writeFile(join(dir, "app.txt"), "old\n");
+  await execFileAsync("git", ["add", "app.txt"], { cwd: dir });
+  await writeFile(join(dir, "app.txt"), "new\n");
+
+  const { stdout } = await execFileAsync(bin, ["diff-review", "--diff"], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.verdict, "pass");
+  assert.deepEqual(parsed.notes, ["fake ok"]);
+});
+
+test("diff-review --diff rejects empty git diff before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+
+  await assert.rejects(
+    execFileAsync(bin, ["diff-review", "--diff"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Gate input is empty\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
 test("diff-review rejects missing file path", async () => {
   await assert.rejects(
     execFileAsync(bin, ["diff-review", "--file"], {

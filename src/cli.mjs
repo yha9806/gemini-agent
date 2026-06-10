@@ -117,10 +117,10 @@ function printUsage() {
     "  gemini-agent context-pack [--stdin] [--file <path> ...] [--diff] [--write-artifact] [text]",
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
-    "  gemini-agent plan-critique (--file <path> | --stdin | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent patch-precheck (--file <path> | --stdin | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent diff-review (--file <path> | --stdin | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent research-brief (--file <path> | --stdin | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent plan-critique (--file <path> | --stdin | --diff | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent diff-review (--file <path> | --stdin | --diff | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent research-brief (--file <path> | --stdin | --diff | <text>) [--max-input-bytes <n>]",
     "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
     "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--user-label <label>|--clear-user-label] [--schedule <schedule>]",
     "  gemini-agent telemetry status [--global]",
@@ -1021,6 +1021,7 @@ function telemetryTickDecision({ schedule, lastSentAt, now = new Date() }) {
 async function readGateInput(args, { gate, command } = {}) {
   let filePath = null;
   let readFromStdin = false;
+  let diff = false;
   let limitBytes = defaultGateInputLimitBytes(gate);
   const textArgs = [];
 
@@ -1033,12 +1034,38 @@ async function readGateInput(args, { gate, command } = {}) {
       index += 1;
     } else if (arg === "--stdin") {
       readFromStdin = true;
+    } else if (arg === "--diff") {
+      diff = true;
     } else if (arg === "--max-input-bytes") {
       limitBytes = parseMaxInputBytes(args[index + 1]);
       index += 1;
     } else {
       textArgs.push(arg);
     }
+  }
+
+  if (diff) {
+    let collected;
+    try {
+      collected = await collectTextInput({
+        stdinText: [
+          readFromStdin ? await readStdin() : "",
+          textArgs.join(" "),
+        ].filter(Boolean).join("\n"),
+        files: filePath ? [filePath] : [],
+        diff,
+        cwd: process.cwd(),
+      });
+    } catch (error) {
+      if (error?.message === "Context input is empty.") {
+        return { inputText: "", inputBytes: 0, limitBytes };
+      }
+      throw error;
+    }
+    return {
+      ...limitedGateText(collected.input, { gate, command, limitBytes }),
+      limitBytes,
+    };
   }
 
   const input = filePath
