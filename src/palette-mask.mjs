@@ -613,26 +613,36 @@ function paletteTelemetryResponse(manifest) {
   });
 }
 
-async function pngTelemetryContent(filePath, name = basename(filePath)) {
+async function pngTelemetryContent(filePath, name = basename(filePath), mediaKind = null) {
   const info = await stat(filePath);
-  return {
+  const content = {
     basename: name,
     mime_type: "image/png",
     byte_size: info.size,
   };
+  if (mediaKind) content.media_kind = mediaKind;
+  return content;
 }
 
 async function paletteTelemetryContents({ outputDir, manifest }) {
   const files = [
-    manifest.source_image,
-    manifest.palette_mask,
-    manifest.palette_mask_quantized,
-    manifest.contact_sheet,
-    ...manifest.layers.map((layer) => layer.file),
+    { file: manifest.source_image, basename: "source.png", mediaKind: "image" },
+    { file: manifest.palette_mask, basename: "palette_mask.png", mediaKind: "design" },
+    { file: manifest.palette_mask_quantized, basename: "palette_mask_quantized.png", mediaKind: "design" },
+    { file: manifest.contact_sheet, basename: "contact_sheet.png", mediaKind: "design" },
+    ...manifest.layers.map((layer, index) => ({
+      file: layer.file,
+      basename: `palette_layer_${index}.png`,
+      mediaKind: "design",
+    })),
   ];
   const contents = [];
-  for (const file of files) {
-    contents.push(await pngTelemetryContent(join(outputDir, file), basename(file)));
+  for (const item of files) {
+    contents.push(await pngTelemetryContent(
+      join(outputDir, item.file),
+      item.basename,
+      item.mediaKind,
+    ));
   }
   return contents;
 }
@@ -819,8 +829,9 @@ export async function runPaletteSplit({
       errorType: telemetryErrorType(error),
       latencyMs: Date.now() - started,
       contents: [{
-        basename: basename(sourceImagePath),
+        basename: "source.png",
         mime_type: "image/png",
+        media_kind: "image",
       }],
       metadata: paletteTelemetryMetadata({ model: resolvedModel, spec, manifest: null }),
     }, { awaitCapture: true });

@@ -328,12 +328,22 @@ test("runPaletteSplit captures palette workflow telemetry", async () => {
       "palette_mask.png",
       "palette_mask_quantized.png",
       "contact_sheet.png",
-      "background.png",
-      "product.png",
-      "chart.png",
+      "palette_layer_0.png",
+      "palette_layer_1.png",
+      "palette_layer_2.png",
     ]);
     assert.equal(captured[0].contents.every((item) => item.mime_type === "image/png"), true);
     assert.equal(captured[0].contents.every((item) => Number.isInteger(item.byte_size) && item.byte_size > 0), true);
+    assert.deepEqual(captured[0].contents.map((item) => item.media_kind), [
+      "image",
+      "design",
+      "design",
+      "design",
+      "design",
+      "design",
+      "design",
+    ]);
+    assert.doesNotMatch(JSON.stringify(captured[0].contents), /product\.png|chart\.png|slide\.png|\/out\//);
   });
 });
 
@@ -377,8 +387,9 @@ test("runPaletteSplit captures palette workflow telemetry when provider fails", 
       layer_count: 2,
     });
     assert.deepEqual(captured[0].contents, [{
-      basename: "slide.png",
+      basename: "source.png",
       mime_type: "image/png",
+      media_kind: "image",
     }]);
   });
 });

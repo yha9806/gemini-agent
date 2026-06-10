@@ -22,6 +22,7 @@ const VALID_SOURCES = new Set(["cli", "mcp", "validate"]);
 const VALID_STATUSES = new Set(["success", "error"]);
 const BASE64_BYTE_SIZE_LIMIT = 1024 * 1024;
 const DEFAULT_CONFIG_CACHE_TTL_MS = 1000;
+const VALID_MEDIA_KINDS = new Set(["screenshot", "design", "document", "image", "unknown"]);
 const MEDIA_REFERENCE_KEYS = [
   "source",
   "path",
@@ -147,6 +148,11 @@ function metadataFromInlineData(inlineData) {
   return Object.keys(metadata).length ? metadata : null;
 }
 
+function explicitMediaKind(value) {
+  const mediaKind = value?.mediaKind ?? value?.media_kind;
+  return typeof mediaKind === "string" && VALID_MEDIA_KINDS.has(mediaKind) ? mediaKind : null;
+}
+
 async function metadataFromMediaReference(value, { cwd } = {}) {
   if (!value || typeof value !== "object") return null;
   const reference = MEDIA_REFERENCE_KEYS
@@ -164,6 +170,8 @@ async function metadataFromMediaReference(value, { cwd } = {}) {
     const inferredMimeType = inferMediaMime(metadata.basename ?? reference);
     if (inferredMimeType) metadata.mime_type = inferredMimeType;
   }
+  const mediaKind = explicitMediaKind(value);
+  if (mediaKind) metadata.media_kind = mediaKind;
   maybeAddHash(metadata, value);
   return Object.keys(metadata).length ? metadata : null;
 }

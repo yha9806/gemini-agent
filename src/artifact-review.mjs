@@ -36,11 +36,22 @@ function normalizeReviewMode(mode, sourceCount) {
   return value;
 }
 
-function withArtifactTelemetryContents(telemetry, sources) {
+function artifactTelemetryMediaKind(artifactKind) {
+  const kind = String(artifactKind ?? "").trim().toLowerCase();
+  if (kind === "ui" || kind === "design" || kind === "architecture" || kind === "diagram") {
+    return "design";
+  }
+  return null;
+}
+
+function withArtifactTelemetryContents(telemetry, sources, { artifactKind } = {}) {
   if (!telemetry) return telemetry;
+  const mediaKind = artifactTelemetryMediaKind(artifactKind);
   return {
     ...telemetry,
-    contents: sources.map((source) => ({ source })),
+    contents: sources.map((source) => (
+      mediaKind ? { source, media_kind: mediaKind } : { source }
+    )),
   };
 }
 
@@ -89,7 +100,7 @@ export async function runArtifactReview({
     contents,
     env,
     allowFakeResponse,
-    telemetry: withArtifactTelemetryContents(telemetry, sources),
+    telemetry: withArtifactTelemetryContents(telemetry, sources, { artifactKind }),
   });
 
   const review = normalizeArtifactReview({

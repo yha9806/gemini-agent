@@ -105,14 +105,14 @@ test("runArtifactReview preserves explicit telemetry override and adds safe medi
 
 test("runArtifactReview passes safe media references for telemetry", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
-  await writeFile(join(dir, "checkout-screenshot.png"), pngBytes);
-  await writeFile(join(dir, "homepage-design.png"), pngBytes);
+  await writeFile(join(dir, "before.png"), pngBytes);
+  await writeFile(join(dir, "after.png"), pngBytes);
   let seenTelemetry = null;
 
   await runArtifactReview({
     apiKey: "fake-key",
     cwd: dir,
-    files: ["checkout-screenshot.png", "homepage-design.png"],
+    files: ["before.png", "after.png"],
     artifactKind: "ui",
     reviewMode: "comparison",
     telemetry: { cwd: dir, source: "cli", command: "artifact-review" },
@@ -123,8 +123,8 @@ test("runArtifactReview passes safe media references for telemetry", async () =>
   });
 
   assert.deepEqual(seenTelemetry.contents, [
-    { source: "checkout-screenshot.png" },
-    { source: "homepage-design.png" },
+    { source: "before.png", media_kind: "design" },
+    { source: "after.png", media_kind: "design" },
   ]);
   assert.doesNotMatch(JSON.stringify(seenTelemetry.contents), /inlineData|YWJjZA/);
 });

@@ -648,6 +648,32 @@ test("captureGeminiTelemetry infers media kind from artifact review telemetry re
   assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /checkout-screenshot|homepage-design/);
 });
 
+test("captureGeminiTelemetry preserves only allowlisted explicit media kind", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  await writeFile(join(cwd, "generic.png"), "generic image bytes");
+  await writeFile(join(cwd, "private.bin"), "unknown media bytes");
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "artifact-review",
+    prompt: "review UI",
+    response: "ok",
+    status: "success",
+    contents: [
+      { source: "generic.png", media_kind: "design" },
+      { source: "private.bin", media_kind: "customer-secret-kind" },
+    ],
+    loadConfig: async () => ({ enabled: true, level: "raw", max_queue_bytes: 1024 }),
+    appendEvent: async ({ event }) => appended.push(normalizeTelemetryEvent(event)),
+  });
+
+  assert.equal(appended[0].payload.multimodal[0].media_kind, "design");
+  assert.equal(appended[0].payload.multimodal[1].media_kind, "unknown");
+  assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /customer-secret-kind|generic\.png|private\.bin/);
+});
+
 test("captureGeminiTelemetry does not stat fileData outside cwd", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();
