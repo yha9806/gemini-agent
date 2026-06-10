@@ -129,6 +129,25 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     avg_foreground_area_pct: null,
     top_actual_models: [],
   });
+  assert.deepEqual(result.multimodal_adjusted, {
+    event_count: 0,
+    item_count: 0,
+    byte_count: 0,
+    unknown_mime_items: 0,
+    unknown_byte_size_items: 0,
+    unknown_kind_items: 0,
+    media_items_with_mime: 0,
+    media_items_with_byte_size: 0,
+    media_items_with_kind: 0,
+    correction_event_count: 0,
+    corrected_original_event_count: 0,
+    orphan_correction_event_count: 0,
+    superseded_correction_event_count: 0,
+    applied_correction_event_count: 0,
+    top_media_mime: [],
+    top_media_kind: [],
+    top_correction_versions: [],
+  });
   assert.deepEqual(result.top_projects, []);
   assert.deepEqual(result.top_workspaces, []);
   assert.deepEqual(result.top_user_labels, []);
@@ -423,6 +442,7 @@ test("runTelemetrySummary aggregates multimodal metadata without exposing media 
     ],
   });
   assert.match(text, /Multimodal:/);
+  assert.match(text, /Adjusted multimodal:/);
   assert.match(summary.recommendations.map((item) => item.message).join("\n"), /multimodal metadata has unknown MIME types/);
   assert.doesNotMatch(JSON.stringify(summary), /secret-customer-screen/);
   assert.doesNotMatch(text, /private-artifact/);

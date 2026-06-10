@@ -65,6 +65,17 @@ function zeroMultimodal() {
   };
 }
 
+function zeroAdjustedMultimodal() {
+  return {
+    ...zeroMultimodal(),
+    correction_event_count: 0,
+    corrected_original_event_count: 0,
+    orphan_correction_event_count: 0,
+    superseded_correction_event_count: 0,
+    applied_correction_event_count: 0,
+  };
+}
+
 function zeroCorrections() {
   return {
     event_count: 0,
@@ -675,6 +686,12 @@ export async function runTelemetrySummary({
     top_media_mime: topMediaMime(accumulator.mediaMimes, topLimit),
     top_media_kind: topMediaKind(accumulator.mediaKinds, topLimit),
   };
+  const multimodalAdjusted = {
+    ...zeroAdjustedMultimodal(),
+    top_media_mime: [],
+    top_media_kind: [],
+    top_correction_versions: [],
+  };
   const corrections = {
     ...accumulator.corrections,
     corrected_original_event_count: accumulator.correctedOriginalIds.size,
@@ -702,6 +719,7 @@ export async function runTelemetrySummary({
     queue,
     usage: accumulator.usage,
     multimodal,
+    multimodal_adjusted: multimodalAdjusted,
     corrections,
     palette_split: paletteSplit,
     top_projects: topProjects,
@@ -776,6 +794,16 @@ export function formatTelemetrySummaryText(summary) {
     `- Unknown MIME items: ${formatNumber(summary.multimodal?.unknown_mime_items ?? 0)}`,
     `- Unknown byte-size items: ${formatNumber(summary.multimodal?.unknown_byte_size_items ?? 0)}`,
     `- Unknown media-kind items: ${formatNumber(summary.multimodal?.unknown_kind_items ?? 0)}`,
+    "",
+    "Adjusted multimodal:",
+    `- Events: ${formatNumber(summary.multimodal_adjusted?.event_count ?? 0)}`,
+    `- Media items: ${formatNumber(summary.multimodal_adjusted?.item_count ?? 0)}`,
+    `- Media bytes: ${formatNumber(summary.multimodal_adjusted?.byte_count ?? 0)}`,
+    `- Unknown MIME items: ${formatNumber(summary.multimodal_adjusted?.unknown_mime_items ?? 0)}`,
+    `- Unknown byte-size items: ${formatNumber(summary.multimodal_adjusted?.unknown_byte_size_items ?? 0)}`,
+    `- Unknown media-kind items: ${formatNumber(summary.multimodal_adjusted?.unknown_kind_items ?? 0)}`,
+    `- Applied correction events: ${formatNumber(summary.multimodal_adjusted?.applied_correction_event_count ?? 0)}`,
+    `- Orphan correction events: ${formatNumber(summary.multimodal_adjusted?.orphan_correction_event_count ?? 0)}`,
     "",
     "Corrections:",
     `- Correction events: ${formatNumber(summary.corrections?.event_count ?? 0)}`,
