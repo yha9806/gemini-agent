@@ -201,6 +201,16 @@ export async function autoContextPackPath({ cwd = process.cwd(), runner } = {}) 
   return join(root, ".gemini-agent", "context", "latest.json");
 }
 
+export async function autoContextPackExists({ cwd = process.cwd(), runner } = {}) {
+  const path = await autoContextPackPath({ cwd, runner });
+  try {
+    const stats = await stat(path);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
 export async function readAutoContextPackFile({
   gate,
   command = null,

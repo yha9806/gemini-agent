@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
+  autoContextPackExists,
   gateContextPackPreflightMessage,
   gateContextPackPreflightMetadata,
   gateInputTooLargeMessage,
   readLimitedContextPackFile,
 } from "../src/gate-input.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const contextPack = {
   kind: "context_pack",
@@ -135,4 +140,15 @@ test("gateContextPackPreflightMetadata records only safe warning fields", () => 
     context_pack_preflight_warning: false,
     context_pack_preflight_threshold_bytes: 16 * 1024,
   });
+});
+
+test("autoContextPackExists checks project-root latest context pack without parsing it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-context-exists-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  const nested = join(dir, "packages", "app");
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await mkdir(nested, { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), "{not parsed");
+
+  assert.equal(await autoContextPackExists({ cwd: nested }), true);
 });
