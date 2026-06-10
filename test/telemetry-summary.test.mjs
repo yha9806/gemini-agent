@@ -1398,12 +1398,54 @@ test("runTelemetrySummary keeps large queues bounded by topLimit", async () => {
       }),
     });
   }
+  for (let index = 1; index <= 50; index += 1) {
+    const originalId = `artifact_large_original_${index}`;
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(1000 + index, {
+        event_id: originalId,
+        project_id: `correction-project-${index}`,
+        command: "artifact-review-backfill",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: `private-large-${index}.png` }],
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(2000 + index, {
+        event_id: `artifact_large_correction_${index}`,
+        command: "artifact-review-backfill-correction",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [
+            {
+              mime_type: "image/png",
+              byte_size: index,
+              media_kind: index % 2 === 0 ? "design" : "screenshot",
+            },
+          ],
+        },
+        metadata: {
+          correction_for_event_id: originalId,
+          correction_version: `media-v${index % 3}`,
+        },
+      }),
+    });
+  }
 
   const summary = await runTelemetrySummary({ cwd, scope: "local", topLimit: 5 });
 
-  assert.equal(summary.event_counts.total, 250);
+  assert.equal(summary.event_counts.total, 350);
   assert.equal(summary.top_projects.length, 5);
-  assert.equal(summary.top_commands.length, 2);
+  assert.equal(summary.top_commands.length, 4);
+  assert.equal(summary.multimodal_adjusted.top_media_mime.length <= 5, true);
+  assert.equal(summary.multimodal_adjusted.top_media_kind.length <= 5, true);
+  assert.equal(summary.multimodal_adjusted.top_correction_versions.length <= 5, true);
+  assert.doesNotMatch(JSON.stringify(summary), /artifact_large_original|artifact_large_correction|private-large/);
   assert.equal(summary.invalid_events.samples.length, 0);
 });
 
