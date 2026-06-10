@@ -783,6 +783,131 @@ test("telemetry summary --json prints stable JSON and supports global scope", as
   assert.doesNotMatch(stdout, /global raw response should not print/);
 });
 
+test("telemetry economics prints safe human output", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-economics-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(93, {
+        command: "diff_review",
+        prompt: "raw economics prompt should not print",
+        response: "raw economics response should not print",
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          total_tokens: 1_100_000,
+          codex_tokens_saved_estimate: 2_000_000,
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin(["telemetry", "economics"], { cwd });
+
+    assert.equal(stderr, "");
+    assert.match(stdout, /Telemetry Economics/);
+    assert.match(stdout, /diff-review/);
+    assert.match(stdout, /Estimated Gemini cost/);
+    assert.match(stdout, /Estimated Codex tokens saved/);
+    assert.doesNotMatch(stdout, /raw economics prompt should not print/);
+    assert.doesNotMatch(stdout, /raw economics response should not print/);
+    assert.doesNotMatch(stdout, /evt_cli_93/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry economics --json supports global scope and price overrides", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-economics-home-"));
+  const project = await mkdtemp(join(tmpdir(), "gemini-agent-cli-economics-project-"));
+  try {
+    await saveTelemetryConfig({
+      cwd: home,
+      scope: "local",
+      endpoint: "https://vulca-api.onrender.com/api/v1/gemini-agent/telemetry/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd: home,
+      event: telemetryEvent(94, {
+        command: "plan_critique",
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+          total_tokens: 2_000_000,
+          codex_tokens_saved_estimate: 1_500_000,
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "economics",
+      "--global",
+      "--json",
+      "--input-price-per-million",
+      "2",
+      "--output-price-per-million",
+      "3",
+      "--top",
+      "3",
+    ], {
+      cwd: project,
+      env: { ...process.env, HOME: home },
+    });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.scope, "global");
+    assert.equal(parsed.storage_cwd, home);
+    assert.equal(parsed.pricing.input_price_per_million, 2);
+    assert.equal(parsed.pricing.output_price_per_million, 3);
+    assert.equal(parsed.totals.gemini_estimated_cost_usd, 5);
+    assert.equal(parsed.top_commands[0].command, "plan-critique");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("telemetry economics rejects invalid arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-economics-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "economics", "--unknown"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Unknown telemetry economics argument/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "economics", "--top", "0"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--top requires a positive integer/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "economics", "--input-price-per-million", "-1"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--input-price-per-million requires a nonnegative number/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry summary rejects unknown arguments", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
 

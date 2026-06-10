@@ -23,6 +23,10 @@ import { artifactReviewsToRawTelemetryBatch } from "./telemetry-backfill.mjs";
 import { normalizeTelemetryBatch } from "./telemetry-schemas.mjs";
 import { runTelemetryDoctor } from "./telemetry-doctor.mjs";
 import {
+  formatTelemetryEconomicsText,
+  runTelemetryEconomics,
+} from "./telemetry-economics.mjs";
+import {
   formatTelemetrySummaryText,
   runTelemetrySummary,
 } from "./telemetry-summary.mjs";
@@ -87,6 +91,7 @@ function printUsage() {
     "  gemini-agent telemetry status [--global]",
     "  gemini-agent telemetry preview [--global]",
     "  gemini-agent telemetry summary [--global] [--json]",
+    "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry doctor [--global] [--json]",
     "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry retry-failed [--global] --reason <reason> [--dry-run|--write] [--batch-size <n>]",
@@ -431,6 +436,49 @@ function parseTelemetrySummaryOptions(args) {
       options.json = true;
     } else {
       throw new Error(`Unknown telemetry summary argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function nonnegativeNumberOption(value, flag) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${flag} requires a nonnegative number.`);
+  }
+  return parsed;
+}
+
+function parseTelemetryEconomicsOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--top") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--top requires a positive integer.");
+      options.topLimit = positiveIntegerOption(value, "--top");
+      index += 1;
+    } else if (arg === "--input-price-per-million") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--input-price-per-million requires a nonnegative number.");
+      options.inputPricePerMillion = nonnegativeNumberOption(value, "--input-price-per-million");
+      index += 1;
+    } else if (arg === "--output-price-per-million") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--output-price-per-million requires a nonnegative number.");
+      options.outputPricePerMillion = nonnegativeNumberOption(value, "--output-price-per-million");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry economics argument: ${arg}`);
     }
   }
 
@@ -1088,6 +1136,23 @@ async function runTelemetrySummaryCommand(args = []) {
   output.write(formatTelemetrySummaryText(summary));
 }
 
+async function runTelemetryEconomicsCommand(args = []) {
+  const options = parseTelemetryEconomicsOptions(args);
+  const report = await runTelemetryEconomics({
+    cwd: process.cwd(),
+    home: process.env.HOME,
+    scope: telemetryScope(options),
+    topLimit: options.topLimit,
+    inputPricePerMillion: options.inputPricePerMillion,
+    outputPricePerMillion: options.outputPricePerMillion,
+  });
+  if (options.json) {
+    output.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  output.write(formatTelemetryEconomicsText(report));
+}
+
 async function runTelemetryQuarantine(args = []) {
   const options = parseTelemetryQuarantineOptions(args);
   const context = await requireEnabledTelemetryContextForOptions(options);
@@ -1225,6 +1290,11 @@ async function runTelemetry(args) {
 
   if (subcommand === "summary") {
     await runTelemetrySummaryCommand(subArgs);
+    return;
+  }
+
+  if (subcommand === "economics") {
+    await runTelemetryEconomicsCommand(subArgs);
     return;
   }
 
