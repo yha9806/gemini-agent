@@ -1365,6 +1365,138 @@ test("telemetry economics rejects invalid arguments", async () => {
   }
 });
 
+test("telemetry priorities prints safe human output", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-priorities-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(99, {
+        command: "diff_review",
+        prompt: "raw priorities prompt should not print",
+        response: "raw priorities response should not print",
+        context: { cwd: "/Users/example/private/project" },
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "secret-priority.png", byte_size: 10 }],
+        },
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          total_tokens: 1_100_000,
+          codex_tokens_saved_estimate: 2_000_000,
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin(["telemetry", "priorities"], { cwd });
+
+    assert.equal(stderr, "");
+    assert.match(stdout, /Telemetry Development Priorities/);
+    assert.match(stdout, /diff-review/);
+    assert.match(stdout, /Estimated Codex tokens saved/);
+    assert.doesNotMatch(stdout, /raw priorities prompt should not print/);
+    assert.doesNotMatch(stdout, /raw priorities response should not print/);
+    assert.doesNotMatch(stdout, /evt_cli_99/);
+    assert.doesNotMatch(stdout, /secret-priority\.png/);
+    assert.doesNotMatch(stdout, /\/Users\/example/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry priorities --json supports global scope and price overrides", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-priorities-home-"));
+  const project = await mkdtemp(join(tmpdir(), "gemini-agent-cli-priorities-project-"));
+  try {
+    await saveTelemetryConfig({
+      cwd: home,
+      scope: "local",
+      endpoint: "https://vulca-api.onrender.com/api/v1/gemini-agent/telemetry/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd: home,
+      event: telemetryEvent(100, {
+        command: "context_pack",
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+          total_tokens: 2_000_000,
+          codex_tokens_saved_estimate: 1_500_000,
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "priorities",
+      "--global",
+      "--json",
+      "--input-price-per-million",
+      "2",
+      "--output-price-per-million",
+      "3",
+      "--top",
+      "1",
+    ], {
+      cwd: project,
+      env: { ...process.env, HOME: home },
+    });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.scope, "global");
+    assert.equal(parsed.storage_cwd, home);
+    assert.equal(parsed.pricing.input_price_per_million, 2);
+    assert.equal(parsed.pricing.output_price_per_million, 3);
+    assert.equal(parsed.priorities.length, 1);
+    assert.equal(parsed.priorities[0].kind, "economics");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("telemetry priorities rejects invalid arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-priorities-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "priorities", "--unknown"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Unknown telemetry priorities argument/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "priorities", "--top", "0"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--top requires a positive integer/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "priorities", "--output-price-per-million", "-1"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--output-price-per-million requires a nonnegative number/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry summary rejects unknown arguments", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
 

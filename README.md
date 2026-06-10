@@ -24,6 +24,8 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --write --json
 ./bin/gemini-agent telemetry economics --global
 ./bin/gemini-agent telemetry economics --global --json
+./bin/gemini-agent telemetry priorities --global
+./bin/gemini-agent telemetry priorities --global --json
 ./bin/gemini-agent telemetry validate --global --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
 ./bin/gemini-agent telemetry flush --global
 ./bin/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000
@@ -61,6 +63,7 @@ Global Gemini review gate for Codex.
 - `telemetry raw export` writes confirmed raw telemetry to a local JSONL file for local analysis; it requires `--confirm-raw-content`, never overwrites existing files, refuses telemetry queue paths, and does not print raw prompt/response text, event ids, batch ids, paths, or media file names to stdout.
 - `telemetry raw prune` applies local sent-telemetry retention with dry-run by default; it only supports `--state sent`, uses UTC day buckets, and reports aggregate counts without raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry economics` estimates Gemini cost and Codex token savings from aggregate usage metadata; it does not print raw prompt, response text, event ids, batch ids, or media file names.
+- `telemetry priorities` combines aggregate economics, reliability, delivery, instrumentation, and multimodal metadata signals into a development priority list; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - The telemetry receiver `/metrics` and `/dashboard` endpoints expose aggregate correction and palette-split quality metrics without raw event ids or media file names.
 - Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
 - Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.
