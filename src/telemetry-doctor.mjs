@@ -2,8 +2,15 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { resolveTelemetryToken, validateTelemetryEndpoint } from "./telemetry-config.mjs";
-import { loadTelemetryQueueSnapshot, loadTelemetryState } from "./telemetry-queue.mjs";
-import { normalizeTelemetryConfig } from "./telemetry-schemas.mjs";
+import {
+  loadFailedTelemetryBatchSummaries,
+  loadTelemetryQueueSnapshot,
+  loadTelemetryState,
+} from "./telemetry-queue.mjs";
+import {
+  maskCredentialText,
+  normalizeTelemetryConfig,
+} from "./telemetry-schemas.mjs";
 
 const TELEMETRY_ROOT = ".gemini-agent/telemetry";
 const CONFIG_FILE = "config.json";
@@ -298,6 +305,108 @@ async function endpointHealthCheck({ endpoint, fetchImpl, timeoutMs }) {
   }
 }
 
+function safeDiagnosticLabel(value) {
+  const raw = typeof value === "string" ? value : "";
+  const text = maskCredentialText(raw)
+    .replace(/[\0-\x1F\x7F]/g, " ")
+    .trim();
+  if (!text) return null;
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
+function aggregateFailedReasonCounts(failedBatches) {
+  const byReason = new Map();
+  for (const batch of failedBatches) {
+    const safeReason = safeDiagnosticLabel(batch.reason);
+    const reason = safeReason === null ? "unknown" : safeReason;
+    const item = byReason.get(reason) || {
+      reason,
+      batch_count: 0,
+      event_count: 0,
+      bytes: 0,
+    };
+    item.batch_count += 1;
+    item.event_count += batch.event_count;
+    item.bytes += batch.bytes;
+    byReason.set(reason, item);
+  }
+  return [...byReason.values()].sort((left, right) => (
+    right.event_count - left.event_count
+    || right.batch_count - left.batch_count
+    || left.reason.localeCompare(right.reason)
+  ));
+}
+
+function deliveryStatus({
+  failedEvents,
+  nonRetryableFailureCount,
+  quarantineEvents,
+  waitingEvents,
+  flushReady,
+}) {
+  if (failedEvents > 0 || nonRetryableFailureCount > 0) {
+    return "blocked_by_non_retryable_failures";
+  }
+  if (quarantineEvents > 0) return "quarantined_events_present";
+  if (waitingEvents > 0 && flushReady) return "flush_ready";
+  if (waitingEvents > 0) return "flush_blocked";
+  return "delivered";
+}
+
+function deliveryRecommendedAction(status) {
+  if (status === "blocked_by_non_retryable_failures") {
+    return "Inspect failed reasons, fix token/endpoint/config, then retry with bounded flush.";
+  }
+  if (status === "quarantined_events_present") {
+    return "Review quarantined telemetry events before broad flushing.";
+  }
+  if (status === "flush_ready") {
+    return "Run telemetry flush --dry-run, then telemetry flush --batch-size 1.";
+  }
+  if (status === "flush_blocked") {
+    return "Fix telemetry config/token/endpoint before flushing pending events.";
+  }
+  return "No pending, inflight, failed, or quarantined telemetry events.";
+}
+
+function buildDeliveryDiagnostics({
+  queue,
+  state,
+  failedBatches,
+  flushReady,
+}) {
+  const sentEvents = state.sent_success_count;
+  const pendingEvents = queue.pending.count;
+  const inflightEvents = queue.inflight.count;
+  const failedEvents = queue.failed.count;
+  const quarantineEvents = queue.quarantine.count;
+  const waitingEvents = pendingEvents + inflightEvents;
+  const unsentEvents = waitingEvents + failedEvents;
+  const status = deliveryStatus({
+    failedEvents,
+    nonRetryableFailureCount: state.non_retryable_failure_count,
+    quarantineEvents,
+    waitingEvents,
+    flushReady,
+  });
+
+  return {
+    status,
+    local_total_events: sentEvents + pendingEvents + inflightEvents + failedEvents + quarantineEvents,
+    sent_events: sentEvents,
+    pending_events: pendingEvents,
+    inflight_events: inflightEvents,
+    failed_events: failedEvents,
+    quarantine_events: quarantineEvents,
+    unsent_events: unsentEvents,
+    sent_failure_count: state.sent_failure_count,
+    non_retryable_failure_count: state.non_retryable_failure_count,
+    last_failure_reason: safeDiagnosticLabel(state.last_failure_reason),
+    failed_reason_counts: aggregateFailedReasonCounts(failedBatches),
+    recommended_action: deliveryRecommendedAction(status),
+  };
+}
+
 function recommendation({
   enabled,
   configValid,
@@ -338,6 +447,9 @@ export async function runTelemetryDoctor({
     createMissingDirs: false,
   });
   const state = await loadTelemetryState({ cwd: context.storageCwd });
+  const failedBatches = await loadFailedTelemetryBatchSummaries({
+    cwd: context.storageCwd,
+  });
   const enabled = config.enabled === true;
   const configValid = context.configValid;
   const tokenName = config.token_env;
@@ -371,6 +483,12 @@ export async function runTelemetryDoctor({
     config,
     queue,
     state,
+    delivery: buildDeliveryDiagnostics({
+      queue,
+      state,
+      failedBatches,
+      flushReady: smallFlushSafe,
+    }),
     checks: {
       config_valid: check(configValid, configValid ? "Telemetry config is valid." : context.configError ?? "Telemetry config is invalid."),
       config_enabled: check(enabled, enabled ? "Telemetry is enabled." : "Telemetry is not enabled."),

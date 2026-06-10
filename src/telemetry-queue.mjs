@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_MAX_QUEUE_BYTES,
+  maskCredentialText,
   normalizeTelemetryEvent,
 } from "./telemetry-schemas.mjs";
 
@@ -235,6 +236,45 @@ async function quarantineSummary(dir) {
 
 async function failedSummary(dir) {
   return summarizeDirectory(dir, (file) => file.name !== "reason.json");
+}
+
+function safeFailureReason(value) {
+  const raw = typeof value === "string" ? value : "";
+  const text = maskCredentialText(raw)
+    .replace(/[\0-\x1F\x7F]/g, " ")
+    .trim();
+  if (!text) return "unknown";
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
+async function failedBatchDirectories(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+async function failedBatchReason(batchDir) {
+  let raw;
+  try {
+    raw = await readFile(join(batchDir, "reason.json"), "utf8");
+  } catch {
+    return "unknown";
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return safeFailureReason(parsed?.reason);
+  } catch {
+    return "unknown";
+  }
 }
 
 function safeQuarantineEventDir(eventId) {
@@ -758,6 +798,24 @@ export async function loadTelemetryQueueSnapshot({
     quarantineSummary(dirs.quarantine),
   ]);
   return { pending, inflight, sent, failed, quarantine };
+}
+
+export async function loadFailedTelemetryBatchSummaries({
+  cwd = process.cwd(),
+} = {}) {
+  const dirs = telemetryQueueDirs(cwd);
+  const batchNames = await failedBatchDirectories(dirs.failed);
+  const summaries = [];
+  for (const batchName of batchNames) {
+    const batchDir = join(dirs.failed, batchName);
+    const events = await failedSummary(batchDir);
+    summaries.push({
+      reason: await failedBatchReason(batchDir),
+      event_count: events.count,
+      bytes: events.bytes,
+    });
+  }
+  return summaries;
 }
 
 export async function peekTelemetryEvents({

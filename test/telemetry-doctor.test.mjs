@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
-import { appendTelemetryEvent } from "../src/telemetry-queue.mjs";
+import {
+  appendTelemetryEvent,
+  claimTelemetryBatch,
+  failTelemetryBatch,
+  telemetryQueueDirs,
+} from "../src/telemetry-queue.mjs";
 import { runTelemetryDoctor } from "../src/telemetry-doctor.mjs";
 
 const TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
@@ -33,7 +38,7 @@ async function pathExists(path) {
   }
 }
 
-function telemetryEvent(index) {
+function telemetryEvent(index, overrides = {}) {
   const suffix = `${index}`.padStart(6, "0");
   return {
     schema_version: 1,
@@ -51,6 +56,7 @@ function telemetryEvent(index) {
     latency_ms: index,
     created_at: "2026-06-03T09:00:00.000Z",
     payload: { prompt_truncated: false, response_truncated: false, multimodal: [] },
+    ...overrides,
   };
 }
 
@@ -137,6 +143,121 @@ test("runTelemetryDoctor reports token, endpoint health, queue, and recommendati
   assert.equal(result.queue.pending.count, 1);
   assert.equal(result.small_flush_safe, true);
   assert.equal(result.recommended_action, "Run telemetry flush --dry-run, then telemetry flush --batch-size 1.");
+});
+
+test("runTelemetryDoctor reports delivery diagnostics without raw content", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(30, {
+      event_id: "evt_private_failed",
+      prompt: "private prompt text must not appear",
+      response: "private response text must not appear",
+    }),
+  });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(31) });
+
+  const batch = await claimTelemetryBatch({
+    cwd,
+    batchSize: 1,
+    now: new Date("2026-06-10T09:00:00.000Z"),
+  });
+  await failTelemetryBatch({
+    cwd,
+    batchId: batch.batchId,
+    retryable: false,
+    reason: "unauthorized",
+  });
+
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  });
+
+  assert.equal(result.delivery.status, "blocked_by_non_retryable_failures");
+  assert.equal(result.delivery.local_total_events, 2);
+  assert.equal(result.delivery.sent_events, 0);
+  assert.equal(result.delivery.pending_events, 1);
+  assert.equal(result.delivery.inflight_events, 0);
+  assert.equal(result.delivery.failed_events, 1);
+  assert.equal(result.delivery.quarantine_events, 0);
+  assert.equal(result.delivery.unsent_events, 2);
+  assert.equal(result.delivery.sent_failure_count, 1);
+  assert.equal(result.delivery.non_retryable_failure_count, 1);
+  assert.equal(result.delivery.last_failure_reason, "unauthorized");
+  assert.deepEqual(result.delivery.failed_reason_counts.map((item) => ({
+    reason: item.reason,
+    batch_count: item.batch_count,
+    event_count: item.event_count,
+  })), [
+    {
+      reason: "unauthorized",
+      batch_count: 1,
+      event_count: 1,
+    },
+  ]);
+  assert.ok(result.delivery.failed_reason_counts[0].bytes > 0);
+  assert.match(result.delivery.recommended_action, /Inspect failed reasons/);
+
+  const serializedDelivery = JSON.stringify(result.delivery);
+  assert.equal(serializedDelivery.includes("private prompt text must not appear"), false);
+  assert.equal(serializedDelivery.includes("private response text must not appear"), false);
+  assert.equal(serializedDelivery.includes("evt_private_failed"), false);
+  assert.equal(serializedDelivery.includes(batch.batchId), false);
+});
+
+test("runTelemetryDoctor treats malformed failed reason as unknown", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(32) });
+  const batch = await claimTelemetryBatch({
+    cwd,
+    batchSize: 1,
+    now: new Date("2026-06-10T09:05:00.000Z"),
+  });
+  await failTelemetryBatch({
+    cwd,
+    batchId: batch.batchId,
+    retryable: false,
+    reason: "http_422",
+  });
+  await writeFile(
+    join(telemetryQueueDirs(cwd).failed, batch.batchId, "reason.json"),
+    "{ this is not valid json\n",
+  );
+
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  });
+
+  assert.equal(result.delivery.status, "blocked_by_non_retryable_failures");
+  assert.deepEqual(result.delivery.failed_reason_counts.map((item) => ({
+    reason: item.reason,
+    batch_count: item.batch_count,
+    event_count: item.event_count,
+  })), [
+    {
+      reason: "unknown",
+      batch_count: 1,
+      event_count: 1,
+    },
+  ]);
 });
 
 test("runTelemetryDoctor treats health endpoint failure as diagnostic only", async () => {
