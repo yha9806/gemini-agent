@@ -521,6 +521,99 @@ test("runTelemetrySummary reports safe multimodal command coverage", async () =>
   assert.doesNotMatch(serialized, /private\.png|top-secret-design/);
 });
 
+test("runTelemetrySummary reports aggregate backfill media manifest sources", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(36, {
+      command: "artifact-review-backfill",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [
+          { mime_type: "image/png", byte_size: 11, basename: "private-one.png" },
+          { mime_type: "image/png", byte_size: 22, basename: "private-two.png" },
+        ],
+      },
+      metadata: {
+        media_manifest_source: "artifact_media_manifest",
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(37, {
+      command: "artifact-review-backfill-correction",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 33, basename: "private-three.png" }],
+      },
+      metadata: {
+        correction_for_event_id: "artifact_private_original",
+        correction_version: "media-v4",
+        media_manifest_source: "none",
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(38, {
+      command: "artifact-review-backfill",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 44, basename: "private-four.png" }],
+      },
+      metadata: {
+        media_manifest_source: "source path /Users/example/private.png",
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = JSON.stringify(summary);
+
+  assert.deepEqual(summary.backfill.media_manifest_sources, [
+    {
+      media_manifest_source: "artifact_media_manifest",
+      event_count: 1,
+      media_item_count: 2,
+      success_count: 1,
+      error_count: 0,
+      unknown_count: 0,
+    },
+    {
+      media_manifest_source: "none",
+      event_count: 1,
+      media_item_count: 1,
+      success_count: 1,
+      error_count: 0,
+      unknown_count: 0,
+    },
+    {
+      media_manifest_source: "unknown",
+      event_count: 1,
+      media_item_count: 1,
+      success_count: 1,
+      error_count: 0,
+      unknown_count: 0,
+    },
+  ]);
+  assert.match(text, /Backfill media manifest sources:/);
+  assert.match(text, /artifact_media_manifest: 1 events, 2 media items/);
+  assert.doesNotMatch(serialized, /private-one|private-two|private-three|private-four|\/Users/);
+  assert.doesNotMatch(text, /private|\/Users/);
+});
+
 test("runTelemetrySummary caps and sorts multimodal command coverage deterministically", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({

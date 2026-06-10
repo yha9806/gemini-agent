@@ -69,6 +69,7 @@ test("artifactReviewsToRawTelemetryBatch converts timestamped artifact reviews t
   assert.equal(batch.events[0].model, "gemini-3.5-flash");
   assert.equal(batch.events[0].started_at, "2026-06-03T14:55:51.114Z");
   assert.equal(batch.events[0].metadata.backfill_source, "artifact_review_json");
+  assert.equal(batch.events[0].metadata.media_manifest_source, "artifact_sources");
   assert.equal(batch.events[0].metadata.artifact_type, "image");
   assert.equal(batch.events[0].metadata.context.run_id, "run-2");
   assert.doesNotMatch(batch.events[0].response_raw, /\/Users\/example/);
@@ -108,6 +109,7 @@ test("artifactReviewsToRawTelemetryBatch enriches media manifest from artifact s
   assert.equal(batch.events[0].media_manifest[0].mime_type, "image/png");
   assert.equal(batch.events[0].media_manifest[0].byte_size, sourceBytes.length);
   assert.equal(batch.events[0].media_manifest[0].media_kind, "image");
+  assert.equal(batch.events[0].metadata.media_manifest_source, "artifact_sources");
   assert.match(batch.events[0].media_manifest[0].basename, /^media-[a-f0-9]{12}\.png$/);
   assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /outputs/);
   assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /screen/);
@@ -152,6 +154,7 @@ test("artifactReviewsToRawTelemetryBatch uses persisted safe media manifest when
     basename: "media-abcdef123456.png",
     media_kind: "screenshot",
   });
+  assert.equal(batch.events[0].metadata.media_manifest_source, "artifact_media_manifest");
   assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /private-screen|outputs|source no longer available/);
   assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
 });
@@ -186,8 +189,31 @@ test("artifactReviewsToRawTelemetryBatch sanitizes unsafe persisted media manife
   assert.equal(batch.events[0].media_manifest[0].mime_type, "image/png");
   assert.equal(batch.events[0].media_manifest[0].byte_size, 123);
   assert.equal(batch.events[0].media_manifest[0].media_kind, "image");
+  assert.equal(batch.events[0].metadata.media_manifest_source, "artifact_media_manifest");
   assert.match(batch.events[0].media_manifest[0].basename, /^media-[a-f0-9]{12}\.png$/);
   assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /private-screen|customer-secret/);
+});
+
+test("artifactReviewsToRawTelemetryBatch marks empty media manifest source without leaking raw metadata", async () => {
+  const artifactsDir = await tempDir();
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", {
+    kind: "artifact_review",
+    artifact_type: "image",
+    summary: ["No visual source retained"],
+    metadata: null,
+  });
+
+  const batch = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_no_manifest_source_test",
+  });
+
+  assert.equal(batch.events[0].media_manifest.length, 0);
+  assert.equal(batch.events[0].metadata.media_manifest_source, "none");
+  assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
+  assert.doesNotMatch(JSON.stringify(batch.events[0].metadata), /visual source retained/);
 });
 
 test("artifactReviewsToRawTelemetryBatch infers extensionless artifact source MIME from magic bytes", async () => {

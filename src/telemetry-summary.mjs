@@ -87,6 +87,12 @@ function zeroCorrections() {
   };
 }
 
+function zeroBackfill() {
+  return {
+    media_manifest_sources: [],
+  };
+}
+
 function zeroPaletteSplit() {
   return {
     event_count: 0,
@@ -191,9 +197,25 @@ const SAFE_MULTIMODAL_COMMANDS = new Set([
   "palette-split",
 ]);
 
+const BACKFILL_MANIFEST_SOURCES = new Set([
+  "artifact_media_manifest",
+  "artifact_sources",
+  "none",
+]);
+
 function safeMultimodalCommand(value) {
   const command = canonicalCommand(value);
   return SAFE_MULTIMODAL_COMMANDS.has(command) ? command : "other";
+}
+
+function isBackfillCommand(value) {
+  const command = canonicalCommand(value);
+  return command === "artifact-review-backfill" || command === "artifact-review-backfill-correction";
+}
+
+function safeBackfillManifestSource(value) {
+  const source = typeof value === "string" ? value.trim() : "";
+  return BACKFILL_MANIFEST_SOURCES.has(source) ? source : "unknown";
 }
 
 function updateCommandDimension(map, command, status) {
@@ -214,6 +236,42 @@ function topDimension(map, keyName, limit) {
     .map((item) => ({
       [keyName]: item.key,
       event_count: item.event_count,
+      success_count: item.success_count,
+      error_count: item.error_count,
+      unknown_count: item.unknown_count,
+    }));
+}
+
+function updateBackfillManifestSource(map, source, status, mediaItemCount) {
+  const safeSource = safeBackfillManifestSource(source);
+  const item = map.get(safeSource) ?? {
+    key: safeSource,
+    event_count: 0,
+    media_item_count: 0,
+    success_count: 0,
+    error_count: 0,
+    unknown_count: 0,
+  };
+  item.event_count += 1;
+  item.media_item_count += mediaItemCount;
+  if (status === "success") item.success_count += 1;
+  else if (status === "error") item.error_count += 1;
+  else item.unknown_count += 1;
+  map.set(safeSource, item);
+}
+
+function topBackfillManifestSources(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.event_count - left.event_count
+      || right.media_item_count - left.media_item_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      media_manifest_source: item.key,
+      event_count: item.event_count,
+      media_item_count: item.media_item_count,
       success_count: item.success_count,
       error_count: item.error_count,
       unknown_count: item.unknown_count,
@@ -576,6 +634,13 @@ function formatMediaCommandRows(items) {
   )).join("\n");
 }
 
+function formatBackfillManifestSourceRows(items) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item.media_manifest_source}: ${formatNumber(item.event_count)} events, ${formatNumber(item.media_item_count)} media items`
+  )).join("\n");
+}
+
 function summaryStatusCounts(summary) {
   if (summary.status_counts) return summary.status_counts;
   return summary.top_commands.reduce((counts, item) => ({
@@ -646,6 +711,7 @@ function createAccumulator(invalidSampleLimit) {
     rawContent: zeroRawContent(),
     rawMedia: createMediaAggregate(),
     corrections: zeroCorrections(),
+    backfillManifestSources: createDimensionMap(),
     projects: createDimensionMap(),
     workspaces: createDimensionMap(),
     userLabels: createDimensionMap(),
@@ -706,6 +772,14 @@ function addEvent(accumulator, state, event) {
   const multimodalItems = Array.isArray(event.payload?.multimodal)
     ? event.payload.multimodal
     : [];
+  if (isBackfillCommand(event.command)) {
+    updateBackfillManifestSource(
+      accumulator.backfillManifestSources,
+      event.metadata?.media_manifest_source,
+      status,
+      multimodalItems.length,
+    );
+  }
   const compactItems = compactMediaItems(multimodalItems);
   if (isCorrectionEvent(event)) {
     addCorrectionEvent(accumulator, event, multimodalItems);
@@ -996,6 +1070,10 @@ export async function runTelemetrySummary({
     corrected_original_event_count: accumulator.correctedOriginalIds.size,
     top_versions: topCorrectionVersions(accumulator.correctionVersions, topLimit),
   };
+  const backfill = {
+    ...zeroBackfill(),
+    media_manifest_sources: topBackfillManifestSources(accumulator.backfillManifestSources, topLimit),
+  };
   const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
   const queue = {
     queue_bytes: state.queue_bytes,
@@ -1020,6 +1098,7 @@ export async function runTelemetrySummary({
     multimodal,
     multimodal_adjusted: multimodalAdjusted,
     corrections,
+    backfill,
     palette_split: paletteSplit,
     top_projects: topProjects,
     top_workspaces: topWorkspaces,
@@ -1113,6 +1192,8 @@ export function formatTelemetrySummaryText(summary) {
     `- Correction events: ${formatNumber(summary.corrections?.event_count ?? 0)}`,
     `- Corrected original events: ${formatNumber(summary.corrections?.corrected_original_event_count ?? 0)}`,
     `- Correction media items: ${formatNumber(summary.corrections?.media_item_count ?? 0)}`,
+    "Backfill media manifest sources:",
+    formatBackfillManifestSourceRows(summary.backfill?.media_manifest_sources ?? []),
     "",
     "Palette split:",
     `- Events: ${formatNumber(summary.palette_split?.event_count ?? 0)}`,

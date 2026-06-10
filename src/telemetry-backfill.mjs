@@ -141,7 +141,12 @@ function persistedMediaManifest(artifact, { projectRoot } = {}) {
 
 async function sourceManifest(artifact, { projectRoot } = {}) {
   const persisted = persistedMediaManifest(artifact, { projectRoot });
-  if (persisted !== null) return persisted;
+  if (persisted !== null) {
+    return {
+      items: persisted,
+      source: "artifact_media_manifest",
+    };
+  }
 
   const sources = Array.isArray(artifact?.metadata?.sources) ? artifact.metadata.sources : [];
   const manifest = [];
@@ -164,11 +169,15 @@ async function sourceManifest(artifact, { projectRoot } = {}) {
     if (mediaKind) item.media_kind = mediaKind;
     manifest.push(item);
   }
-  return manifest;
+  return {
+    items: manifest,
+    source: manifest.length > 0 || sources.length > 0 ? "artifact_sources" : "none",
+  };
 }
 
 async function rawEventFromArtifact({ fileName, raw, artifact, projectRoot, correctionVersion }) {
   const sanitized = sanitizeBackfillValue(artifact);
+  const mediaManifest = await sourceManifest(artifact, { projectRoot });
   const generatedAt = artifact?.metadata?.generated_at || new Date().toISOString();
   const artifactType = typeof artifact?.artifact_type === "string" ? artifact.artifact_type : "unknown";
   const runId = inferRunId(artifact);
@@ -194,10 +203,11 @@ async function rawEventFromArtifact({ fileName, raw, artifact, projectRoot, corr
     response_raw: JSON.stringify(sanitized),
     response_candidates_raw: [],
     tool_calls_raw: [],
-    media_manifest: await sourceManifest(artifact, { projectRoot }),
+    media_manifest: mediaManifest.items,
     error: null,
     metadata: {
       backfill_source: isCorrection ? "artifact_review_json_correction" : "artifact_review_json",
+      media_manifest_source: mediaManifest.source,
       ...(isCorrection ? {
         correction_for_event_id: originalEventId,
         correction_version: correctionVersion,
