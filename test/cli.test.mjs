@@ -1020,6 +1020,100 @@ test("telemetry raw preflight rejects invalid arguments", async () => {
   }
 });
 
+test("telemetry raw export writes local JSONL with confirmation without exposing stdout", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-export-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(98, {
+        command: "artifact-review",
+        prompt: "Authorization: Bearer cli-export-secret",
+        response: "raw export response should only be in file",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "private-cli-export.png", mime_type: "image/png", byte_size: 10 }],
+        },
+      }),
+    });
+    const output = join(cwd, "export.jsonl");
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "raw",
+      "export",
+      "--state",
+      "pending",
+      "--output",
+      output,
+      "--limit",
+      "1",
+      "--confirm-raw-content",
+      "--json",
+    ], { cwd });
+    const parsed = JSON.parse(stdout);
+    const exported = JSON.parse((await readFile(output, "utf8")).trim());
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.exported_count, 1);
+    assert.match(exported.prompt, /Authorization: \[MASKED\]/);
+    assert.match(exported.response, /raw export response should only be in file/);
+    assert.doesNotMatch(stdout, /Authorization: \[MASKED\]|cli-export-secret/);
+    assert.doesNotMatch(stdout, /raw export response should only be in file/);
+    assert.doesNotMatch(stdout, /evt_cli_98|private-cli-export|export\.jsonl|queue\/pending/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry raw export rejects missing confirmation and unsafe arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-export-args-"));
+  try {
+    const output = join(cwd, "export.jsonl");
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "export", "--state", "pending", "--output", output, "--limit", "1"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--confirm-raw-content is required/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "export", "--state", "pending", "--output", output, "--limit", "0", "--confirm-raw-content"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--limit requires a positive integer/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "export", "--state", "failed", "--output", output, "--limit", "1", "--confirm-raw-content"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--state must be pending or sent/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "export", "--unknown"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Unknown telemetry raw export argument/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry raw prune dry-run previews sent raw deletion without exposing content", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-prune-"));
   try {

@@ -19,6 +19,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry raw inventory --global
 ./bin/gemini-agent telemetry raw inventory --global --json
 ./bin/gemini-agent telemetry raw preflight --global --batch-size 1 --json
+./bin/gemini-agent telemetry raw export --global --state pending --output ./raw-export.jsonl --limit 100 --confirm-raw-content --json
 ./bin/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --dry-run
 ./bin/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --write --json
 ./bin/gemini-agent telemetry economics --global
@@ -57,6 +58,7 @@ Global Gemini review gate for Codex.
 - `telemetry summary` reports aggregate usage, queue health, project/workspace attribution, palette-split quality, and multimodal MIME/kind/byte coverage; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry raw inventory` reports local raw telemetry counts, bytes, truncation counts, multimodal counts, and credential-like aggregate signals; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry raw preflight` reports pending raw upload batch risk before flushing; it does not send, move, delete, print raw prompt/response text, event ids, batch ids, paths, or media file names.
+- `telemetry raw export` writes confirmed raw telemetry to a local JSONL file for local analysis; it requires `--confirm-raw-content`, never overwrites existing files, refuses telemetry queue paths, and does not print raw prompt/response text, event ids, batch ids, paths, or media file names to stdout.
 - `telemetry raw prune` applies local sent-telemetry retention with dry-run by default; it only supports `--state sent`, uses UTC day buckets, and reports aggregate counts without raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry economics` estimates Gemini cost and Codex token savings from aggregate usage metadata; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - The telemetry receiver `/metrics` and `/dashboard` endpoints expose aggregate correction and palette-split quality metrics without raw event ids or media file names.
