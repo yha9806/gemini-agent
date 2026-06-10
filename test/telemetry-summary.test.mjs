@@ -728,6 +728,227 @@ test("runTelemetrySummary applies correction media to adjusted multimodal totals
   assert.doesNotMatch(text, /private-customer-screen/);
 });
 
+test("runTelemetrySummary chooses one correction deterministically and counts orphan corrections", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(411, {
+      event_id: "artifact_original_precedence",
+      command: "artifact-review-backfill",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png" }],
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(412, {
+      event_id: "artifact_correction_media_v1",
+      command: "artifact-review-backfill-correction",
+      created_at: "2026-06-04T09:00:00.000Z",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 10, media_kind: "image" }],
+      },
+      metadata: {
+        correction_for_event_id: "artifact_original_precedence",
+        correction_version: "media-v1",
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(413, {
+      event_id: "artifact_correction_media_v2",
+      command: "artifact-review-backfill-correction",
+      created_at: "2026-06-04T08:00:00.000Z",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 20, media_kind: "screenshot" }],
+      },
+      metadata: {
+        correction_for_event_id: "artifact_original_precedence",
+        correction_version: "media-v2",
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(414, {
+      event_id: "artifact_correction_orphan",
+      command: "artifact-review-backfill-correction",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 999, media_kind: "design" }],
+      },
+      metadata: {
+        correction_for_event_id: "artifact_missing_original",
+        correction_version: "media-v9",
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+
+  assert.equal(summary.multimodal_adjusted.correction_event_count, 3);
+  assert.equal(summary.multimodal_adjusted.corrected_original_event_count, 1);
+  assert.equal(summary.multimodal_adjusted.applied_correction_event_count, 1);
+  assert.equal(summary.multimodal_adjusted.superseded_correction_event_count, 1);
+  assert.equal(summary.multimodal_adjusted.orphan_correction_event_count, 1);
+  assert.equal(summary.multimodal_adjusted.byte_count, 20);
+  assert.deepEqual(summary.multimodal_adjusted.top_media_kind, [
+    { media_kind: "screenshot", event_count: 1, item_count: 1, byte_count: 20 },
+  ]);
+  assert.deepEqual(summary.multimodal_adjusted.top_correction_versions, [
+    {
+      correction_version: "media-v2",
+      event_count: 1,
+      corrected_original_event_count: 1,
+      media_item_count: 1,
+      media_byte_count: 20,
+    },
+  ]);
+});
+
+test("runTelemetrySummary applies corrections to originals without raw multimodal items", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(426, {
+      event_id: "artifact_original_without_media",
+      command: "artifact-review-backfill",
+      payload: { prompt_truncated: false, response_truncated: false, multimodal: [] },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(427, {
+      event_id: "artifact_correction_without_media_original",
+      command: "artifact-review-backfill-correction",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 44, media_kind: "design" }],
+      },
+      metadata: {
+        correction_for_event_id: "artifact_original_without_media",
+        correction_version: "media-v1",
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const serialized = JSON.stringify(summary);
+
+  assert.equal(summary.multimodal.event_count, 0);
+  assert.equal(summary.multimodal_adjusted.event_count, 1);
+  assert.equal(summary.multimodal_adjusted.item_count, 1);
+  assert.equal(summary.multimodal_adjusted.orphan_correction_event_count, 0);
+  assert.equal(summary.multimodal_adjusted.applied_correction_event_count, 1);
+  assert.deepEqual(summary.multimodal_adjusted.top_media_kind, [
+    { media_kind: "design", event_count: 1, item_count: 1, byte_count: 44 },
+  ]);
+  assert.doesNotMatch(serialized, /artifact_original_without_media/);
+  assert.doesNotMatch(serialized, /artifact_correction_without_media_original/);
+});
+
+test("runTelemetrySummary falls back to lexical correction versions and valid timestamps", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(421, {
+      event_id: "artifact_original_lexical",
+      command: "artifact-review-backfill",
+      payload: { prompt_truncated: false, response_truncated: false, multimodal: [{ byte_size: 1 }] },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(422, {
+      event_id: "artifact_correction_beta_new",
+      command: "artifact-review-backfill-correction",
+      created_at: "2026-06-04T08:00:00.000Z",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 30, media_kind: "screenshot" }],
+      },
+      metadata: {
+        correction_for_event_id: "artifact_original_lexical",
+        correction_version: "beta",
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(423, {
+      event_id: "artifact_correction_alpha_late",
+      command: "artifact-review-backfill-correction",
+      created_at: "2026-06-04T10:00:00.000Z",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 10, media_kind: "image" }],
+      },
+      metadata: {
+        correction_for_event_id: "artifact_original_lexical",
+        correction_version: "alpha",
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(424, {
+      event_id: "artifact_correction_beta_old",
+      command: "artifact-review-backfill-correction",
+      created_at: "2026-06-04T07:00:00.000Z",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 20, media_kind: "design" }],
+      },
+      metadata: {
+        correction_for_event_id: "artifact_original_lexical",
+        correction_version: "beta",
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+
+  assert.equal(summary.multimodal_adjusted.byte_count, 30);
+  assert.deepEqual(summary.multimodal_adjusted.top_media_kind, [
+    { media_kind: "screenshot", event_count: 1, item_count: 1, byte_count: 30 },
+  ]);
+  assert.equal(summary.multimodal_adjusted.superseded_correction_event_count, 2);
+});
+
 test("runTelemetrySummary reports invalid events with bounded POSIX samples", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({

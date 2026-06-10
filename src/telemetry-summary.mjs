@@ -669,6 +669,41 @@ function safeCorrectionVersion(event) {
   return version && version !== "unknown" ? version : null;
 }
 
+const MEDIA_CORRECTION_VERSION_PATTERN = /^media-v(\d+)$/;
+
+function semanticCorrectionNumber(version) {
+  const match = MEDIA_CORRECTION_VERSION_PATTERN.exec(version);
+  if (!match) return null;
+  const parsed = Number.parseInt(match[1], 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function validTimestampMs(value) {
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
+}
+
+function compareCorrectionCandidates(left, right) {
+  const leftSemantic = semanticCorrectionNumber(left.version);
+  const rightSemantic = semanticCorrectionNumber(right.version);
+  if (leftSemantic !== null && rightSemantic !== null && leftSemantic !== rightSemantic) {
+    return leftSemantic - rightSemantic;
+  }
+  if ((leftSemantic === null || rightSemantic === null) && left.version !== right.version) {
+    return left.version.localeCompare(right.version);
+  }
+  const leftTime = validTimestampMs(left.createdAt);
+  const rightTime = validTimestampMs(right.createdAt);
+  if (leftTime !== rightTime) return leftTime - rightTime;
+  return left.sequence - right.sequence;
+}
+
+function bestCorrectionCandidate(candidates) {
+  return candidates.reduce((best, candidate) => (
+    compareCorrectionCandidates(best, candidate) >= 0 ? best : candidate
+  ));
+}
+
 function addAdjustedCorrectionCandidate(accumulator, event, mediaItems) {
   accumulator.adjustedCorrectionSequence += 1;
   const target = safeCorrectionTarget(event);
@@ -705,7 +740,7 @@ function buildAdjustedMultimodal(accumulator, topLimit) {
       continue;
     }
 
-    const applied = candidates[candidates.length - 1];
+    const applied = bestCorrectionCandidate(candidates);
     appliedOriginals.add(target);
     appliedCorrectionEventCount += 1;
     supersededCorrectionEventCount += Math.max(0, candidates.length - 1);
