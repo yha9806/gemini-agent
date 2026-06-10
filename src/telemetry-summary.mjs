@@ -330,6 +330,33 @@ function publicMediaAggregate(aggregate, topLimit) {
   };
 }
 
+function mergeCorrectedMediaItems(originalItems, correctionItems) {
+  if (correctionItems.length === 0) return originalItems;
+  // Backfilled correction manifests preserve source order; merge by index so
+  // partial corrections can fill only the fields they know without dropping
+  // original media entries that had no corrected counterpart.
+  const merged = correctionItems.map((correction, index) => {
+    const original = originalItems[index];
+    const hasByteSize = correction.hasByteSize || Boolean(original?.hasByteSize);
+    return {
+      mimeType: correction.mimeType !== "unknown"
+        ? correction.mimeType
+        : original?.mimeType ?? "unknown",
+      mediaKind: correction.mediaKind !== "unknown"
+        ? correction.mediaKind
+        : original?.mediaKind ?? "unknown",
+      byteSize: correction.hasByteSize
+        ? correction.byteSize
+        : original?.byteSize ?? 0,
+      hasByteSize,
+    };
+  });
+  if (originalItems.length > correctionItems.length) {
+    merged.push(...originalItems.slice(correctionItems.length));
+  }
+  return merged;
+}
+
 function topCorrectionVersions(map, limit) {
   return [...map.values()]
     .sort((left, right) => (
@@ -769,10 +796,12 @@ function buildAdjustedMultimodal(accumulator, topLimit) {
     }
 
     const applied = bestCorrectionCandidate(candidates);
+    const originalItems = accumulator.adjustedOriginals.get(target) ?? [];
+    const adjustedMediaItems = mergeCorrectedMediaItems(originalItems, applied.mediaItems);
     appliedOriginals.add(target);
     appliedCorrectionEventCount += 1;
     supersededCorrectionEventCount += Math.max(0, candidates.length - 1);
-    addCompactMediaItems(aggregate, applied.mediaItems);
+    addCompactMediaItems(aggregate, adjustedMediaItems);
 
     const item = appliedVersions.get(applied.version) ?? {
       key: applied.version,
@@ -782,8 +811,8 @@ function buildAdjustedMultimodal(accumulator, topLimit) {
       correctedOriginalIds: new Set(),
     };
     item.event_count += 1;
-    item.media_item_count += applied.mediaItems.length;
-    item.media_byte_count += applied.mediaItems.reduce(
+    item.media_item_count += adjustedMediaItems.length;
+    item.media_byte_count += adjustedMediaItems.reduce(
       (total, media) => total + media.byteSize,
       0,
     );
