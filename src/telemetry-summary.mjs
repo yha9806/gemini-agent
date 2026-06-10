@@ -268,6 +268,68 @@ function topMediaKind(map, limit) {
     }));
 }
 
+function createMediaAggregate() {
+  return {
+    ...zeroMultimodal(),
+    mediaMimes: createDimensionMap(),
+    mediaKinds: createDimensionMap(),
+  };
+}
+
+function compactMediaItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => {
+    const mimeType = typeof item?.mime_type === "string" && item.mime_type.trim()
+      ? item.mime_type
+      : "unknown";
+    const mediaKind = typeof item?.media_kind === "string" && item.media_kind.trim()
+      ? item.media_kind
+      : "unknown";
+    const hasByteSize = Number.isInteger(item?.byte_size) && item.byte_size >= 0;
+    return {
+      mimeType,
+      mediaKind,
+      byteSize: hasByteSize ? item.byte_size : 0,
+      hasByteSize,
+    };
+  });
+}
+
+function addCompactMediaItems(aggregate, items) {
+  if (items.length === 0) return;
+  aggregate.event_count += 1;
+  const seenMimes = new Set();
+  const seenKinds = new Set();
+  for (const item of items) {
+    aggregate.item_count += 1;
+    aggregate.byte_count += item.byteSize;
+    if (item.mimeType === "unknown") aggregate.unknown_mime_items += 1;
+    else aggregate.media_items_with_mime += 1;
+    if (!item.hasByteSize) aggregate.unknown_byte_size_items += 1;
+    else aggregate.media_items_with_byte_size += 1;
+    if (item.mediaKind === "unknown") aggregate.unknown_kind_items += 1;
+    else aggregate.media_items_with_kind += 1;
+    updateMediaMime(aggregate.mediaMimes, item.mimeType, item.byteSize, seenMimes);
+    updateMediaKind(aggregate.mediaKinds, item.mediaKind, item.byteSize, seenKinds);
+  }
+}
+
+function publicMediaAggregate(aggregate, topLimit) {
+  return {
+    event_count: aggregate.event_count,
+    item_count: aggregate.item_count,
+    byte_count: aggregate.byte_count,
+    unknown_mime_items: aggregate.unknown_mime_items,
+    unknown_byte_size_items: aggregate.unknown_byte_size_items,
+    unknown_kind_items: aggregate.unknown_kind_items,
+    media_items_with_mime: aggregate.media_items_with_mime,
+    media_items_with_byte_size: aggregate.media_items_with_byte_size,
+    media_items_with_kind: aggregate.media_items_with_kind,
+    top_media_mime: topMediaMime(aggregate.mediaMimes, topLimit),
+    top_media_kind: topMediaKind(aggregate.mediaKinds, topLimit),
+  };
+}
+
 function topCorrectionVersions(map, limit) {
   return [...map.values()]
     .sort((left, right) => (
@@ -448,7 +510,7 @@ function createAccumulator(invalidSampleLimit) {
     statusCounts: zeroStatusCounts(),
     usage: zeroUsage(),
     rawContent: zeroRawContent(),
-    multimodal: zeroMultimodal(),
+    rawMedia: createMediaAggregate(),
     corrections: zeroCorrections(),
     projects: createDimensionMap(),
     workspaces: createDimensionMap(),
@@ -456,10 +518,13 @@ function createAccumulator(invalidSampleLimit) {
     commands: createDimensionMap(),
     sources: createDimensionMap(),
     models: createDimensionMap(),
-    mediaMimes: createDimensionMap(),
-    mediaKinds: createDimensionMap(),
     correctionVersions: createDimensionMap(),
     correctedOriginalIds: new Set(),
+    existingEventIds: new Set(),
+    adjustedOriginals: new Map(),
+    adjustedCorrections: new Map(),
+    adjustedMalformedCorrectionCount: 0,
+    adjustedCorrectionSequence: 0,
     paletteSplit: {
       event_count: 0,
       success_count: 0,
@@ -507,34 +572,16 @@ function addEvent(accumulator, state, event) {
   const multimodalItems = Array.isArray(event.payload?.multimodal)
     ? event.payload.multimodal
     : [];
+  const compactItems = compactMediaItems(multimodalItems);
   if (isCorrectionEvent(event)) {
     addCorrectionEvent(accumulator, event, multimodalItems);
-  } else if (multimodalItems.length > 0) {
-    accumulator.multimodal.event_count += 1;
-    const seenMimes = new Set();
-    const seenKinds = new Set();
-    for (const item of multimodalItems) {
-      const mimeType = typeof item?.mime_type === "string" && item.mime_type.trim()
-        ? item.mime_type
-        : "unknown";
-      const mediaKind = typeof item?.media_kind === "string" && item.media_kind.trim()
-        ? item.media_kind
-        : "unknown";
-      const byteSize = safeInteger(item?.byte_size);
-      accumulator.multimodal.item_count += 1;
-      accumulator.multimodal.byte_count += byteSize;
-      if (mimeType === "unknown") accumulator.multimodal.unknown_mime_items += 1;
-      else accumulator.multimodal.media_items_with_mime += 1;
-      if (!Number.isInteger(item?.byte_size) || item.byte_size < 0) {
-        accumulator.multimodal.unknown_byte_size_items += 1;
-      } else {
-        accumulator.multimodal.media_items_with_byte_size += 1;
-      }
-      if (mediaKind === "unknown") accumulator.multimodal.unknown_kind_items += 1;
-      else accumulator.multimodal.media_items_with_kind += 1;
-      updateMediaMime(accumulator.mediaMimes, mimeType, byteSize, seenMimes);
-      updateMediaKind(accumulator.mediaKinds, mediaKind, byteSize, seenKinds);
+    addAdjustedCorrectionCandidate(accumulator, event, compactItems);
+  } else {
+    if (typeof event.event_id === "string" && event.event_id.trim()) {
+      accumulator.existingEventIds.add(event.event_id);
+      accumulator.adjustedOriginals.set(event.event_id, compactItems);
     }
+    addCompactMediaItems(accumulator.rawMedia, compactItems);
   }
 
   const inputTokens = event.economics?.input_tokens;
@@ -612,6 +659,90 @@ function addCorrectionEvent(accumulator, event, multimodalItems) {
   accumulator.correctionVersions.set(version, versionItem);
 }
 
+function safeCorrectionTarget(event) {
+  const target = event.metadata?.correction_for_event_id;
+  return typeof target === "string" && target.trim() ? target : null;
+}
+
+function safeCorrectionVersion(event) {
+  const version = sanitizeDimension(event.metadata?.correction_version, "unknown");
+  return version && version !== "unknown" ? version : null;
+}
+
+function addAdjustedCorrectionCandidate(accumulator, event, mediaItems) {
+  accumulator.adjustedCorrectionSequence += 1;
+  const target = safeCorrectionTarget(event);
+  const version = safeCorrectionVersion(event);
+  if (!target || !version) {
+    accumulator.adjustedMalformedCorrectionCount += 1;
+    return;
+  }
+  const candidates = accumulator.adjustedCorrections.get(target) ?? [];
+  candidates.push({
+    target,
+    version,
+    createdAt: event.created_at,
+    sequence: accumulator.adjustedCorrectionSequence,
+    mediaItems,
+  });
+  accumulator.adjustedCorrections.set(target, candidates);
+}
+
+function buildAdjustedMultimodal(accumulator, topLimit) {
+  const aggregate = createMediaAggregate();
+  const appliedVersions = createDimensionMap();
+  const appliedOriginals = new Set();
+  let correctionEventCount = accumulator.adjustedMalformedCorrectionCount;
+  let orphanCorrectionEventCount = accumulator.adjustedMalformedCorrectionCount;
+  let supersededCorrectionEventCount = 0;
+  let appliedCorrectionEventCount = 0;
+
+  for (const [target, candidates] of accumulator.adjustedCorrections.entries()) {
+    correctionEventCount += candidates.length;
+    const originalExists = accumulator.existingEventIds.has(target);
+    if (!originalExists) {
+      orphanCorrectionEventCount += candidates.length;
+      continue;
+    }
+
+    const applied = candidates[candidates.length - 1];
+    appliedOriginals.add(target);
+    appliedCorrectionEventCount += 1;
+    supersededCorrectionEventCount += Math.max(0, candidates.length - 1);
+    addCompactMediaItems(aggregate, applied.mediaItems);
+
+    const item = appliedVersions.get(applied.version) ?? {
+      key: applied.version,
+      event_count: 0,
+      media_item_count: 0,
+      media_byte_count: 0,
+      correctedOriginalIds: new Set(),
+    };
+    item.event_count += 1;
+    item.media_item_count += applied.mediaItems.length;
+    item.media_byte_count += applied.mediaItems.reduce(
+      (total, media) => total + media.byteSize,
+      0,
+    );
+    item.correctedOriginalIds.add(target);
+    appliedVersions.set(applied.version, item);
+  }
+
+  for (const [eventId, originalItems] of accumulator.adjustedOriginals.entries()) {
+    if (!appliedOriginals.has(eventId)) addCompactMediaItems(aggregate, originalItems);
+  }
+
+  return {
+    ...publicMediaAggregate(aggregate, topLimit),
+    correction_event_count: correctionEventCount,
+    corrected_original_event_count: appliedOriginals.size,
+    orphan_correction_event_count: orphanCorrectionEventCount,
+    superseded_correction_event_count: supersededCorrectionEventCount,
+    applied_correction_event_count: appliedCorrectionEventCount,
+    top_correction_versions: topCorrectionVersions(appliedVersions, topLimit),
+  };
+}
+
 function buildPaletteSplitSummary(accumulator, topLimit) {
   if (accumulator.paletteSplit.event_count === 0) return zeroPaletteSplit();
   const qualityCount = accumulator.paletteSplit.quality_score_count;
@@ -681,17 +812,8 @@ export async function runTelemetrySummary({
   const allCommands = topDimension(accumulator.commands, "command", accumulator.commands.size);
   const sources = topDimension(accumulator.sources, "source", topLimit);
   const models = topDimension(accumulator.models, "model", topLimit);
-  const multimodal = {
-    ...accumulator.multimodal,
-    top_media_mime: topMediaMime(accumulator.mediaMimes, topLimit),
-    top_media_kind: topMediaKind(accumulator.mediaKinds, topLimit),
-  };
-  const multimodalAdjusted = {
-    ...zeroAdjustedMultimodal(),
-    top_media_mime: [],
-    top_media_kind: [],
-    top_correction_versions: [],
-  };
+  const multimodal = publicMediaAggregate(accumulator.rawMedia, topLimit);
+  const multimodalAdjusted = buildAdjustedMultimodal(accumulator, topLimit);
   const corrections = {
     ...accumulator.corrections,
     corrected_original_event_count: accumulator.correctedOriginalIds.size,

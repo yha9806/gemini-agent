@@ -626,6 +626,108 @@ test("runTelemetrySummary reports correction overlays without polluting original
   assert.doesNotMatch(JSON.stringify(summary), /private-source/);
 });
 
+test("runTelemetrySummary applies correction media to adjusted multimodal totals", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(401, {
+      event_id: "artifact_original_private_screen",
+      command: "artifact-review-backfill",
+      prompt: "raw prompt private customer",
+      response: "raw response private customer",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ basename: "private-customer-screen.png" }],
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(402, {
+      event_id: "artifact_correction_private_screen",
+      command: "artifact-review-backfill-correction",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [
+          { mime_type: "image/png", byte_size: 100, basename: "private-customer-screen.png", media_kind: "screenshot" },
+        ],
+      },
+      metadata: {
+        correction_for_event_id: "artifact_original_private_screen",
+        correction_version: "media-v1",
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = JSON.stringify(summary);
+
+  assert.deepEqual(summary.multimodal, {
+    event_count: 1,
+    item_count: 1,
+    byte_count: 0,
+    unknown_mime_items: 1,
+    unknown_byte_size_items: 1,
+    unknown_kind_items: 1,
+    media_items_with_mime: 0,
+    media_items_with_byte_size: 0,
+    media_items_with_kind: 0,
+    top_media_mime: [
+      { mime_type: "unknown", event_count: 1, item_count: 1, byte_count: 0 },
+    ],
+    top_media_kind: [
+      { media_kind: "unknown", event_count: 1, item_count: 1, byte_count: 0 },
+    ],
+  });
+  assert.deepEqual(summary.multimodal_adjusted, {
+    event_count: 1,
+    item_count: 1,
+    byte_count: 100,
+    unknown_mime_items: 0,
+    unknown_byte_size_items: 0,
+    unknown_kind_items: 0,
+    media_items_with_mime: 1,
+    media_items_with_byte_size: 1,
+    media_items_with_kind: 1,
+    correction_event_count: 1,
+    corrected_original_event_count: 1,
+    orphan_correction_event_count: 0,
+    superseded_correction_event_count: 0,
+    applied_correction_event_count: 1,
+    top_media_mime: [
+      { mime_type: "image/png", event_count: 1, item_count: 1, byte_count: 100 },
+    ],
+    top_media_kind: [
+      { media_kind: "screenshot", event_count: 1, item_count: 1, byte_count: 100 },
+    ],
+    top_correction_versions: [
+      {
+        correction_version: "media-v1",
+        event_count: 1,
+        corrected_original_event_count: 1,
+        media_item_count: 1,
+        media_byte_count: 100,
+      },
+    ],
+  });
+  assert.match(text, /Applied correction events: 1/);
+  assert.doesNotMatch(serialized, /artifact_original_private_screen/);
+  assert.doesNotMatch(serialized, /artifact_correction_private_screen/);
+  assert.doesNotMatch(serialized, /private-customer-screen/);
+  assert.doesNotMatch(serialized, /raw prompt private customer/);
+  assert.doesNotMatch(text, /private-customer-screen/);
+});
+
 test("runTelemetrySummary reports invalid events with bounded POSIX samples", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({
