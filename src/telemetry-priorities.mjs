@@ -46,6 +46,13 @@ function usageApplicableCoverage(economics) {
   return economics.totals.usage_coverage_rate;
 }
 
+function adjustedUsageApplicableCoverage(economics) {
+  if (Object.hasOwn(economics.totals, "usage_applicable_adjusted_coverage_rate")) {
+    return economics.totals.usage_applicable_adjusted_coverage_rate;
+  }
+  return usageApplicableCoverage(economics);
+}
+
 function mediaCoverage(multimodal) {
   if (!multimodal || multimodal.item_count <= 0) {
     return {
@@ -129,16 +136,26 @@ function deliveryPriority(summary) {
 }
 
 function instrumentationPriority(summary, economics, multimodalCoverage) {
-  const usage = usageApplicableCoverage(economics);
+  const usage = adjustedUsageApplicableCoverage(economics);
+  const rawUsage = usageApplicableCoverage(economics);
+  const suspectedFixtures = economics.totals.suspected_test_fixture_event_count ?? 0;
   const topUsageGap = economics.usage_gap_commands?.[0] ?? null;
+  const usageWeak = usage !== null && usage < 0.8;
+  const multimodalWeak = multimodalCoverage.min !== null && multimodalCoverage.min < 0.75;
   const reasons = [];
-  if (usage !== null && usage < 0.8) {
-    reasons.push(`Usage-applicable coverage: ${formatPercent(usage)}`);
+  if (usageWeak) {
+    reasons.push(`Adjusted usage-applicable coverage: ${formatPercent(usage)}`);
+    if (rawUsage !== null && rawUsage !== usage) {
+      reasons.push(`Raw usage-applicable coverage: ${formatPercent(rawUsage)}`);
+    }
+    if (suspectedFixtures > 0) {
+      reasons.push(`Suspected test fixture events excluded from adjusted coverage: ${formatNumber(suspectedFixtures)}`);
+    }
     if (topUsageGap) {
-      reasons.push(`Top usage gap: ${topUsageGap.command} missing ${formatNumber(topUsageGap.usage_applicable_missing_count)} usage-applicable events`);
+      reasons.push(`Top adjusted usage gap: ${topUsageGap.command} missing ${formatNumber(topUsageGap.adjusted_usage_applicable_missing_count ?? topUsageGap.usage_applicable_missing_count)} usage-applicable event${(topUsageGap.adjusted_usage_applicable_missing_count ?? topUsageGap.usage_applicable_missing_count) === 1 ? "" : "s"}`);
     }
   }
-  if (multimodalCoverage.min !== null && multimodalCoverage.min < 0.75) {
+  if (multimodalWeak) {
     reasons.push(`Multimodal metadata minimum coverage: ${formatPercent(multimodalCoverage.min)}`);
   }
   if (summary.invalid_events.count > 0) {
@@ -150,9 +167,13 @@ function instrumentationPriority(summary, economics, multimodalCoverage) {
     severity: usage !== null && usage < 0.5 ? "high" : "medium",
     score: 88,
     title: "Improve telemetry instrumentation before making stronger product claims.",
-    action: topUsageGap
+    action: usageWeak && topUsageGap
       ? `Fix token usage capture for ${topUsageGap.command}; fill multimodal MIME, byte-size, and media-kind fields in capture paths.`
-      : "Fill token usage and multimodal MIME, byte-size, and media-kind fields in capture paths.",
+      : usageWeak
+        ? "Fill token usage fields in capture paths."
+        : multimodalWeak
+          ? "Fill multimodal MIME, byte-size, and media-kind fields in capture paths."
+          : "Repair invalid telemetry files before making stronger product claims.",
     evidence: reasons,
   });
 }
@@ -293,6 +314,8 @@ export async function runTelemetryPriorities({
       failed_count: summary.event_counts.failed,
       usage_coverage_rate: usageCoverage(economics),
       usage_applicable_coverage_rate: usageApplicableCoverage(economics),
+      usage_applicable_adjusted_coverage_rate: adjustedUsageApplicableCoverage(economics),
+      suspected_test_fixture_event_count: economics.totals.suspected_test_fixture_event_count ?? 0,
       multimodal_event_count: summary.multimodal.event_count,
       multimodal_item_count: summary.multimodal.item_count,
       multimodal_metadata_coverage_min: multimodal.min,
@@ -326,6 +349,8 @@ export function formatTelemetryPrioritiesText(report) {
     `Events: ${formatNumber(report.totals.event_count)} total, ${formatPercent(report.totals.error_rate)} error rate, ${formatNumber(report.totals.pending_count)} pending, ${formatNumber(report.totals.failed_count)} failed`,
     `Usage coverage: ${formatPercent(report.totals.usage_coverage_rate)}`,
     `Usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_coverage_rate)}`,
+    `Adjusted usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_adjusted_coverage_rate)}`,
+    `Suspected test fixture events: ${formatNumber(report.totals.suspected_test_fixture_event_count)}`,
     `Estimated Gemini cost: ${formatUsd(report.totals.gemini_estimated_cost_usd)}`,
     `Estimated Codex tokens saved: ${formatNumber(report.totals.codex_tokens_saved_estimate)}`,
     "",

@@ -307,12 +307,128 @@ test("runTelemetryPriorities points instrumentation work at the top usage gap co
 
     assert.ok(instrumentation);
     assert.match(instrumentation.action, /Fix token usage capture for ask/);
-    assert.ok(instrumentation.evidence.some((item) => item === "Top usage gap: ask missing 2 usage-applicable events"));
-    assert.match(text, /Top usage gap: ask missing 2 usage-applicable events/);
+    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted usage gap: ask missing 2 usage-applicable events"));
+    assert.match(text, /Top adjusted usage gap: ask missing 2 usage-applicable events/);
     assert.doesNotMatch(serialized, /private priority gap prompt/);
     assert.doesNotMatch(serialized, /private priority gap response/);
     assert.doesNotMatch(serialized, /evt_priority_000030/);
     assert.doesNotMatch(serialized, /private-priority-gap\.png/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities uses adjusted coverage when suspected test fixtures dominate raw gaps", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(40, {
+        command: "ask",
+        prompt: "hello",
+        response: "world",
+        latency_ms: 1,
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(41, {
+        command: "ask",
+        prompt: "hello",
+        response: "world",
+        latency_ms: 2,
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(42, { command: "diff-review" }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(43, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+          codex_tokens_saved_estimate: 100,
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const instrumentation = report.priorities.find((item) => item.kind === "instrumentation");
+
+    assert.equal(report.totals.usage_applicable_coverage_rate, 0.25);
+    assert.equal(report.totals.usage_applicable_adjusted_coverage_rate, 0.5);
+    assert.equal(report.totals.suspected_test_fixture_event_count, 2);
+    assert.ok(instrumentation);
+    assert.match(instrumentation.action, /Fix token usage capture for diff-review/);
+    assert.ok(instrumentation.evidence.some((item) => item === "Adjusted usage-applicable coverage: 50.0%"));
+    assert.ok(instrumentation.evidence.some((item) => item === "Raw usage-applicable coverage: 25.0%"));
+    assert.ok(instrumentation.evidence.some((item) => item === "Suspected test fixture events excluded from adjusted coverage: 2"));
+    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted usage gap: diff-review missing 1 usage-applicable event"));
+    assert.doesNotMatch(serialized, /hello|world|evt_priority_000040/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities does not recommend usage fixes when only multimodal metadata is weak", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(50, {
+        command: "artifact-review",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "private-weak-metadata.png" }],
+        },
+        economics: {
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+          codex_tokens_saved_estimate: 100,
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const serialized = JSON.stringify(report);
+    const instrumentation = report.priorities.find((item) => item.kind === "instrumentation");
+
+    assert.equal(report.totals.usage_applicable_adjusted_coverage_rate, 1);
+    assert.ok(instrumentation);
+    assert.equal(
+      instrumentation.action,
+      "Fill multimodal MIME, byte-size, and media-kind fields in capture paths.",
+    );
+    assert.doesNotMatch(instrumentation.action, /Fix token usage/);
+    assert.doesNotMatch(serialized, /private-weak-metadata\.png/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

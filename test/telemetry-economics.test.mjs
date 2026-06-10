@@ -358,6 +358,133 @@ test("runTelemetryEconomics reports aggregate usage metadata gaps safely", async
   }
 });
 
+test("runTelemetryEconomics separates suspected test fixtures from adjusted runtime coverage", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(50, {
+        command: "ask",
+        prompt: "hello",
+        response: "world",
+        latency_ms: 5,
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(51, {
+        command: "ask",
+        prompt: "hello",
+        response: "world",
+        latency_ms: 6,
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(52, {
+        command: "ask",
+        prompt: "hello!",
+        response: "world",
+        latency_ms: 1,
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(53, { command: "diff-review" }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(54, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+          codex_tokens_saved_estimate: 100,
+        },
+      }),
+    });
+
+    const report = await runTelemetryEconomics({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const text = formatTelemetryEconomicsText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const gaps = new Map(report.usage_gap_commands.map((item) => [item.command, item]));
+
+    assert.equal(report.totals.usage_applicable_event_count, 5);
+    assert.equal(report.totals.usage_applicable_missing_count, 4);
+    assert.equal(report.totals.usage_applicable_coverage_rate, 0.2);
+    assert.equal(report.totals.suspected_test_fixture_event_count, 1);
+    assert.equal(report.totals.usage_applicable_adjusted_event_count, 4);
+    assert.equal(report.totals.usage_applicable_adjusted_missing_count, 3);
+    assert.equal(report.totals.usage_applicable_adjusted_coverage_rate, 0.25);
+    assert.equal(gaps.get("ask").suspected_test_fixture_event_count, 1);
+    assert.equal(gaps.get("ask").adjusted_usage_applicable_missing_count, 2);
+    assert.equal(gaps.get("ask").adjusted_usage_applicable_coverage_rate, 0);
+    assert.equal(gaps.get("ask").adjusted_missing_share_of_total_applicable_gap, 0.6667);
+    assert.equal(gaps.get("diff-review").adjusted_usage_applicable_missing_count, 1);
+    assert.match(text, /Adjusted usage-applicable coverage: 25\.0%/);
+    assert.match(text, /Suspected test fixture events: 1/);
+    assert.match(text, /ask: 2 adjusted missing of 2 adjusted usage-applicable events, 0\.0% adjusted coverage, 66\.7% of adjusted missing usage gap, 1 suspected fixture/);
+    assert.doesNotMatch(serialized, /hello|world|evt_000050/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryEconomics handles only suspected test fixtures in adjusted coverage", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(60, {
+        command: "ask",
+        prompt: "hello",
+        response: "world",
+        latency_ms: 1,
+      }),
+    });
+
+    const report = await runTelemetryEconomics({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const text = formatTelemetryEconomicsText(report);
+
+    assert.equal(report.totals.usage_applicable_event_count, 1);
+    assert.equal(report.totals.usage_applicable_missing_count, 1);
+    assert.equal(report.totals.usage_applicable_coverage_rate, 0);
+    assert.equal(report.totals.suspected_test_fixture_event_count, 1);
+    assert.equal(report.totals.usage_applicable_adjusted_event_count, 0);
+    assert.equal(report.totals.usage_applicable_adjusted_missing_count, 0);
+    assert.equal(report.totals.usage_applicable_adjusted_coverage_rate, null);
+    assert.deepEqual(report.usage_gap_commands, []);
+    assert.match(text, /Adjusted usage-applicable coverage: n\/a/);
+    assert.doesNotMatch(
+      report.recommendations.map((item) => item.message).join("\n"),
+      /Usage metadata coverage/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryEconomics handles datasets with no usage-applicable events", async () => {
   const cwd = await temporaryWorkspace();
   try {

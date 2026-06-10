@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
@@ -35,6 +36,7 @@ function zeroEconomics() {
     usage_applicable_event_count: 0,
     usage_not_applicable_event_count: 0,
     usage_applicable_missing_count: 0,
+    suspected_test_fixture_event_count: 0,
     input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
@@ -99,6 +101,23 @@ function usageApplies(event) {
   return !USAGE_NOT_APPLICABLE_COMMANDS.has(canonicalCommand(event.command));
 }
 
+function textByteLength(value) {
+  return typeof value === "string" ? Buffer.byteLength(value, "utf8") : null;
+}
+
+function isSuspectedTestFixtureEvent(event) {
+  // Historical tombstone filter: catches old local test fixtures that leaked into global telemetry.
+  // It is intentionally narrow and only affects adjusted aggregate metrics, never raw event retention.
+  return canonicalCommand(event.command) === "ask"
+    && event.source === "cli"
+    && event.project_id === "gemini-agent"
+    && event.status === "success"
+    && !hasUsage(event)
+    && event.latency_ms <= 5
+    && textByteLength(event.prompt) === 5
+    && textByteLength(event.response) === 5;
+}
+
 function savingsEstimate(event, inputTokens) {
   const explicit = event.economics?.codex_tokens_saved_estimate;
   return Number.isInteger(explicit) && explicit >= 0 ? explicit : inputTokens;
@@ -110,6 +129,9 @@ function addEventEconomics(target, event) {
   const applies = usageApplies(event);
   if (applies) target.usage_applicable_event_count += 1;
   else target.usage_not_applicable_event_count += 1;
+  if (applies && isSuspectedTestFixtureEvent(event)) {
+    target.suspected_test_fixture_event_count += 1;
+  }
   if (!hasUsage(event)) {
     target.events_missing_usage += 1;
     if (applies) target.usage_applicable_missing_count += 1;
@@ -164,8 +186,18 @@ function costFor({ inputTokens, outputTokens, inputPricePerMillion, outputPriceP
 }
 
 function enrichEconomics(item, pricing) {
+  const adjustedUsageApplicableEventCount = Math.max(
+    0,
+    item.usage_applicable_event_count - item.suspected_test_fixture_event_count,
+  );
+  const adjustedUsageApplicableMissingCount = Math.max(
+    0,
+    item.usage_applicable_missing_count - item.suspected_test_fixture_event_count,
+  );
   return {
     ...item,
+    usage_applicable_adjusted_event_count: adjustedUsageApplicableEventCount,
+    usage_applicable_adjusted_missing_count: adjustedUsageApplicableMissingCount,
     gemini_estimated_cost_usd: costFor({
       inputTokens: item.input_tokens,
       outputTokens: item.output_tokens,
@@ -180,6 +212,11 @@ function enrichEconomics(item, pricing) {
     usage_applicable_coverage_rate: nullableRatio(
       item.usage_applicable_event_count - item.usage_applicable_missing_count,
       item.usage_applicable_event_count,
+      4,
+    ),
+    usage_applicable_adjusted_coverage_rate: nullableRatio(
+      adjustedUsageApplicableEventCount - adjustedUsageApplicableMissingCount,
+      adjustedUsageApplicableEventCount,
       4,
     ),
     success_rate: nullableRatio(item.success_count, item.success_count + item.error_count, 4),
@@ -198,9 +235,12 @@ function topCommands(commandRows, limit) {
 
 function usageGapCommands(commandRows, totals, limit) {
   return [...commandRows]
-    .filter((item) => item.usage_applicable_event_count > 0 && item.usage_applicable_missing_count > 0)
+    .filter((item) => (
+      item.usage_applicable_adjusted_event_count > 0
+      && item.usage_applicable_adjusted_missing_count > 0
+    ))
     .sort((left, right) => (
-      right.usage_applicable_missing_count - left.usage_applicable_missing_count
+      right.usage_applicable_adjusted_missing_count - left.usage_applicable_adjusted_missing_count
       || left.command.localeCompare(right.command)
     ))
     .slice(0, limit)
@@ -209,9 +249,18 @@ function usageGapCommands(commandRows, totals, limit) {
       usage_applicable_event_count: item.usage_applicable_event_count,
       usage_applicable_missing_count: item.usage_applicable_missing_count,
       usage_applicable_coverage_rate: item.usage_applicable_coverage_rate,
+      suspected_test_fixture_event_count: item.suspected_test_fixture_event_count,
+      adjusted_usage_applicable_event_count: item.usage_applicable_adjusted_event_count,
+      adjusted_usage_applicable_missing_count: item.usage_applicable_adjusted_missing_count,
+      adjusted_usage_applicable_coverage_rate: item.usage_applicable_adjusted_coverage_rate,
       missing_share_of_total_applicable_gap: nullableRatio(
         item.usage_applicable_missing_count,
         totals.usage_applicable_missing_count,
+        4,
+      ),
+      adjusted_missing_share_of_total_applicable_gap: nullableRatio(
+        item.usage_applicable_adjusted_missing_count,
+        totals.usage_applicable_adjusted_missing_count,
         4,
       ),
     }));
@@ -224,13 +273,13 @@ function recommendation(kind, message) {
 function buildRecommendations({ totals, topCommandRows, usageGapRows }) {
   const recommendations = [];
   if (
-    totals.usage_applicable_event_count > 0
-    && totals.usage_applicable_coverage_rate !== null
-    && totals.usage_applicable_coverage_rate < 0.8
+    totals.usage_applicable_adjusted_event_count > 0
+    && totals.usage_applicable_adjusted_coverage_rate !== null
+    && totals.usage_applicable_adjusted_coverage_rate < 0.8
   ) {
     const topGap = usageGapRows[0];
     const gapSentence = topGap
-      ? ` Top gap: ${topGap.command} has ${topGap.usage_applicable_missing_count} missing usage-applicable events.`
+      ? ` Top gap: ${topGap.command} has ${topGap.adjusted_usage_applicable_missing_count} missing usage-applicable events.`
       : "";
     recommendations.push(recommendation(
       "instrumentation",
@@ -355,7 +404,9 @@ function formatCommandRows(rows) {
 function formatUsageGapRows(rows) {
   if (rows.length === 0) return "None";
   return rows.map((item, index) => (
-    `${index + 1}. ${item.command}: ${formatNumber(item.usage_applicable_missing_count)} missing of ${formatNumber(item.usage_applicable_event_count)} usage-applicable events, ${formatPercent(item.usage_applicable_coverage_rate)} coverage, ${formatPercent(item.missing_share_of_total_applicable_gap)} of missing usage gap`
+    item.suspected_test_fixture_event_count > 0
+      ? `${index + 1}. ${item.command}: ${formatNumber(item.adjusted_usage_applicable_missing_count)} adjusted missing of ${formatNumber(item.adjusted_usage_applicable_event_count)} adjusted usage-applicable events, ${formatPercent(item.adjusted_usage_applicable_coverage_rate)} adjusted coverage, ${formatPercent(item.adjusted_missing_share_of_total_applicable_gap)} of adjusted missing usage gap, ${formatNumber(item.suspected_test_fixture_event_count)} suspected fixture`
+      : `${index + 1}. ${item.command}: ${formatNumber(item.usage_applicable_missing_count)} missing of ${formatNumber(item.usage_applicable_event_count)} usage-applicable events, ${formatPercent(item.usage_applicable_coverage_rate)} coverage, ${formatPercent(item.missing_share_of_total_applicable_gap)} of missing usage gap`
   )).join("\n");
 }
 
@@ -375,8 +426,11 @@ export function formatTelemetryEconomicsText(report) {
     `- Events: ${formatNumber(report.totals.event_count)}`,
     `- Usage coverage: ${formatPercent(report.totals.usage_coverage_rate)}`,
     `- Usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_coverage_rate)}`,
+    `- Adjusted usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_adjusted_coverage_rate)}`,
     `- Usage-applicable events: ${formatNumber(report.totals.usage_applicable_event_count)}`,
+    `- Adjusted usage-applicable events: ${formatNumber(report.totals.usage_applicable_adjusted_event_count)}`,
     `- Usage not applicable events: ${formatNumber(report.totals.usage_not_applicable_event_count)}`,
+    `- Suspected test fixture events: ${formatNumber(report.totals.suspected_test_fixture_event_count)}`,
     `- Gemini input tokens: ${formatNumber(report.totals.input_tokens)}`,
     `- Gemini output tokens: ${formatNumber(report.totals.output_tokens)}`,
     `- Gemini total tokens: ${formatNumber(report.totals.total_tokens)}`,
