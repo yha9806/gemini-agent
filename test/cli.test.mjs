@@ -575,6 +575,68 @@ test("diff-review suppresses context-pack preflight warning when auto context pa
   assert.equal(stderr, "");
 });
 
+test("diff-review --diff with existing context pack suggests auto context reuse and queues safe metadata", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-smart-preflight-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), fakeContextPack);
+  await writeFile(join(dir, "app.txt"), "old\n");
+  await execFileAsync("git", ["add", "app.txt"], { cwd: dir });
+  await writeFile(join(dir, "app.txt"), `${"new line\n".repeat(3000)}\n`);
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  const { stdout, stderr } = await execBin(["diff-review", "--diff"], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+
+  assert.equal(JSON.parse(stdout).verdict, "pass");
+  assert.match(stderr, /diff-review can reuse the existing context pack/);
+  assert.match(stderr, /gemini-agent diff-review --auto-context-pack --diff/);
+  assert.doesNotMatch(stderr, /Run: gemini-agent context-pack --bootstrap --write-artifact/);
+
+  const pending = await readdir(telemetryQueueDirs(dir).pending);
+  assert.equal(pending.length, 1);
+  const event = JSON.parse(await readFile(join(telemetryQueueDirs(dir).pending, pending[0]), "utf8"));
+  assert.equal(event.metadata.context_pack_existing_hint, true);
+  assert.doesNotMatch(JSON.stringify(event.metadata), /latest\.json|\.gemini-agent/);
+});
+
+test("diff-review --auto-context-pack --diff suppresses existing context pack hint", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-smart-preflight-auto-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), fakeContextPack);
+  await writeFile(join(dir, "app.txt"), "old\n");
+  await execFileAsync("git", ["add", "app.txt"], { cwd: dir });
+  await writeFile(join(dir, "app.txt"), `${"new line\n".repeat(3000)}\n`);
+
+  const { stdout, stderr } = await execBin(["diff-review", "--auto-context-pack", "--diff"], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+
+  assert.equal(JSON.parse(stdout).verdict, "pass");
+  assert.equal(stderr, "");
+});
+
 test("gate commands accept context-pack input and print JSON", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const contextPath = join(dir, "context.json");

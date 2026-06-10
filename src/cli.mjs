@@ -19,6 +19,7 @@ import { loadProjectPolicy } from "./policies.mjs";
 import { parsePaletteSplitArgs, runPaletteSplit } from "./palette-mask.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
 import {
+  autoContextPackExists,
   defaultGateInputLimitBytes,
   gateContextPackPreflightMessage,
   gateContextPackPreflightMetadata,
@@ -1297,7 +1298,21 @@ async function runGate(command, args) {
     inputBytes,
     contextPackMode: metadata.context_pack_mode,
   });
-  if (preflightMessage) errorOutput.write(`${preflightMessage}\n`);
+  const shouldCheckExistingContextPack = command === "diff-review"
+    && metadata.context_pack_mode === "none"
+    && metadata.fresh_input_mode === "diff"
+    && preflightMetadata.context_pack_preflight_warning === true;
+  const existingContextPackHint = shouldCheckExistingContextPack
+    ? await autoContextPackExists({ cwd: process.cwd() })
+    : false;
+  const smartPreflightMetadata = {
+    context_pack_existing_hint: existingContextPackHint,
+  };
+  const smartPreflightMessage = existingContextPackHint
+    ? "diff-review can reuse the existing context pack; current run will continue. Prefer: gemini-agent diff-review --auto-context-pack --diff"
+    : null;
+  const emittedPreflightMessage = smartPreflightMessage ?? preflightMessage;
+  if (emittedPreflightMessage) errorOutput.write(`${emittedPreflightMessage}\n`);
   const fakeAllowed = allowFakeResponse(process.env);
   if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
     throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
@@ -1319,6 +1334,7 @@ async function runGate(command, args) {
         ...gateInputMetadata({ gate, inputBytes, limitBytes }),
         ...metadata,
         ...preflightMetadata,
+        ...smartPreflightMetadata,
       },
     },
   });
