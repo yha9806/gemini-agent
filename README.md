@@ -15,6 +15,8 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry status --global
 ./bin/gemini-agent telemetry summary --global
 ./bin/gemini-agent telemetry summary --global --json
+./bin/gemini-agent telemetry economics --global
+./bin/gemini-agent telemetry economics --global --json
 ./bin/gemini-agent telemetry validate --global --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
 ./bin/gemini-agent telemetry flush --global
 ./bin/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000
@@ -46,6 +48,7 @@ Global Gemini review gate for Codex.
 - Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.
 - Telemetry config stores a generated `install_id`; captured events add a pseudonymous hashed `workspace_id` derived from the working directory. `workspace_id` is not a secret. `--user-label` is optional, rejects email-shaped labels, and can be cleared with `--clear-user-label`.
 - `telemetry summary` reports aggregate usage, queue health, palette-split quality, and multimodal MIME/byte counts; it does not print raw prompt, response text, or media file names.
+- `telemetry economics` estimates Gemini cost and Codex token savings from aggregate usage metadata; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - The telemetry receiver `/metrics` and `/dashboard` endpoints expose aggregate correction and palette-split quality metrics without raw event ids or media file names.
 - Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
 - Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.
