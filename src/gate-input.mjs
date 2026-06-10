@@ -158,7 +158,7 @@ export async function readAutoContextPackFile({
     if (error.code === "ENOENT") {
       throw new Error([
         `No context pack found at ${path}.`,
-        "Run gemini-agent context-pack --write-artifact from the project root before using --auto-context-pack.",
+        "Run gemini-agent context-pack --bootstrap --write-artifact from the project root before using --auto-context-pack.",
       ].join(" "));
     }
     throw error;

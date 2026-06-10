@@ -264,6 +264,7 @@ test("active policy names commands, recursion guard, priorities, and runtime mod
 test("active policy tells Codex how to safely reuse context packs for gates", () => {
   assert.match(ACTIVE_POLICY_BLOCK, /--context-pack <path>/);
   assert.match(ACTIVE_POLICY_BLOCK, /--auto-context-pack/);
+  assert.match(ACTIVE_POLICY_BLOCK, /context-pack --bootstrap --write-artifact/);
   assert.match(ACTIVE_POLICY_BLOCK, /\.gemini-agent\/context\/latest\.json/);
   assert.match(ACTIVE_POLICY_BLOCK, /project root/i);
   assert.match(ACTIVE_POLICY_BLOCK, /missing, stale, or unrelated/i);

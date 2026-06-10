@@ -6,6 +6,19 @@ import { createPartFromBase64 } from "@google/genai";
 
 export const DEFAULT_TEXT_LIMIT_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_IMAGE_LIMIT_BYTES = 20 * 1024 * 1024;
+export const BOOTSTRAP_CONTEXT_FILES = Object.freeze([
+  "README.md",
+  "README",
+  "AGENTS.md",
+  "package.json",
+  "pyproject.toml",
+  "Cargo.toml",
+  "go.mod",
+  "deno.json",
+  "deno.jsonc",
+  "tsconfig.json",
+  ".gemini-agent-policy.json",
+]);
 
 const execFileAsync = promisify(execFile);
 
@@ -95,6 +108,54 @@ export async function currentGitDiff({
     maxBuffer: DEFAULT_TEXT_LIMIT_BYTES + 64 * 1024,
   });
   return stdout;
+}
+
+async function existingBootstrapFiles(cwd) {
+  const files = [];
+  for (const candidate of BOOTSTRAP_CONTEXT_FILES) {
+    try {
+      const info = await stat(resolve(cwd, candidate));
+      if (info.isFile()) files.push(candidate);
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+    }
+  }
+  return files;
+}
+
+async function bootstrapGitDiff({ cwd, runner, maxTextBytes }) {
+  try {
+    return await currentGitDiff({ cwd, runner });
+  } catch (error) {
+    if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || /maxBuffer/u.test(error.message ?? "")) {
+      throw new Error(`Context input exceeds ${maxTextBytes} bytes.`);
+    }
+    return "";
+  }
+}
+
+export async function collectBootstrapContext({
+  cwd = process.cwd(),
+  maxTextBytes = DEFAULT_TEXT_LIMIT_BYTES,
+  runner,
+} = {}) {
+  const files = await existingBootstrapFiles(cwd);
+  const diffText = await bootstrapGitDiff({ cwd, runner, maxTextBytes });
+
+  try {
+    return await collectTextInput({
+      files,
+      diff: Boolean(diffText.trim()),
+      cwd,
+      maxTextBytes,
+      runner: async () => ({ stdout: diffText }),
+    });
+  } catch (error) {
+    if (error.message === "Context input is empty.") {
+      throw new Error("Bootstrap context is empty. Add a README.md or AGENTS.md, or create a git diff before running context-pack --bootstrap.");
+    }
+    throw error;
+  }
 }
 
 export async function collectTextInput({

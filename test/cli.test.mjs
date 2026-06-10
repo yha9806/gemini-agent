@@ -560,7 +560,7 @@ test("plan-critique rejects missing auto context-pack before auth lookup", async
     (error) => {
       assert.equal(error.code, 1);
       assert.match(error.stderr, /No context pack found/);
-      assert.match(error.stderr, /context-pack --write-artifact/);
+      assert.match(error.stderr, /context-pack --bootstrap --write-artifact/);
       assert.doesNotMatch(error.stderr, /Gemini API key/);
       return true;
     },
@@ -726,6 +726,86 @@ test("context-pack accepts stdin and prints JSON", async () => {
   assert.equal(parsed.kind, "context_pack");
   assert.deepEqual(parsed.source_summary, ["project notes summary"]);
   assert.deepEqual(parsed.metadata.sources, ["stdin"]);
+});
+
+test("context-pack bootstrap writes project-root artifact from nested git cwd", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-bootstrap-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await writeFile(join(dir, "README.md"), "# Bootstrap Project\n");
+  await writeFile(join(dir, "package-lock.json"), "{\"lockfileVersion\":3}\n");
+  await writeFile(join(dir, ".env"), "SECRET=value\n");
+  const nested = join(dir, "packages", "app");
+  await mkdir(nested, { recursive: true });
+
+  const { stdout } = await execFileAsync(bin, ["context-pack", "--bootstrap", "--write-artifact"], {
+    cwd: nested,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeContextPack,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.kind, "context_pack");
+  assert.deepEqual(parsed.metadata.sources, ["README.md"]);
+
+  const latest = JSON.parse(await readFile(join(dir, ".gemini-agent", "context", "latest.json"), "utf8"));
+  assert.equal(latest.kind, "context_pack");
+  assert.deepEqual(latest.metadata.sources, ["README.md"]);
+  assert.doesNotMatch(JSON.stringify(latest), /lockfileVersion|SECRET=value/);
+});
+
+test("context-pack bootstrap rejects empty project before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-bootstrap-empty-"));
+
+  await assert.rejects(
+    execFileAsync(bin, ["context-pack", "--bootstrap", "--write-artifact"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Bootstrap context is empty/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("context-pack bootstrap rejects manual input flags before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-bootstrap-exclusive-"));
+  await writeFile(join(dir, "README.md"), "# Project\n");
+
+  for (const args of [
+    ["context-pack", "--bootstrap", "--stdin"],
+    ["context-pack", "--bootstrap", "--file", "README.md"],
+    ["context-pack", "--bootstrap", "--diff"],
+    ["context-pack", "--bootstrap", "manual notes"],
+  ]) {
+    const run = args.includes("--stdin")
+      ? execBin(args, {
+        cwd: dir,
+        input: "manual\n",
+        env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+      })
+      : execFileAsync(bin, args, {
+        cwd: dir,
+        env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+      });
+
+    await assert.rejects(
+      run,
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--bootstrap cannot be combined with manual context input/);
+        assert.doesNotMatch(error.stderr, /Gemini API key/);
+        return true;
+      },
+    );
+  }
 });
 
 test("context-pack rejects empty input before auth lookup", async () => {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  collectBootstrapContext,
   collectTextInput,
   currentGitDiff,
   DEFAULT_IMAGE_LIMIT_BYTES,
@@ -146,6 +147,67 @@ test("collectTextInput includes labelled git diff from injected runner", async (
   assert.equal(calls[0][2].cwd, "/repo");
   assert.equal(calls[0][2].encoding, "utf8");
   assert.ok(calls[0][2].maxBuffer >= DEFAULT_TEXT_LIMIT_BYTES);
+});
+
+test("collectBootstrapContext reads allowlisted root files and git diff only", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-bootstrap-"));
+  await writeFile(join(dir, "README.md"), "# Project\n");
+  await writeFile(join(dir, "package.json"), "{\"name\":\"demo\"}\n");
+  await writeFile(join(dir, "package-lock.json"), "{\"lockfileVersion\":3}\n");
+  await writeFile(join(dir, ".env"), "SECRET=value\n");
+
+  const result = await collectBootstrapContext({
+    cwd: dir,
+    runner: async () => ({ stdout: "diff --git a/app.js b/app.js\n+change\n" }),
+  });
+
+  assert.match(result.input, /--- Source: README\.md ---\n# Project/);
+  assert.match(result.input, /--- Source: package\.json ---\n\{"name":"demo"\}/);
+  assert.match(result.input, /--- Source: git diff ---\ndiff --git/);
+  assert.doesNotMatch(result.input, /package-lock/);
+  assert.doesNotMatch(result.input, /SECRET=value/);
+  assert.deepEqual(result.sources, ["README.md", "package.json", "git diff"]);
+});
+
+test("collectBootstrapContext falls back when git diff is unavailable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-bootstrap-"));
+  await writeFile(join(dir, "AGENTS.md"), "# Agent rules\n");
+
+  const result = await collectBootstrapContext({
+    cwd: dir,
+    runner: async () => {
+      throw new Error("git unavailable");
+    },
+  });
+
+  assert.match(result.input, /--- Source: AGENTS\.md ---\n# Agent rules/);
+  assert.deepEqual(result.sources, ["AGENTS.md"]);
+});
+
+test("collectBootstrapContext rejects empty bootstrap context", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-bootstrap-empty-"));
+
+  await assert.rejects(
+    () => collectBootstrapContext({
+      cwd: dir,
+      runner: async () => ({ stdout: "" }),
+    }),
+    /Bootstrap context is empty/,
+  );
+});
+
+test("collectBootstrapContext enforces the text byte cap", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-bootstrap-large-"));
+  await writeFile(join(dir, "README.md"), "small\n");
+
+  await assert.rejects(
+    () => collectBootstrapContext({
+      cwd: dir,
+      maxTextBytes: 30,
+      runner: async () => ({ stdout: "diff --git a/app.js b/app.js\n+01234567890123456789\n" }),
+    }),
+    /Context input exceeds 30 bytes\./,
+  );
 });
 
 test("currentGitDiff uses injected runner and returns stdout", async () => {

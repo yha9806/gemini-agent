@@ -9,6 +9,7 @@ import { runContextPack } from "./context-pack.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
 import {
+  collectBootstrapContext,
   collectTextInput,
   detectArtifactMime,
   imagePartFromFile,
@@ -25,6 +26,7 @@ import {
   readAutoContextPackFile,
   readLimitedContextPackFile,
   readLimitedGateFile,
+  resolveProjectRootForContextPack,
 } from "./gate-input.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 import { drainTelemetryCapture } from "./telemetry-capture.mjs";
@@ -116,7 +118,7 @@ function printUsage() {
     "  gemini-agent auth set",
     "  gemini-agent auth delete",
     "  gemini-agent ask <prompt>",
-    "  gemini-agent context-pack [--stdin] [--file <path> ...] [--diff] [--write-artifact] [text]",
+    "  gemini-agent context-pack [--bootstrap | --stdin | --file <path> ... | --diff | text] [--write-artifact]",
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1120,12 +1122,15 @@ async function parseCommonInputArgs(args) {
   const textArgs = [];
   let readFromStdin = false;
   let diff = false;
+  let bootstrap = false;
   let writeArtifact = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--stdin") {
       readFromStdin = true;
+    } else if (arg === "--bootstrap") {
+      bootstrap = true;
     } else if (arg === "--file") {
       const path = args[index + 1];
       if (!path) throw new Error("--file requires a path.");
@@ -1140,12 +1145,16 @@ async function parseCommonInputArgs(args) {
     }
   }
 
+  if (bootstrap && (readFromStdin || diff || files.length > 0 || textArgs.join(" ").trim())) {
+    throw new Error("--bootstrap cannot be combined with manual context input.");
+  }
+
   const stdinText = [
     readFromStdin ? await readStdin() : "",
     textArgs.join(" "),
   ].filter(Boolean).join("\n");
 
-  return { stdinText, files, diff, writeArtifact };
+  return { stdinText, files, diff, bootstrap, writeArtifact };
 }
 
 function parseArtifactArgs(args) {
@@ -1258,9 +1267,16 @@ async function runGate(command, args) {
 }
 
 async function runContextPackCommand(args) {
-  const { stdinText, files, diff, writeArtifact } = await parseCommonInputArgs(args);
+  const { stdinText, files, diff, bootstrap, writeArtifact } = await parseCommonInputArgs(args);
   const cwd = process.cwd();
-  const collected = await collectTextInput({ stdinText, files, diff, cwd });
+  let effectiveCwd = cwd;
+  let collected;
+  if (bootstrap) {
+    effectiveCwd = await resolveProjectRootForContextPack({ cwd });
+    collected = await collectBootstrapContext({ cwd: effectiveCwd });
+  } else {
+    collected = await collectTextInput({ stdinText, files, diff, cwd });
+  }
   const fakeAllowed = allowFakeResponse(process.env);
   if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
     throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
@@ -1269,12 +1285,12 @@ async function runContextPackCommand(args) {
   if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
   const pack = await runContextPack({
     apiKey: key.key,
-    cwd,
+    cwd: effectiveCwd,
     collected,
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,
-    telemetry: { cwd, source: "cli", command: "context-pack" },
+    telemetry: { cwd: effectiveCwd, source: "cli", command: "context-pack" },
   });
   output.write(contextPackToPrettyJson(pack));
 }
