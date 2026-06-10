@@ -1,0 +1,333 @@
+import { readFile, readdir } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
+import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
+import { telemetryQueueDirs } from "./telemetry-queue.mjs";
+
+const QUEUE_STATES = ["pending", "inflight", "sent", "failed", "quarantine"];
+const DEFAULT_INPUT_PRICE_PER_MILLION = 1.5;
+const DEFAULT_OUTPUT_PRICE_PER_MILLION = 9;
+const DEFAULT_MODEL = "gemini-3.5-flash";
+
+function zeroStatusCounts() {
+  return {
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    unknown_count: 0,
+  };
+}
+
+function zeroEconomics() {
+  return {
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    unknown_count: 0,
+    events_with_usage: 0,
+    events_missing_usage: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    codex_tokens_saved_estimate: 0,
+  };
+}
+
+function assertPositiveInteger(value, name) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive integer.`);
+  }
+}
+
+function assertNonnegativeNumber(value, name) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${name} must be a nonnegative number.`);
+  }
+}
+
+function safeInteger(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function nullableRatio(numerator, denominator, digits = 6) {
+  if (denominator <= 0) return null;
+  return Number((numerator / denominator).toFixed(digits));
+}
+
+function roundCost(value) {
+  return Number(value.toFixed(6));
+}
+
+function sanitizeDimension(value, fallback = "unknown") {
+  const text = `${value ?? ""}`.replace(/[\0-\x1F\x7F]/g, " ").trim();
+  const masked = maskCredentialText(text || fallback);
+  return masked.length > 120 ? `${masked.slice(0, 117)}...` : masked;
+}
+
+function canonicalCommand(value) {
+  return sanitizeDimension(value).toLowerCase().replaceAll("_", "-");
+}
+
+function statusOf(event) {
+  if (event.status === "success" || event.status === "error") return event.status;
+  return "unknown";
+}
+
+function updateStatus(target, status) {
+  target.event_count += 1;
+  if (status === "success") target.success_count += 1;
+  else if (status === "error") target.error_count += 1;
+  else target.unknown_count += 1;
+}
+
+function hasUsage(event) {
+  return event.economics?.input_tokens != null
+    || event.economics?.output_tokens != null
+    || event.economics?.total_tokens != null;
+}
+
+function savingsEstimate(event, inputTokens) {
+  const explicit = event.economics?.codex_tokens_saved_estimate;
+  return Number.isInteger(explicit) && explicit >= 0 ? explicit : inputTokens;
+}
+
+function addEventEconomics(target, event) {
+  const status = statusOf(event);
+  updateStatus(target, status);
+  if (!hasUsage(event)) {
+    target.events_missing_usage += 1;
+    return;
+  }
+  const inputTokens = safeInteger(event.economics?.input_tokens);
+  const outputTokens = safeInteger(event.economics?.output_tokens);
+  const totalTokens = safeInteger(event.economics?.total_tokens);
+  target.events_with_usage += 1;
+  target.input_tokens += inputTokens;
+  target.output_tokens += outputTokens;
+  target.total_tokens += totalTokens;
+  target.codex_tokens_saved_estimate += savingsEstimate(event, inputTokens);
+}
+
+function eventFileForState(state, path) {
+  const name = basename(path);
+  if (state === "failed") return name !== "reason.json" && name.endsWith(".json");
+  if (state === "quarantine") return name === "event.json";
+  return name.endsWith(".json");
+}
+
+async function* walkFiles(root) {
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    if (entry.isFile()) {
+      yield path;
+    } else if (entry.isDirectory()) {
+      yield* walkFiles(path);
+    }
+  }
+}
+
+async function readEventFile(path) {
+  const raw = await readFile(path, "utf8");
+  return normalizeTelemetryEvent(JSON.parse(raw));
+}
+
+function costFor({ inputTokens, outputTokens, inputPricePerMillion, outputPricePerMillion }) {
+  return roundCost(
+    (inputTokens / 1_000_000) * inputPricePerMillion
+    + (outputTokens / 1_000_000) * outputPricePerMillion,
+  );
+}
+
+function enrichEconomics(item, pricing) {
+  return {
+    ...item,
+    gemini_estimated_cost_usd: costFor({
+      inputTokens: item.input_tokens,
+      outputTokens: item.output_tokens,
+      inputPricePerMillion: pricing.input_price_per_million,
+      outputPricePerMillion: pricing.output_price_per_million,
+    }),
+    gemini_tokens_per_codex_token_saved: nullableRatio(
+      item.total_tokens,
+      item.codex_tokens_saved_estimate,
+    ),
+    usage_coverage_rate: nullableRatio(item.events_with_usage, item.event_count, 4),
+    success_rate: nullableRatio(item.success_count, item.success_count + item.error_count, 4),
+  };
+}
+
+function topCommands(commandMap, pricing, limit) {
+  return [...commandMap.values()]
+    .map((item) => enrichEconomics(item, pricing))
+    .sort((left, right) => (
+      right.codex_tokens_saved_estimate - left.codex_tokens_saved_estimate
+      || right.total_tokens - left.total_tokens
+      || left.command.localeCompare(right.command)
+    ))
+    .slice(0, limit);
+}
+
+function recommendation(kind, message) {
+  return { kind, message };
+}
+
+function buildRecommendations({ totals, topCommandRows }) {
+  const recommendations = [];
+  if (totals.event_count > 0 && totals.usage_coverage_rate !== null && totals.usage_coverage_rate < 0.8) {
+    recommendations.push(recommendation(
+      "instrumentation",
+      "Usage metadata coverage is below 80%; improve token capture before making strong ROI claims.",
+    ));
+  }
+  const highSavings = topCommandRows.find((item) => (
+    item.codex_tokens_saved_estimate >= 1_000_000
+    && item.gemini_estimated_cost_usd <= 10
+    && (item.success_rate ?? 0) >= 0.8
+  ));
+  if (highSavings) {
+    recommendations.push(recommendation(
+      "economics",
+      `${highSavings.command} shows high estimated Codex token savings at low Gemini cost; keep this workflow active.`,
+    ));
+  }
+  const inefficient = topCommandRows.find((item) => (
+    item.codex_tokens_saved_estimate > 0
+    && item.gemini_tokens_per_codex_token_saved !== null
+    && item.gemini_tokens_per_codex_token_saved > 2
+  ));
+  if (inefficient) {
+    recommendations.push(recommendation(
+      "workflow",
+      `${inefficient.command} uses more than 2 Gemini tokens per estimated Codex token saved; review prompt size or routing.`,
+    ));
+  }
+  return recommendations;
+}
+
+export async function runTelemetryEconomics({
+  cwd = process.cwd(),
+  home,
+  scope = "auto",
+  now = new Date(),
+  topLimit = 10,
+  inputPricePerMillion = DEFAULT_INPUT_PRICE_PER_MILLION,
+  outputPricePerMillion = DEFAULT_OUTPUT_PRICE_PER_MILLION,
+} = {}) {
+  assertPositiveInteger(topLimit, "topLimit");
+  assertNonnegativeNumber(inputPricePerMillion, "inputPricePerMillion");
+  assertNonnegativeNumber(outputPricePerMillion, "outputPricePerMillion");
+
+  const context = await loadTelemetryConfigContext({ cwd, home, scope });
+  if (!context.config?.enabled) throw new Error("Telemetry is not enabled.");
+
+  const pricing = {
+    model: DEFAULT_MODEL,
+    input_price_per_million: inputPricePerMillion,
+    output_price_per_million: outputPricePerMillion,
+    currency: "USD",
+    source: "default_gemini_api_pricing_observed_2026-06-10",
+  };
+  const dirs = telemetryQueueDirs(context.storageCwd);
+  const totals = zeroEconomics();
+  const commands = new Map();
+
+  for (const queueState of QUEUE_STATES) {
+    for await (const path of walkFiles(dirs[queueState])) {
+      if (!eventFileForState(queueState, path)) continue;
+      let event;
+      try {
+        event = await readEventFile(path);
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        continue;
+      }
+      addEventEconomics(totals, event);
+      const command = canonicalCommand(event.command);
+      const commandItem = commands.get(command) ?? { command, ...zeroEconomics() };
+      addEventEconomics(commandItem, event);
+      commands.set(command, commandItem);
+    }
+  }
+
+  const enrichedTotals = enrichEconomics(totals, pricing);
+  const commandRows = topCommands(commands, pricing, topLimit);
+
+  return {
+    scope: context.scope,
+    storage_cwd: context.storageCwd,
+    generated_at: now.toISOString(),
+    pricing,
+    totals: enrichedTotals,
+    top_commands: commandRows,
+    recommendations: buildRecommendations({
+      totals: enrichedTotals,
+      topCommandRows: commandRows,
+    }),
+    limitations: [
+      "Gemini cost is estimated from configured per-million-token prices, not provider billing export.",
+      "Codex token savings are estimates, not measured Codex billing savings.",
+      "Local economics only include telemetry files available on this machine.",
+    ],
+  };
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatUsd(value) {
+  return `$${value.toFixed(6)}`;
+}
+
+function formatPercent(value) {
+  return value === null ? "n/a" : `${(value * 100).toFixed(1)}%`;
+}
+
+function formatCommandRows(rows) {
+  if (rows.length === 0) return "None";
+  return rows.map((item, index) => (
+    `${index + 1}. ${item.command}: ${formatNumber(item.codex_tokens_saved_estimate)} estimated saved, ${formatUsd(item.gemini_estimated_cost_usd)} Gemini cost, ${formatPercent(item.usage_coverage_rate)} usage coverage`
+  )).join("\n");
+}
+
+export function formatTelemetryEconomicsText(report) {
+  const recommendations = report.recommendations.length
+    ? report.recommendations.map((item) => `- ${item.message}`).join("\n")
+    : "- No economics recommendations yet; collect more usage-bearing events.";
+
+  return [
+    "Telemetry Economics",
+    "",
+    `Scope: ${report.scope}`,
+    `Storage: ${report.storage_cwd}`,
+    `Pricing: ${report.pricing.model} input ${formatUsd(report.pricing.input_price_per_million)} / 1M, output ${formatUsd(report.pricing.output_price_per_million)} / 1M (${report.pricing.currency})`,
+    "",
+    "Totals:",
+    `- Events: ${formatNumber(report.totals.event_count)}`,
+    `- Usage coverage: ${formatPercent(report.totals.usage_coverage_rate)}`,
+    `- Gemini input tokens: ${formatNumber(report.totals.input_tokens)}`,
+    `- Gemini output tokens: ${formatNumber(report.totals.output_tokens)}`,
+    `- Gemini total tokens: ${formatNumber(report.totals.total_tokens)}`,
+    `- Estimated Gemini cost: ${formatUsd(report.totals.gemini_estimated_cost_usd)}`,
+    `- Estimated Codex tokens saved: ${formatNumber(report.totals.codex_tokens_saved_estimate)}`,
+    `- Gemini tokens per estimated Codex token saved: ${report.totals.gemini_tokens_per_codex_token_saved ?? "n/a"}`,
+    "",
+    "Top command economics:",
+    formatCommandRows(report.top_commands),
+    "",
+    "Recommendations:",
+    recommendations,
+    "",
+    "Limitations:",
+    ...report.limitations.map((item) => `- ${item}`),
+    "",
+  ].join("\n");
+}
