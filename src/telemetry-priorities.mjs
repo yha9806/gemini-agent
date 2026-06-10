@@ -89,17 +89,19 @@ function nonnegativeMetric(value) {
 }
 
 const MULTIMODAL_FIELD_CONFIG = [
-  { name: "MIME", key: "mime", missingKey: "unknown_mime_items" },
-  { name: "byte-size", key: "byte_size", missingKey: "unknown_byte_size_items" },
-  { name: "media-kind", key: "kind", missingKey: "unknown_kind_items" },
+  { name: "MIME", key: "mime", missingKey: "unknown_mime_items", presentKey: "media_items_with_mime" },
+  { name: "byte-size", key: "byte_size", missingKey: "unknown_byte_size_items", presentKey: "media_items_with_byte_size" },
+  { name: "media-kind", key: "kind", missingKey: "unknown_kind_items", presentKey: "media_items_with_kind" },
 ];
 
-function topMissingMultimodalCommand(multimodal, missingKey) {
+function topMissingMultimodalCommand(multimodal, field) {
   const rows = Array.isArray(multimodal?.top_commands) ? multimodal.top_commands : [];
   return rows
     .map((item) => ({
       command: `${item?.command ?? "unknown"}`,
-      missing: nonnegativeMetric(item?.[missingKey]),
+      missing: nonnegativeMetric(item?.[field.missingKey]),
+      present: nonnegativeMetric(item?.[field.presentKey]),
+      itemCount: nonnegativeMetric(item?.item_count),
     }))
     .filter((item) => item.missing > 0)
     .sort((left, right) => (
@@ -113,7 +115,7 @@ function multimodalFieldGaps(multimodalCoverage, multimodal, threshold = 0.75) {
     .map((item) => ({
       ...item,
       coverage: multimodalCoverage[item.key],
-      topCommand: topMissingMultimodalCommand(multimodal, item.missingKey),
+      topCommand: topMissingMultimodalCommand(multimodal, item),
     }))
     .filter((item) => item.coverage !== null && item.coverage < threshold);
 }
@@ -188,16 +190,31 @@ function deliveryPriority(summary) {
 }
 
 function multimodalGapEvidence(gaps) {
-  return gaps
-    .filter((item) => item.topCommand)
-    .map((item) => (
-      `Top adjusted multimodal ${item.name} gap: ${item.topCommand.command} missing ${formatNumber(item.topCommand.missing)} item${item.topCommand.missing === 1 ? "" : "s"}`
-    ));
+  const evidence = [];
+  for (const item of gaps) {
+    if (!item.topCommand) continue;
+    evidence.push(
+      `Top adjusted multimodal ${item.name} gap: ${item.topCommand.command} missing ${formatNumber(item.topCommand.missing)} item${item.topCommand.missing === 1 ? "" : "s"}`,
+    );
+    if (item.name === "byte-size"
+      && item.topCommand.command === "artifact-review-backfill"
+      && item.topCommand.itemCount > 0) {
+      evidence.push(
+        `artifact-review-backfill byte-size known for ${formatNumber(item.topCommand.present)} of ${formatNumber(item.topCommand.itemCount)} adjusted media items`,
+      );
+    }
+  }
+  return evidence;
 }
 
 function multimodalGapAction(gaps) {
   const actionable = gaps.filter((item) => item.topCommand);
   if (actionable.length === 0) return null;
+  if (actionable.length === 1
+    && actionable[0].name === "byte-size"
+    && actionable[0].topCommand.command === "artifact-review-backfill") {
+    return "Fix future artifact-review-backfill byte-size capture; rerun source-available correction backfills for recoverable historical events.";
+  }
   const fields = commaJoin(actionable.map((item) => item.name));
   const commands = [...new Set(actionable.map((item) => item.topCommand.command))];
   return commands.length === 1

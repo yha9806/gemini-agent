@@ -615,6 +615,77 @@ test("runTelemetryPriorities names only weak adjusted multimodal metadata fields
   }
 });
 
+test("runTelemetryPriorities separates future capture from recoverable backfill for artifact backfill byte-size gaps", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const original = telemetryEvent(65, {
+      command: "artifact-review-backfill",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: Array.from({ length: 6 }, (_, index) => ({
+          mime_type: "image/png",
+          basename: `private-backfill-${index}.png`,
+          media_kind: "image",
+        })),
+      },
+      economics: {
+        input_tokens: null,
+        output_tokens: null,
+        total_tokens: null,
+        codex_tokens_saved_estimate: 0,
+      },
+    });
+    await appendTelemetryEvent({ cwd, event: original });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(66, {
+        command: "artifact-review-backfill-correction",
+        prompt: "metadata correction",
+        response: "metadata correction",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [
+            { mime_type: "image/png", basename: "media-1.png", media_kind: "image", byte_size: 100 },
+            { mime_type: "image/png", basename: "media-2.png", media_kind: "image", byte_size: 200 },
+          ],
+        },
+        metadata: {
+          correction_for_event_id: original.event_id,
+          correction_version: "media-v3",
+          correction_reason: "media_manifest_enrichment",
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const serialized = JSON.stringify(report);
+    const instrumentation = report.priorities.find((item) => item.kind === "instrumentation");
+
+    assert.ok(instrumentation);
+    assert.equal(
+      instrumentation.action,
+      "Fix future artifact-review-backfill byte-size capture; rerun source-available correction backfills for recoverable historical events.",
+    );
+    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted multimodal byte-size gap: artifact-review-backfill missing 4 items"));
+    assert.ok(instrumentation.evidence.some((item) => item === "artifact-review-backfill byte-size known for 2 of 6 adjusted media items"));
+    assert.doesNotMatch(serialized, /private-backfill|evt_priority_000065|media-1|media-2/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities breaks multimodal gap ties deterministically", async () => {
   const cwd = await temporaryWorkspace();
   try {
