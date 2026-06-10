@@ -505,6 +505,126 @@ test("gate commands accept context-pack input and print JSON", async () => {
   }
 });
 
+test("gate commands auto-discover project-root context pack from nested git cwd", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-auto-context-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), fakeContextPack);
+  const nested = join(dir, "packages", "app");
+  await mkdir(nested, { recursive: true });
+
+  const { stdout } = await execFileAsync(bin, ["plan-critique", "--auto-context-pack"], {
+    cwd: nested,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.verdict, "pass");
+  assert.deepEqual(parsed.notes, ["fake ok"]);
+});
+
+test("gate commands auto-discover context pack from non-git cwd fallback", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-auto-context-nongit-"));
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), fakeContextPack);
+
+  const { stdout } = await execFileAsync(bin, ["research-brief", "--auto-context-pack"], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.verdict, "pass");
+});
+
+test("plan-critique rejects missing auto context-pack before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-auto-context-missing-"));
+
+  await assert.rejects(
+    execFileAsync(bin, ["plan-critique", "--auto-context-pack"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /No context pack found/);
+      assert.match(error.stderr, /context-pack --write-artifact/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("plan-critique rejects invalid auto context-pack before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-auto-context-invalid-"));
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), "{bad json");
+
+  await assert.rejects(
+    execFileAsync(bin, ["plan-critique", "--auto-context-pack"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Invalid context pack JSON/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("plan-critique rejects explicit and auto context-pack together", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-auto-context-exclusive-"));
+  const contextPath = join(dir, "context.json");
+  await writeFile(contextPath, fakeContextPack);
+
+  await assert.rejects(
+    execFileAsync(bin, ["plan-critique", "--context-pack", contextPath, "--auto-context-pack"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--context-pack and --auto-context-pack are mutually exclusive/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("plan-critique enforces auto context-pack and stdin combined limit before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-auto-context-limit-"));
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), fakeContextPack);
+
+  await assert.rejects(
+    execBin(["plan-critique", "--auto-context-pack", "--stdin", "--max-input-bytes", "80"], {
+      cwd: dir,
+      input: "additional plan text",
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /plan-critique input exceeds 80 bytes/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
 test("plan-critique rejects missing context-pack path", async () => {
   await assert.rejects(
     execFileAsync(bin, ["plan-critique", "--context-pack"], {

@@ -22,6 +22,7 @@ import {
   gateInputMetadata,
   limitedGateText,
   parseMaxInputBytes,
+  readAutoContextPackFile,
   readLimitedContextPackFile,
   readLimitedGateFile,
 } from "./gate-input.mjs";
@@ -118,10 +119,10 @@ function printUsage() {
     "  gemini-agent context-pack [--stdin] [--file <path> ...] [--diff] [--write-artifact] [text]",
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
-    "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent diff-review (--file <path> | --stdin | --diff | --context-pack <path> | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent research-brief (--file <path> | --stdin | --diff | --context-pack <path> | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent diff-review (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent research-brief (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
     "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--user-label <label>|--clear-user-label] [--schedule <schedule>]",
     "  gemini-agent telemetry status [--global]",
@@ -1022,6 +1023,7 @@ function telemetryTickDecision({ schedule, lastSentAt, now = new Date() }) {
 async function readGateInput(args, { gate, command } = {}) {
   let filePath = null;
   let contextPackPath = null;
+  let autoContextPack = false;
   let readFromStdin = false;
   let diff = false;
   let limitBytes = defaultGateInputLimitBytes(gate);
@@ -1039,6 +1041,8 @@ async function readGateInput(args, { gate, command } = {}) {
       if (!path || path.startsWith("--")) throw new Error("--context-pack requires a path.");
       contextPackPath = path;
       index += 1;
+    } else if (arg === "--auto-context-pack") {
+      autoContextPack = true;
     } else if (arg === "--stdin") {
       readFromStdin = true;
     } else if (arg === "--diff") {
@@ -1051,7 +1055,21 @@ async function readGateInput(args, { gate, command } = {}) {
     }
   }
 
+  if (contextPackPath && autoContextPack) {
+    throw new Error("--context-pack and --auto-context-pack are mutually exclusive.");
+  }
+
   const sections = [];
+  if (autoContextPack) {
+    const contextPackInput = await readAutoContextPackFile({
+      gate,
+      command,
+      limitBytes,
+      cwd: process.cwd(),
+    });
+    sections.push(contextPackInput.inputText);
+  }
+
   if (contextPackPath) {
     const contextPackInput = await readLimitedContextPackFile(contextPackPath, { gate, command, limitBytes });
     sections.push(contextPackInput.inputText);

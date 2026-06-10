@@ -11,6 +11,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent diff-review --diff
 ./bin/gemini-agent plan-critique --stdin --max-input-bytes 131072
 ./bin/gemini-agent plan-critique --context-pack .gemini-agent/context/latest.json
+./bin/gemini-agent plan-critique --auto-context-pack --stdin
 ./bin/gemini-agent context-pack --stdin
 ./bin/gemini-agent artifact-review --file design.png --kind ui
 ./bin/gemini-agent artifact-review --file before.png --file after.png --kind ui --review-mode comparison
@@ -59,7 +60,8 @@ Global Gemini review gate for Codex.
 - `diff-review --diff` reads the current git diff directly, so Codex can run the high-ROI review gate without building a manual stdin pipe.
 - `plan-critique` has a conservative default input byte limit to control review cost; gate commands also accept `--max-input-bytes <n>` for intentional overrides.
 - Gate commands accept `--context-pack <path>` so Codex can ask Gemini to critique compact prior context instead of pasting large raw project slices again.
-- Global active Codex policy tells sessions to reuse project-root `.gemini-agent/context/latest.json` with gate `--context-pack`; regenerate the context pack first when it is missing, stale, or unrelated.
+- Gate commands accept `--auto-context-pack` to reuse project-root `.gemini-agent/context/latest.json` explicitly without hand-writing the path.
+- Global active Codex policy tells sessions to reuse project-root `.gemini-agent/context/latest.json` with gate `--auto-context-pack` or explicit `--context-pack`; regenerate the context pack first when it is missing, stale, or unrelated.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1, including bounded multi-file comparison for visual diff work.
 - multi-file artifact-review records media metadata without printing raw image bytes in ordinary telemetry output.

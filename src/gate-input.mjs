@@ -1,6 +1,11 @@
+import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { DEFAULT_TEXT_LIMIT_BYTES } from "./input-collector.mjs";
 import { normalizeContextPack } from "./schemas.mjs";
+
+const execFileAsync = promisify(execFile);
 
 export const PLAN_CRITIQUE_DEFAULT_INPUT_LIMIT_BYTES = 128 * 1024;
 
@@ -115,6 +120,49 @@ export async function readLimitedContextPackFile(path, { gate, command = null, l
     limitBytes,
   });
   return { inputText, inputBytes };
+}
+
+export async function resolveProjectRootForContextPack({
+  cwd = process.cwd(),
+  runner = execFileAsync,
+} = {}) {
+  try {
+    const { stdout } = await runner("git", ["rev-parse", "--show-toplevel"], {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024,
+    });
+    const root = stdout.trim();
+    return root || cwd;
+  } catch {
+    return cwd;
+  }
+}
+
+export async function autoContextPackPath({ cwd = process.cwd(), runner } = {}) {
+  const root = await resolveProjectRootForContextPack({ cwd, runner });
+  return join(root, ".gemini-agent", "context", "latest.json");
+}
+
+export async function readAutoContextPackFile({
+  gate,
+  command = null,
+  limitBytes,
+  cwd = process.cwd(),
+  runner,
+} = {}) {
+  const path = await autoContextPackPath({ cwd, runner });
+  try {
+    return await readLimitedContextPackFile(path, { gate, command, limitBytes });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error([
+        `No context pack found at ${path}.`,
+        "Run gemini-agent context-pack --write-artifact from the project root before using --auto-context-pack.",
+      ].join(" "));
+    }
+    throw error;
+  }
 }
 
 export function limitedGateText(inputText, { gate, command = null, limitBytes }) {
