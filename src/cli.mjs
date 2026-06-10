@@ -17,6 +17,13 @@ import {
 import { loadProjectPolicy } from "./policies.mjs";
 import { parsePaletteSplitArgs, runPaletteSplit } from "./palette-mask.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
+import {
+  defaultGateInputLimitBytes,
+  gateInputMetadata,
+  limitedGateText,
+  parseMaxInputBytes,
+  readLimitedGateFile,
+} from "./gate-input.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 import { drainTelemetryCapture } from "./telemetry-capture.mjs";
 import { artifactReviewsToRawTelemetryBatch } from "./telemetry-backfill.mjs";
@@ -110,10 +117,10 @@ function printUsage() {
     "  gemini-agent context-pack [--stdin] [--file <path> ...] [--diff] [--write-artifact] [text]",
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
-    "  gemini-agent plan-critique (--file <path> | --stdin | <text>)",
-    "  gemini-agent patch-precheck (--file <path> | --stdin | <text>)",
-    "  gemini-agent diff-review (--file <path> | --stdin | <text>)",
-    "  gemini-agent research-brief (--file <path> | --stdin | <text>)",
+    "  gemini-agent plan-critique (--file <path> | --stdin | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent patch-precheck (--file <path> | --stdin | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent diff-review (--file <path> | --stdin | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent research-brief (--file <path> | --stdin | <text>) [--max-input-bytes <n>]",
     "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
     "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--user-label <label>|--clear-user-label] [--schedule <schedule>]",
     "  gemini-agent telemetry status [--global]",
@@ -1011,15 +1018,40 @@ function telemetryTickDecision({ schedule, lastSentAt, now = new Date() }) {
   throw new Error(`Unsupported telemetry schedule: ${schedule}`);
 }
 
-async function readGateInput(args) {
-  const fileIndex = args.indexOf("--file");
-  if (fileIndex !== -1) {
-    const path = args[fileIndex + 1];
-    if (!path) throw new Error("--file requires a path.");
-    return readFile(path, "utf8");
+async function readGateInput(args, { gate, command } = {}) {
+  let filePath = null;
+  let readFromStdin = false;
+  let limitBytes = defaultGateInputLimitBytes(gate);
+  const textArgs = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--file") {
+      const path = args[index + 1];
+      if (!path) throw new Error("--file requires a path.");
+      filePath = path;
+      index += 1;
+    } else if (arg === "--stdin") {
+      readFromStdin = true;
+    } else if (arg === "--max-input-bytes") {
+      limitBytes = parseMaxInputBytes(args[index + 1]);
+      index += 1;
+    } else {
+      textArgs.push(arg);
+    }
   }
-  if (args.includes("--stdin")) return readStdin();
-  return args.join(" ").trim();
+
+  const input = filePath
+    ? await readLimitedGateFile(filePath, { gate, command, limitBytes })
+    : limitedGateText(
+      readFromStdin ? await readStdin() : textArgs.join(" ").trim(),
+      { gate, command, limitBytes },
+    );
+
+  return {
+    ...input,
+    limitBytes,
+  };
 }
 
 async function parseCommonInputArgs(args) {
@@ -1139,7 +1171,7 @@ async function runAuth(args) {
 
 async function runGate(command, args) {
   const gate = GATE_COMMANDS.get(command);
-  const inputText = await readGateInput(args);
+  const { inputText, inputBytes, limitBytes } = await readGateInput(args, { gate, command });
   if (!inputText || !inputText.trim()) throw new Error("Gate input is empty.");
   const fakeAllowed = allowFakeResponse(process.env);
   if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
@@ -1154,7 +1186,12 @@ async function runGate(command, args) {
     prompt,
     allowFakeResponse: fakeAllowed,
     env: process.env,
-    telemetry: { cwd: process.cwd(), source: "cli", command },
+    telemetry: {
+      cwd: process.cwd(),
+      source: "cli",
+      command,
+      metadata: gateInputMetadata({ gate, inputBytes, limitBytes }),
+    },
   });
   output.write(reviewToPrettyJson(review));
 }

@@ -313,6 +313,63 @@ test("generateJson keeps telemetry contents separate from Gemini request content
   assert.equal(seenTelemetryContents, telemetryContents);
 });
 
+test("generateJson forwards caller telemetry metadata", async () => {
+  const captures = [];
+
+  await generateReview({
+    apiKey: "fake-key",
+    prompt: "review plan",
+    telemetry: {
+      cwd: "/tmp/plan-project",
+      source: "cli",
+      command: "plan-critique",
+      context: { session_id: "session-a" },
+      outcome: { task_outcome: "success" },
+      economics: { codex_tokens_saved_estimate: 1200 },
+      metadata: {
+        gate: "plan_critique",
+        input_bytes: 42,
+        input_limit_bytes: 131072,
+      },
+      capture: async (event) => captures.push(event),
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent() {
+          return {
+            text: JSON.stringify({
+              verdict: "pass",
+              top_risks: [],
+              missing_tests: [],
+              unsafe_claims: [],
+              suggested_changes: [],
+              notes: [],
+            }),
+            usageMetadata: {
+              promptTokenCount: 10,
+              candidatesTokenCount: 2,
+              totalTokenCount: 12,
+            },
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].context.session_id, "session-a");
+  assert.equal(captures[0].outcome.task_outcome, "success");
+  assert.equal(captures[0].economics.codex_tokens_saved_estimate, 1200);
+  assert.equal(captures[0].economics.input_tokens, 10);
+  assert.equal(captures[0].economics.output_tokens, 2);
+  assert.equal(captures[0].economics.total_tokens, 12);
+  assert.deepEqual(captures[0].metadata, {
+    gate: "plan_critique",
+    input_bytes: 42,
+    input_limit_bytes: 131072,
+  });
+});
+
 test("generateJson redacts API key from structured generation errors", async () => {
   const apiKey = "fake-secret-key";
 

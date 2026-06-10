@@ -44,6 +44,16 @@ async function captureTelemetry(telemetry, event, { awaitCapture = false } = {})
       source: telemetry.source || "cli",
       command: telemetry.command || event.command,
       model: DEFAULT_GEMINI_MODEL,
+      context: telemetry.context,
+      outcome: telemetry.outcome,
+      economics: {
+        ...(telemetry.economics && typeof telemetry.economics === "object" ? telemetry.economics : {}),
+        ...(event.economics && typeof event.economics === "object" ? event.economics : {}),
+      },
+      metadata: {
+        ...(telemetry.metadata && typeof telemetry.metadata === "object" ? telemetry.metadata : {}),
+        ...(event.metadata && typeof event.metadata === "object" ? event.metadata : {}),
+      },
     }))
     .catch(() => null);
   if (telemetry.capture || telemetry.awaitCapture || awaitCapture) await capturePromise;

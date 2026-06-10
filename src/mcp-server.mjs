@@ -15,6 +15,12 @@ import {
 } from "./input-collector.mjs";
 import { loadProjectPolicy, renderPolicy } from "./policies.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
+import {
+  assertGateInputWithinLimit,
+  defaultGateInputLimitBytes,
+  gateInputMetadata,
+  parseMaxInputBytes,
+} from "./gate-input.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 
 if (fstatSync(0).isCharacterDevice()) {
@@ -85,8 +91,15 @@ server.registerTool(
   },
 );
 
-async function runReviewTool(gate, input, cwd = process.cwd()) {
+async function runReviewTool(gate, input, cwd = process.cwd(), maxInputBytes = null) {
   if (!input || !input.trim()) throw new Error("Gate input is empty.");
+  const inputBytes = Buffer.byteLength(input, "utf8");
+  const limitBytes = maxInputBytes ?? defaultGateInputLimitBytes(gate);
+  assertGateInputWithinLimit({
+    gate,
+    inputBytes,
+    limitBytes,
+  });
   const fakeAllowed = allowFakeResponse();
   const apiKey = await requireApiKey();
   const policy = await loadProjectPolicy(cwd);
@@ -96,7 +109,12 @@ async function runReviewTool(gate, input, cwd = process.cwd()) {
     prompt,
     allowFakeResponse: fakeAllowed,
     env: process.env,
-    telemetry: { cwd, source: "mcp", command: gate },
+    telemetry: {
+      cwd,
+      source: "mcp",
+      command: gate,
+      metadata: gateInputMetadata({ gate, inputBytes, limitBytes }),
+    },
   });
   return textContent(reviewToPrettyJson(review));
 }
@@ -126,9 +144,15 @@ for (const [name, gate, description] of [
       inputSchema: {
         input: z.string().min(1),
         cwd: z.string().optional(),
+        max_input_bytes: z.number().int().positive().optional(),
       },
     },
-    async ({ input, cwd }) => runReviewTool(gate, input, cwd),
+    async ({ input, cwd, max_input_bytes }) => {
+      const limit = max_input_bytes === undefined
+        ? null
+        : parseMaxInputBytes(String(max_input_bytes), "max_input_bytes");
+      return runReviewTool(gate, input, cwd, limit);
+    },
   );
 }
 

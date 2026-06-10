@@ -82,6 +82,30 @@ test("mcp server exposes auth and diff review tools", async () => {
   }
 });
 
+test("mcp plan critique rejects oversized input before credentials", async () => {
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [new URL("../bin/gemini-agent-mcp", import.meta.url).pathname],
+    env: {
+      ...process.env,
+      GEMINI_API_KEY: "",
+    },
+  });
+  const client = new Client({ name: "gemini-agent-test", version: "0.1.0" });
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({
+      name: "gemini_plan_critique",
+      arguments: { input: "123456", max_input_bytes: 5 },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /plan-critique input exceeds 5 bytes/);
+    assert.doesNotMatch(result.content[0].text, /Gemini API key/);
+  } finally {
+    await client.close();
+  }
+});
+
 test("mcp server exposes context pack tool and latest context resource", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-mcp-"));
   await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });

@@ -390,6 +390,58 @@ test("diff-review does not use fake response without explicit allow flag", async
   );
 });
 
+test("plan-critique rejects oversized stdin before auth lookup", async () => {
+  await assert.rejects(
+    execBin(["plan-critique", "--stdin", "--max-input-bytes", "5"], {
+      input: "123456",
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /plan-critique input exceeds 5 bytes/);
+      assert.match(error.stderr, /context-pack/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("plan-critique checks file size before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const planPath = join(dir, "plan.md");
+  await writeFile(planPath, "123456");
+
+  await assert.rejects(
+    execFileAsync(bin, ["plan-critique", "--file", planPath, "--max-input-bytes", "5"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /plan-critique input exceeds 5 bytes/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("plan-critique accepts explicit byte limit override", async () => {
+  const { stdout } = await execBin(["plan-critique", "--stdin", "--max-input-bytes", "6"], {
+    input: "123456",
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.verdict, "pass");
+  assert.deepEqual(parsed.notes, ["fake ok"]);
+});
+
 test("auth set requires an interactive TTY", async () => {
   await assert.rejects(
     execFileAsync(bin, ["auth", "set"], {

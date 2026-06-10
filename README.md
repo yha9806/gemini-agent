@@ -8,6 +8,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent auth status
 ./bin/gemini-agent ask "Reply with exactly: gemini-agent-ok"
 ./bin/gemini-agent diff-review --stdin
+./bin/gemini-agent plan-critique --stdin --max-input-bytes 131072
 ./bin/gemini-agent context-pack --stdin
 ./bin/gemini-agent artifact-review --file design.png --kind ui
 ./bin/gemini-agent artifact-review --file before.png --file after.png --kind ui --review-mode comparison
@@ -53,6 +54,7 @@ Global Gemini review gate for Codex.
 - Gate commands reject empty input before resolving credentials.
 - Fake responses require explicit `GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1`.
 - Project policy is discovered from `.gemini-agent-policy.json`.
+- `plan-critique` has a conservative default input byte limit to control review cost; gate commands also accept `--max-input-bytes <n>` for intentional overrides.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1, including bounded multi-file comparison for visual diff work.
 - multi-file artifact-review records media metadata without printing raw image bytes in ordinary telemetry output.
