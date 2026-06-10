@@ -38,6 +38,8 @@ import { flushTelemetryQueue, runTelemetryValidation } from "./telemetry-sender.
 import {
   appendTelemetryEvent,
   appendTelemetryEventsIfNew,
+  archiveFailedTelemetryEvents,
+  inspectFailedTelemetryEvents,
   loadTelemetryState,
   purgeTelemetryData,
   quarantineTelemetryEvent,
@@ -88,6 +90,8 @@ function printUsage() {
     "  gemini-agent telemetry doctor [--global] [--json]",
     "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry retry-failed [--global] --reason <reason> [--dry-run|--write] [--batch-size <n>]",
+    "  gemini-agent telemetry failed inspect [--global] [--reason <reason>] [--limit <n>] [--json]",
+    "  gemini-agent telemetry failed archive [--global] --reason <reason> [--dry-run|--write] [--batch-size <n>] [--note <text>]",
     "  gemini-agent telemetry quarantine [--global] --event-id <id> --reason <reason>",
     "  gemini-agent telemetry tick [--global] [--batch-size <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry validate [--global] [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
@@ -282,6 +286,82 @@ function parseTelemetryRetryFailedOptions(args) {
       index += 1;
     } else {
       throw new Error(`Unknown telemetry retry-failed argument: ${arg}`);
+    }
+  }
+
+  if (sawDryRun && sawWrite) throw new Error("--dry-run and --write cannot be used together.");
+  if (!options.reason) throw new Error("--reason is required.");
+  return options;
+}
+
+function parseTelemetryFailedInspectOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+    limit: 20,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--reason") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--reason requires a reason.");
+      options.reason = value;
+      index += 1;
+    } else if (arg === "--limit") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--limit requires a positive integer.");
+      options.limit = positiveIntegerOption(value, "--limit");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry failed inspect argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseTelemetryFailedArchiveOptions(args) {
+  const options = {
+    dryRun: true,
+    global: false,
+    batchSize: 1,
+    note: null,
+  };
+  let sawDryRun = false;
+  let sawWrite = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--dry-run") {
+      sawDryRun = true;
+      options.dryRun = true;
+    } else if (arg === "--write") {
+      sawWrite = true;
+      options.dryRun = false;
+    } else if (arg === "--reason") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--reason requires a reason.");
+      options.reason = value;
+      index += 1;
+    } else if (arg === "--batch-size") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--batch-size requires a positive integer.");
+      options.batchSize = positiveIntegerOption(value, "--batch-size");
+      index += 1;
+    } else if (arg === "--note") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--note requires text.");
+      options.note = value;
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry failed archive argument: ${arg}`);
     }
   }
 
@@ -877,6 +957,17 @@ async function requireTelemetryDryRunContext(options) {
   return context;
 }
 
+async function loadTelemetryFailedContext(options) {
+  if (options.global) {
+    return loadTelemetryDryRunContext(options);
+  }
+  return {
+    scope: "local",
+    storageCwd: process.cwd(),
+    config: await readTelemetryDryRunConfig(process.cwd()),
+  };
+}
+
 async function runTelemetryFlush(args = []) {
   const options = parseTelemetryFlushOptions(args);
   if (options.dryRun) {
@@ -931,6 +1022,45 @@ async function runTelemetryRetryFailed(args = []) {
     storage_cwd: context.storageCwd,
     ...result,
   }, null, 2)}\n`);
+}
+
+async function runTelemetryFailed(args = []) {
+  const [subcommand, ...subArgs] = args;
+  if (subcommand === "inspect") {
+    const options = parseTelemetryFailedInspectOptions(subArgs);
+    const context = await loadTelemetryFailedContext(options);
+    const result = await inspectFailedTelemetryEvents({
+      cwd: context.storageCwd,
+      reason: options.reason,
+      limit: options.limit,
+    });
+    output.write(`${JSON.stringify({
+      scope: context.scope,
+      storage_cwd: context.storageCwd,
+      ...result,
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "archive") {
+    const options = parseTelemetryFailedArchiveOptions(subArgs);
+    const context = await loadTelemetryFailedContext(options);
+    const result = await archiveFailedTelemetryEvents({
+      cwd: context.storageCwd,
+      reason: options.reason,
+      batchSize: options.batchSize,
+      dryRun: options.dryRun,
+      note: options.note,
+    });
+    output.write(`${JSON.stringify({
+      scope: context.scope,
+      storage_cwd: context.storageCwd,
+      ...result,
+    }, null, 2)}\n`);
+    return;
+  }
+
+  throw new Error("telemetry failed requires inspect or archive.");
 }
 
 async function runTelemetryDoctorCommand(args = []) {
@@ -1110,6 +1240,11 @@ async function runTelemetry(args) {
 
   if (subcommand === "retry-failed") {
     await runTelemetryRetryFailed(subArgs);
+    return;
+  }
+
+  if (subcommand === "failed") {
+    await runTelemetryFailed(subArgs);
     return;
   }
 

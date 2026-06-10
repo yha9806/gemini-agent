@@ -19,9 +19,11 @@ import {
   appendTelemetryEvent,
   appendTelemetryEventsIfNew,
   appendTelemetryEventIfNew,
+  archiveFailedTelemetryEvents,
   claimTelemetryBatch,
   completeTelemetryBatch,
   failTelemetryBatch,
+  inspectFailedTelemetryEvents,
   loadTelemetryQueueSnapshot,
   loadTelemetryState,
   peekTelemetryEvents,
@@ -877,6 +879,149 @@ test("retryFailedTelemetryEvents returns aggregate-only data", async () => {
   assert.doesNotMatch(serialized, /\.gemini-agent/);
   assert.doesNotMatch(serialized, /queue\/failed/);
   assert.doesNotMatch(serialized, /event_[0-9]/);
+});
+
+test("inspectFailedTelemetryEvents returns safe aggregate descriptors", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 1000, 2);
+  await createFailedBatch(cwd, { count: 2, reason: "http_403" });
+
+  const result = await inspectFailedTelemetryEvents({
+    cwd,
+    limit: 5,
+  });
+  const serialized = JSON.stringify(result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.failed_event_count, 2);
+  assert.equal(result.failed_batch_count, 1);
+  assert.equal(result.reason_counts.length, 1);
+  assert.equal(result.reason_counts[0].reason, "http_403");
+  assert.equal(result.reason_counts[0].batch_count, 1);
+  assert.equal(result.reason_counts[0].event_count, 2);
+  assert.ok(result.reason_counts[0].bytes > 0);
+  assert.equal(result.events.length, 2);
+  assert.equal(result.events[0].reason, "http_403");
+  assert.equal(result.events[0].command, "ask");
+  assert.equal(result.events[0].model, "gemini-3.5-flash");
+  assert.equal(result.events[0].status, "success");
+  assert.equal(result.events[0].schema_version, "1");
+  assert.equal(result.events[0].created_day, "2026-05-29");
+  assert.equal(typeof result.events[0].prompt_bytes, "number");
+  assert.equal(typeof result.events[0].response_bytes, "number");
+  assert.equal(result.events[0].media_item_count, 1);
+  assert.equal(result.events[0].retryable_hint, "retry_failed_or_archive");
+
+  assert.doesNotMatch(serialized, /evt_001000/);
+  assert.doesNotMatch(serialized, /batch_2026/);
+  assert.doesNotMatch(serialized, /raw prompt 1000/);
+  assert.doesNotMatch(serialized, /raw response 1000/);
+  assert.doesNotMatch(serialized, /secret-1000\.png/);
+  assert.doesNotMatch(serialized, /\.gemini-agent/);
+  assert.doesNotMatch(serialized, /queue\/failed/);
+  assert.doesNotMatch(serialized, /event_[0-9]/);
+});
+
+test("archiveFailedTelemetryEvents dry-run reports matching failures without moving files", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 1100, 2);
+  await createFailedBatch(cwd, { count: 2, reason: "http_403" });
+
+  const before = await loadTelemetryQueueSnapshot({ cwd });
+  const result = await archiveFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 1,
+    dryRun: true,
+    note: "../unsafe note with token abc123",
+  });
+  const after = await loadTelemetryQueueSnapshot({ cwd });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dry_run, true);
+  assert.equal(result.reason, "http_403");
+  assert.equal(result.would_archive_count, 1);
+  assert.equal(result.archived_count, 0);
+  assert.equal(result.remaining_failed_count_for_reason, 2);
+  assert.equal(result.resolution_bucket, null);
+  assert.deepEqual(after, before);
+});
+
+test("archiveFailedTelemetryEvents write mode moves bounded failures to resolved-failed", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 1200, 2);
+  const failedBatch = await createFailedBatch(cwd, { count: 2, reason: "http_403" });
+
+  const result = await archiveFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 1,
+    dryRun: false,
+    note: "../local cleanup",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dry_run, false);
+  assert.equal(result.would_archive_count, 1);
+  assert.equal(result.archived_count, 1);
+  assert.equal(result.remaining_failed_count_for_reason, 1);
+  assert.match(result.resolution_bucket, /^resolved_\d{8}_\d+_[a-f0-9-]+$/);
+
+  const dirs = telemetryQueueDirs(cwd);
+  const resolvedDir = join(dirs.resolvedFailed, result.resolution_bucket);
+  const resolvedFiles = await regularFileNames(resolvedDir);
+  assert.equal(resolvedFiles.includes("reason.json"), true);
+  assert.equal(resolvedFiles.includes("resolution.json"), true);
+  assert.equal(
+    resolvedFiles.filter((name) => name.endsWith(".json") && name !== "reason.json" && name !== "resolution.json").length,
+    1,
+  );
+  assert.equal(await pathExists(join(failedBatch.failedDir, "reason.json")), true);
+
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.pending.count, 0);
+  assert.equal(snapshot.failed.count, 1);
+
+  const second = await archiveFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 5,
+    dryRun: false,
+  });
+  assert.equal(second.archived_count, 1);
+  assert.equal(second.remaining_failed_count_for_reason, 0);
+  assert.equal(await pathExists(failedBatch.failedDir), false);
+
+  const finalSnapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(finalSnapshot.failed.count, 0);
+  assert.equal(finalSnapshot.pending.count, 0);
+});
+
+test("archiveFailedTelemetryEvents handles unknown reasons and lock contention", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 1300, 1);
+  await createFailedBatch(cwd, { count: 1, reason: "http_403", malformedReason: true });
+
+  const dryRun = await archiveFailedTelemetryEvents({
+    cwd,
+    reason: "unknown",
+    batchSize: 1,
+    dryRun: true,
+  });
+  assert.equal(dryRun.would_archive_count, 1);
+
+  await withTelemetryQueueLock({ cwd }, async () => {
+    await assert.rejects(
+      () => archiveFailedTelemetryEvents({
+        cwd,
+        reason: "unknown",
+        batchSize: 1,
+        dryRun: false,
+        lock: { retries: 0, retryDelayMs: 0 },
+      }),
+      /Telemetry queue lock could not be acquired/,
+    );
+  });
 });
 
 test("retryFailedTelemetryEvents write mode respects queue lock contention", async () => {

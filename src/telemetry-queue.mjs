@@ -123,6 +123,7 @@ export function telemetryQueueDirs(cwd = process.cwd()) {
     inflight: join(queue, "inflight"),
     sent: join(queue, "sent"),
     failed: join(queue, "failed"),
+    resolvedFailed: join(queue, "resolved-failed"),
     quarantine: join(queue, "quarantine"),
     tmp: join(queue, "tmp"),
     lock: join(queue, LOCK_FILE),
@@ -145,6 +146,7 @@ async function ensureQueueDirs(cwd) {
     dirs.inflight,
     dirs.sent,
     dirs.failed,
+    dirs.resolvedFailed,
     dirs.quarantine,
     dirs.tmp,
   ]) {
@@ -357,7 +359,7 @@ async function collectQueueEventIdsFromDir(root, eventIds) {
 
 async function queueEventIds(dirs) {
   const eventIds = new Set();
-  for (const dir of [dirs.pending, dirs.inflight, dirs.sent, dirs.failed, dirs.quarantine]) {
+  for (const dir of [dirs.pending, dirs.inflight, dirs.sent, dirs.failed, dirs.resolvedFailed, dirs.quarantine]) {
     await collectQueueEventIdsFromDir(dir, eventIds);
   }
   return eventIds;
@@ -845,6 +847,264 @@ async function failedRetryCandidates(dirs, reason) {
     });
   }
   return { reason: sanitizedReason, candidates };
+}
+
+async function allFailedCandidates(dirs) {
+  const batchNames = await failedBatchDirectories(dirs.failed);
+  const candidates = [];
+  for (const batchName of batchNames) {
+    const batchDir = join(dirs.failed, batchName);
+    const files = await failedBatchEventFiles(batchDir);
+    if (files.length === 0) continue;
+    candidates.push({
+      batchDir,
+      reason: await failedBatchReason(batchDir),
+      files,
+      bytes: await sumFileSizes(files),
+    });
+  }
+  return candidates;
+}
+
+function safeDiagnosticLabel(value, maxLength = 80) {
+  const raw = typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+    ? String(value)
+    : "";
+  const text = maskCredentialText(raw)
+    .replace(/[\0-\x1F\x7F]/g, " ")
+    .trim();
+  if (!text) return "unknown";
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function safeCreatedDay(value) {
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return utcDay(date);
+}
+
+function byteLength(value) {
+  return typeof value === "string" ? Buffer.byteLength(value, "utf8") : 0;
+}
+
+function mediaItemCount(event) {
+  const multimodal = event?.payload?.multimodal;
+  return Array.isArray(multimodal) ? multimodal.length : 0;
+}
+
+async function readJsonOrNull(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function failedEventDescriptor(event, reason) {
+  const safeEvent = event && typeof event === "object" && !Array.isArray(event) ? event : {};
+  return {
+    reason,
+    command: safeDiagnosticLabel(safeEvent.command),
+    model: safeDiagnosticLabel(safeEvent.model),
+    status: safeDiagnosticLabel(safeEvent.status),
+    schema_version: safeDiagnosticLabel(safeEvent.schema_version),
+    created_day: safeCreatedDay(safeEvent.created_at),
+    prompt_bytes: byteLength(safeEvent.prompt),
+    response_bytes: byteLength(safeEvent.response),
+    media_item_count: mediaItemCount(safeEvent),
+    retryable_hint: reason === "unauthorized" ? "fix_auth_then_retry_or_archive" : "retry_failed_or_archive",
+  };
+}
+
+function aggregateReasonCounts(candidates) {
+  const byReason = new Map();
+  for (const candidate of candidates) {
+    const current = byReason.get(candidate.reason) ?? {
+      reason: candidate.reason,
+      batch_count: 0,
+      event_count: 0,
+      bytes: 0,
+    };
+    current.batch_count += 1;
+    current.event_count += candidate.files.length;
+    current.bytes += candidate.bytes;
+    byReason.set(candidate.reason, current);
+  }
+  return [...byReason.values()].sort((left, right) => (
+    right.event_count - left.event_count
+    || left.reason.localeCompare(right.reason)
+  ));
+}
+
+export async function inspectFailedTelemetryEvents({
+  cwd = process.cwd(),
+  reason,
+  limit = 20,
+} = {}) {
+  assertPositiveInteger(limit, "limit");
+  const dirs = telemetryQueueDirs(cwd);
+  const { reason: sanitizedReason, candidates } = reason == null
+    ? { reason: null, candidates: await allFailedCandidates(dirs) }
+    : await failedRetryCandidates(dirs, reason);
+  const descriptors = [];
+  for (const candidate of candidates) {
+    for (const file of candidate.files) {
+      if (descriptors.length >= limit) break;
+      descriptors.push(failedEventDescriptor(await readJsonOrNull(file.path), candidate.reason));
+    }
+    if (descriptors.length >= limit) break;
+  }
+  return {
+    ok: true,
+    reason_filter: sanitizedReason,
+    failed_event_count: candidates.reduce((sum, item) => sum + item.files.length, 0),
+    failed_batch_count: candidates.length,
+    reason_counts: aggregateReasonCounts(candidates),
+    events: descriptors,
+  };
+}
+
+function resolvedFailedBucketName(now = new Date()) {
+  return `resolved_${utcDay(now).replaceAll("-", "")}_${Date.now()}_${randomUUID()}`;
+}
+
+function safeResolutionNote(value) {
+  if (value == null) return null;
+  const text = safeDiagnosticLabel(value, 160);
+  return text === "unknown" ? null : text;
+}
+
+function archiveNextCommand({ reason, write = false, batchSize = 1 }) {
+  const mode = write ? "--write" : "--dry-run";
+  return `gemini-agent telemetry failed archive --reason ${shellQuote(reason)} ${mode} --batch-size ${batchSize}`;
+}
+
+function summarizeArchiveCandidates({
+  reason,
+  candidates,
+  batchSize,
+  dryRun,
+  archivedCount = 0,
+  remainingCandidates = candidates,
+  resolutionBucket = null,
+}) {
+  const allFiles = candidates.flatMap((candidate) => candidate.files);
+  const selectedFiles = allFiles.slice(0, batchSize);
+  const remainingFiles = remainingCandidates.flatMap((candidate) => candidate.files);
+  return {
+    ok: true,
+    dry_run: dryRun,
+    reason,
+    matched_batch_count: candidates.length,
+    would_archive_count: selectedFiles.length,
+    archived_count: archivedCount,
+    remaining_failed_count_for_reason: dryRun ? allFiles.length : remainingFiles.length,
+    bytes: selectedFiles.reduce((sum, file) => sum + file.size, 0),
+    resolution_bucket: resolutionBucket,
+    next_command: dryRun
+      ? archiveNextCommand({ reason, write: true, batchSize })
+      : "gemini-agent telemetry doctor --json",
+  };
+}
+
+export async function archiveFailedTelemetryEvents({
+  cwd = process.cwd(),
+  reason,
+  batchSize = 1,
+  dryRun = true,
+  note = null,
+  lock = {},
+} = {}) {
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new Error("Telemetry failed archive reason is required.");
+  }
+  assertPositiveInteger(batchSize, "batchSize");
+  if (typeof dryRun !== "boolean") {
+    throw new TypeError("dryRun must be a boolean.");
+  }
+  if (lock == null || typeof lock !== "object" || Array.isArray(lock)) {
+    throw new TypeError("lock must be an object.");
+  }
+
+  if (dryRun) {
+    const dirs = telemetryQueueDirs(cwd);
+    const { reason: sanitizedReason, candidates } = await failedRetryCandidates(dirs, reason);
+    return summarizeArchiveCandidates({
+      reason: sanitizedReason,
+      candidates,
+      batchSize,
+      dryRun: true,
+    });
+  }
+
+  return withTelemetryQueueLock({ cwd, ...lock }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const { reason: sanitizedReason, candidates } = await failedRetryCandidates(dirs, reason);
+    const selectedCount = candidates
+      .flatMap((candidate) => candidate.files)
+      .slice(0, batchSize)
+      .length;
+    const bucketName = selectedCount > 0 ? resolvedFailedBucketName() : null;
+    const bucketDir = bucketName ? join(dirs.resolvedFailed, bucketName) : null;
+    let remainingToArchive = batchSize;
+    let archivedCount = 0;
+
+    if (bucketDir) {
+      await secureMkdir(bucketDir);
+      await writeSecureJsonFile(cwd, join(bucketDir, "reason.json"), {
+        reason: sanitizedReason,
+      });
+      await writeSecureJsonFile(cwd, join(bucketDir, "resolution.json"), {
+        reason: sanitizedReason,
+        note: safeResolutionNote(note),
+        resolved_at: new Date().toISOString(),
+        archived_count: 0,
+      });
+    }
+
+    for (const candidate of candidates) {
+      if (remainingToArchive <= 0) break;
+      const selected = candidate.files.slice(0, remainingToArchive);
+      for (const file of selected) {
+        const destination = join(bucketDir, file.name);
+        await rename(file.path, destination);
+        await chmod(destination, SECURE_FILE_MODE);
+        archivedCount += 1;
+        remainingToArchive -= 1;
+      }
+      const remainingFiles = await failedBatchEventFiles(candidate.batchDir);
+      if (remainingFiles.length === 0) {
+        await rm(candidate.batchDir, { recursive: true, force: true });
+      }
+    }
+
+    if (bucketDir) {
+      await writeSecureJsonFile(cwd, join(bucketDir, "resolution.json"), {
+        reason: sanitizedReason,
+        note: safeResolutionNote(note),
+        resolved_at: new Date().toISOString(),
+        archived_count: archivedCount,
+      });
+    }
+
+    const state = await loadStateFromPath(dirs.state);
+    await saveState(cwd, {
+      ...state,
+      queue_bytes: await pendingQueueBytes(cwd),
+    });
+
+    const refreshed = await failedRetryCandidates(dirs, sanitizedReason);
+    return summarizeArchiveCandidates({
+      reason: sanitizedReason,
+      candidates,
+      batchSize,
+      dryRun: false,
+      archivedCount,
+      remainingCandidates: refreshed.candidates,
+      resolutionBucket: bucketName,
+    });
+  });
 }
 
 function shellQuote(value) {
