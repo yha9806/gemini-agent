@@ -125,8 +125,14 @@ function roundOne(value) {
 
 function sanitizeDimension(value, fallback = "unknown") {
   const text = `${value ?? ""}`.replace(/[\0-\x1F\x7F]/g, " ").trim();
-  const masked = maskCredentialText(text || fallback);
+  const masked = maskLocalPaths(maskCredentialText(text || fallback));
   return masked.length > 120 ? `${masked.slice(0, 117)}...` : masked;
+}
+
+const LOCAL_PATH_PATTERN = /\bfile:\/\/\/(?:Users|home|tmp|var|private|Volumes)\/[^\s"',)]+|\/(?:Users|home|tmp|var|private|Volumes)\/[^\s"',)]+/g;
+
+function maskLocalPaths(value) {
+  return value.replace(LOCAL_PATH_PATTERN, "[PATH]");
 }
 
 function classifyFailureReason(reason) {
@@ -176,6 +182,18 @@ function updateOptionalDimension(map, key, status) {
 function canonicalCommand(value) {
   const sanitized = sanitizeDimension(value);
   return sanitized.toLowerCase().replaceAll("_", "-");
+}
+
+const SAFE_MULTIMODAL_COMMANDS = new Set([
+  "artifact-review",
+  "artifact-review-backfill",
+  "gemini-artifact-review",
+  "palette-split",
+]);
+
+function safeMultimodalCommand(value) {
+  const command = canonicalCommand(value);
+  return SAFE_MULTIMODAL_COMMANDS.has(command) ? command : "other";
 }
 
 function updateCommandDimension(map, command, status) {
@@ -268,11 +286,63 @@ function topMediaKind(map, limit) {
     }));
 }
 
+function updateMediaCommand(map, command, items) {
+  if (items.length === 0) return;
+  const key = safeMultimodalCommand(command);
+  const item = map.get(key) ?? {
+    key,
+    event_count: 0,
+    item_count: 0,
+    byte_count: 0,
+    unknown_mime_items: 0,
+    unknown_byte_size_items: 0,
+    unknown_kind_items: 0,
+    media_items_with_mime: 0,
+    media_items_with_byte_size: 0,
+    media_items_with_kind: 0,
+  };
+  item.event_count += 1;
+  for (const media of items) {
+    item.item_count += 1;
+    item.byte_count += media.byteSize;
+    if (media.mimeType === "unknown") item.unknown_mime_items += 1;
+    else item.media_items_with_mime += 1;
+    if (!media.hasByteSize) item.unknown_byte_size_items += 1;
+    else item.media_items_with_byte_size += 1;
+    if (media.mediaKind === "unknown") item.unknown_kind_items += 1;
+    else item.media_items_with_kind += 1;
+  }
+  map.set(key, item);
+}
+
+function topMediaCommands(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.item_count - left.item_count
+      || right.event_count - left.event_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      command: item.key,
+      event_count: item.event_count,
+      item_count: item.item_count,
+      byte_count: item.byte_count,
+      unknown_mime_items: item.unknown_mime_items,
+      unknown_byte_size_items: item.unknown_byte_size_items,
+      unknown_kind_items: item.unknown_kind_items,
+      media_items_with_mime: item.media_items_with_mime,
+      media_items_with_byte_size: item.media_items_with_byte_size,
+      media_items_with_kind: item.media_items_with_kind,
+    }));
+}
+
 function createMediaAggregate() {
   return {
     ...zeroMultimodal(),
     mediaMimes: createDimensionMap(),
     mediaKinds: createDimensionMap(),
+    mediaCommands: createDimensionMap(),
   };
 }
 
@@ -295,7 +365,7 @@ function compactMediaItems(items) {
   });
 }
 
-function addCompactMediaItems(aggregate, items) {
+function addCompactMediaItems(aggregate, items, command = null) {
   if (items.length === 0) return;
   aggregate.event_count += 1;
   const seenMimes = new Set();
@@ -312,6 +382,7 @@ function addCompactMediaItems(aggregate, items) {
     updateMediaMime(aggregate.mediaMimes, item.mimeType, item.byteSize, seenMimes);
     updateMediaKind(aggregate.mediaKinds, item.mediaKind, item.byteSize, seenKinds);
   }
+  if (command !== null) updateMediaCommand(aggregate.mediaCommands, command, items);
 }
 
 function publicMediaAggregate(aggregate, topLimit) {
@@ -327,6 +398,7 @@ function publicMediaAggregate(aggregate, topLimit) {
     media_items_with_kind: aggregate.media_items_with_kind,
     top_media_mime: topMediaMime(aggregate.mediaMimes, topLimit),
     top_media_kind: topMediaKind(aggregate.mediaKinds, topLimit),
+    top_commands: topMediaCommands(aggregate.mediaCommands, topLimit),
   };
 }
 
@@ -497,6 +569,13 @@ function formatTopRows(items, keyName) {
   )).join("\n");
 }
 
+function formatMediaCommandRows(items) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item.command}: ${formatNumber(item.event_count)} events, ${formatNumber(item.item_count)} media items, ${formatNumber(item.byte_count)} bytes`
+  )).join("\n");
+}
+
 function summaryStatusCounts(summary) {
   if (summary.status_counts) return summary.status_counts;
   return summary.top_commands.reduce((counts, item) => ({
@@ -634,9 +713,12 @@ function addEvent(accumulator, state, event) {
   } else {
     if (typeof event.event_id === "string" && event.event_id.trim()) {
       accumulator.existingEventIds.add(event.event_id);
-      accumulator.adjustedOriginals.set(event.event_id, compactItems);
+      accumulator.adjustedOriginals.set(event.event_id, {
+        command: event.command,
+        mediaItems: compactItems,
+      });
     }
-    addCompactMediaItems(accumulator.rawMedia, compactItems);
+    addCompactMediaItems(accumulator.rawMedia, compactItems, event.command);
   }
 
   const inputTokens = event.economics?.input_tokens;
@@ -796,12 +878,13 @@ function buildAdjustedMultimodal(accumulator, topLimit) {
     }
 
     const applied = bestCorrectionCandidate(candidates);
-    const originalItems = accumulator.adjustedOriginals.get(target) ?? [];
+    const original = accumulator.adjustedOriginals.get(target) ?? { command: null, mediaItems: [] };
+    const originalItems = original.mediaItems;
     const adjustedMediaItems = mergeCorrectedMediaItems(originalItems, applied.mediaItems);
     appliedOriginals.add(target);
     appliedCorrectionEventCount += 1;
     supersededCorrectionEventCount += Math.max(0, candidates.length - 1);
-    addCompactMediaItems(aggregate, adjustedMediaItems);
+    addCompactMediaItems(aggregate, adjustedMediaItems, original.command);
 
     const item = appliedVersions.get(applied.version) ?? {
       key: applied.version,
@@ -820,8 +903,10 @@ function buildAdjustedMultimodal(accumulator, topLimit) {
     appliedVersions.set(applied.version, item);
   }
 
-  for (const [eventId, originalItems] of accumulator.adjustedOriginals.entries()) {
-    if (!appliedOriginals.has(eventId)) addCompactMediaItems(aggregate, originalItems);
+  for (const [eventId, original] of accumulator.adjustedOriginals.entries()) {
+    if (!appliedOriginals.has(eventId)) {
+      addCompactMediaItems(aggregate, original.mediaItems, original.command);
+    }
   }
 
   return {
@@ -1009,6 +1094,8 @@ export function formatTelemetrySummaryText(summary) {
     `- Unknown MIME items: ${formatNumber(summary.multimodal?.unknown_mime_items ?? 0)}`,
     `- Unknown byte-size items: ${formatNumber(summary.multimodal?.unknown_byte_size_items ?? 0)}`,
     `- Unknown media-kind items: ${formatNumber(summary.multimodal?.unknown_kind_items ?? 0)}`,
+    "Top multimodal commands:",
+    formatMediaCommandRows(summary.multimodal?.top_commands ?? []),
     "",
     "Adjusted multimodal:",
     `- Events: ${formatNumber(summary.multimodal_adjusted?.event_count ?? 0)}`,
@@ -1019,6 +1106,8 @@ export function formatTelemetrySummaryText(summary) {
     `- Unknown media-kind items: ${formatNumber(summary.multimodal_adjusted?.unknown_kind_items ?? 0)}`,
     `- Applied correction events: ${formatNumber(summary.multimodal_adjusted?.applied_correction_event_count ?? 0)}`,
     `- Orphan correction events: ${formatNumber(summary.multimodal_adjusted?.orphan_correction_event_count ?? 0)}`,
+    "Top adjusted multimodal commands:",
+    formatMediaCommandRows(summary.multimodal_adjusted?.top_commands ?? []),
     "",
     "Corrections:",
     `- Correction events: ${formatNumber(summary.corrections?.event_count ?? 0)}`,

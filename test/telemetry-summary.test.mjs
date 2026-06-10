@@ -146,6 +146,7 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     applied_correction_event_count: 0,
     top_media_mime: [],
     top_media_kind: [],
+    top_commands: [],
     top_correction_versions: [],
   });
   assert.deepEqual(result.top_projects, []);
@@ -440,12 +441,120 @@ test("runTelemetrySummary aggregates multimodal metadata without exposing media 
       { media_kind: "document", event_count: 1, item_count: 1, byte_count: 0 },
       { media_kind: "unknown", event_count: 1, item_count: 1, byte_count: 128 },
     ],
+    top_commands: [
+      {
+        command: "artifact-review-backfill",
+        event_count: 1,
+        item_count: 3,
+        byte_count: 640,
+        unknown_mime_items: 1,
+        unknown_byte_size_items: 1,
+        unknown_kind_items: 1,
+        media_items_with_mime: 2,
+        media_items_with_byte_size: 2,
+        media_items_with_kind: 2,
+      },
+      {
+        command: "gemini-artifact-review",
+        event_count: 1,
+        item_count: 2,
+        byte_count: 3072,
+        unknown_mime_items: 0,
+        unknown_byte_size_items: 0,
+        unknown_kind_items: 0,
+        media_items_with_mime: 2,
+        media_items_with_byte_size: 2,
+        media_items_with_kind: 2,
+      },
+    ],
   });
   assert.match(text, /Multimodal:/);
+  assert.match(text, /Top multimodal commands:/);
+  assert.match(text, /artifact-review-backfill: 1 events, 3 media items, 640 bytes/);
   assert.match(text, /Adjusted multimodal:/);
+  assert.match(text, /Top adjusted multimodal commands:/);
   assert.match(summary.recommendations.map((item) => item.message).join("\n"), /multimodal metadata has unknown MIME types/);
   assert.doesNotMatch(JSON.stringify(summary), /secret-customer-screen/);
   assert.doesNotMatch(text, /private-artifact/);
+});
+
+test("runTelemetrySummary reports safe multimodal command coverage", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(34, {
+      command: "artifact-review /Users/example/private.png Authorization: Bearer secret-token",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ basename: "top-secret-design.png" }],
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const serialized = JSON.stringify(summary);
+
+  assert.deepEqual(summary.multimodal.top_commands, [
+    {
+      command: "other",
+      event_count: 1,
+      item_count: 1,
+      byte_count: 0,
+      unknown_mime_items: 1,
+      unknown_byte_size_items: 1,
+      unknown_kind_items: 1,
+      media_items_with_mime: 0,
+      media_items_with_byte_size: 0,
+      media_items_with_kind: 0,
+    },
+  ]);
+  assert.doesNotMatch(serialized, /\/Users/);
+  assert.doesNotMatch(serialized, /secret-token/);
+  assert.doesNotMatch(serialized, /private\.png|top-secret-design/);
+});
+
+test("runTelemetrySummary caps and sorts multimodal command coverage deterministically", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  for (const [index, command] of [
+    [35, "palette-split"],
+    [36, "gemini-artifact-review"],
+    [37, "artifact-review"],
+  ]) {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(index, {
+        command,
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", byte_size: 1, media_kind: "image" }],
+        },
+      }),
+    });
+  }
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local", topLimit: 2 });
+
+  assert.deepEqual(summary.multimodal.top_commands.map((item) => item.command), [
+    "artifact-review",
+    "gemini-artifact-review",
+  ]);
+  assert.equal(summary.multimodal.top_commands.length, 2);
 });
 
 test("runTelemetrySummary aggregates palette-split quality metrics with legacy events", async () => {
@@ -603,6 +712,20 @@ test("runTelemetrySummary reports correction overlays without polluting original
     top_media_kind: [
       { media_kind: "unknown", event_count: 1, item_count: 1, byte_count: 0 },
     ],
+    top_commands: [
+      {
+        command: "artifact-review-backfill",
+        event_count: 1,
+        item_count: 1,
+        byte_count: 0,
+        unknown_mime_items: 1,
+        unknown_byte_size_items: 1,
+        unknown_kind_items: 1,
+        media_items_with_mime: 0,
+        media_items_with_byte_size: 0,
+        media_items_with_kind: 0,
+      },
+    ],
   });
   assert.deepEqual(summary.corrections, {
     event_count: 2,
@@ -688,6 +811,20 @@ test("runTelemetrySummary applies correction media to adjusted multimodal totals
     top_media_kind: [
       { media_kind: "unknown", event_count: 1, item_count: 1, byte_count: 0 },
     ],
+    top_commands: [
+      {
+        command: "artifact-review-backfill",
+        event_count: 1,
+        item_count: 1,
+        byte_count: 0,
+        unknown_mime_items: 1,
+        unknown_byte_size_items: 1,
+        unknown_kind_items: 1,
+        media_items_with_mime: 0,
+        media_items_with_byte_size: 0,
+        media_items_with_kind: 0,
+      },
+    ],
   });
   assert.deepEqual(summary.multimodal_adjusted, {
     event_count: 1,
@@ -709,6 +846,20 @@ test("runTelemetrySummary applies correction media to adjusted multimodal totals
     ],
     top_media_kind: [
       { media_kind: "screenshot", event_count: 1, item_count: 1, byte_count: 100 },
+    ],
+    top_commands: [
+      {
+        command: "artifact-review-backfill",
+        event_count: 1,
+        item_count: 1,
+        byte_count: 100,
+        unknown_mime_items: 0,
+        unknown_byte_size_items: 0,
+        unknown_kind_items: 0,
+        media_items_with_mime: 1,
+        media_items_with_byte_size: 1,
+        media_items_with_kind: 1,
+      },
     ],
     top_correction_versions: [
       {
