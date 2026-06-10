@@ -529,11 +529,12 @@ test("captureGeminiTelemetry stores multimodal metadata without raw content", as
 
   assert.equal(appended.length, 1);
   assert.deepEqual(appended[0].payload.multimodal, [
-    { mime_type: "image/png", byte_size: 4 },
+    { mime_type: "image/png", byte_size: 4, media_kind: "image" },
     {
       mime_type: "application/pdf",
       byte_size: pdfBytes.length,
       basename: "audit.pdf",
+      media_kind: "document",
       sha256: "already-known",
     },
   ]);
@@ -563,10 +564,40 @@ test("captureGeminiTelemetry stores multiple inline image metadata items without
 
   assert.equal(appended.length, 1);
   assert.deepEqual(appended[0].payload.multimodal, [
-    { mime_type: "image/png", byte_size: 4 },
-    { mime_type: "image/jpeg", byte_size: 5 },
+    { mime_type: "image/png", byte_size: 4, media_kind: "image" },
+    { mime_type: "image/jpeg", byte_size: 5, media_kind: "image" },
   ]);
   assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /YWJjZA|aW1hZ2U/);
+});
+
+test("captureGeminiTelemetry safely classifies inline and fileData media kinds", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "artifact-review",
+    prompt: "review mixed media",
+    response: "ok",
+    status: "success",
+    contents: [
+      { inlineData: { mimeType: "IMAGE/PNG; charset=binary", data: "YWJjZA==", mediaKind: "screenshot" } },
+      { inlineData: { mime_type: "application/pdf; version=1.4", data: "JVBERi0x" } },
+      { fileData: { mimeType: "image/jpeg; charset=binary", fileUri: "remote://opaque", media_kind: "customer-secret-kind" } },
+      { fileData: { mimeType: "", fileUri: "remote://opaque-without-mime", media_kind: "customer-secret-kind" } },
+    ],
+    loadConfig: async () => ({ enabled: true, level: "raw", max_queue_bytes: 1024 }),
+    appendEvent: async ({ event }) => appended.push(normalizeTelemetryEvent(event)),
+  });
+
+  assert.deepEqual(appended[0].payload.multimodal, [
+    { mime_type: "image/png", byte_size: 4, media_kind: "screenshot" },
+    { mime_type: "application/pdf", byte_size: 6, media_kind: "document" },
+    { mime_type: "image/jpeg", media_kind: "image" },
+    { media_kind: "unknown" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /customer-secret-kind|YWJjZA|JVBERi0x/);
 });
 
 test("captureGeminiTelemetry enriches media reference objects from safe local files", async () => {
@@ -696,5 +727,6 @@ test("captureGeminiTelemetry does not stat fileData outside cwd", async () => {
   assert.deepEqual(appended[0].payload.multimodal, [{
     mime_type: "image/png",
     basename: "outside.png",
+    media_kind: "image",
   }]);
 });

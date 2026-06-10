@@ -4,6 +4,7 @@ import { resolveTelemetryAttribution } from "./telemetry-attribution.mjs";
 import { appendTelemetryEvent } from "./telemetry-queue.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
 import {
+  inferMediaKind,
   inferMediaMime,
   localMediaByteSize,
   mediaReferenceMetadata,
@@ -132,11 +133,24 @@ function maybeAddHash(metadata, source) {
   }
 }
 
+function normalizeMimeType(value) {
+  if (typeof value !== "string") return null;
+  const mimeType = value.split(";")[0].trim().toLowerCase();
+  return mimeType || null;
+}
+
+function mediaKindFor(value, { mimeType, reference } = {}) {
+  const explicit = explicitMediaKind(value);
+  if (explicit) return explicit;
+  const inferred = inferMediaKind({ mimeType: normalizeMimeType(mimeType), reference });
+  return VALID_MEDIA_KINDS.has(inferred) ? inferred : "unknown";
+}
+
 function metadataFromInlineData(inlineData) {
   if (!inlineData || typeof inlineData !== "object") return null;
   const metadata = {};
-  const mimeType = inlineData.mimeType ?? inlineData.mime_type;
-  if (typeof mimeType === "string" && mimeType.trim()) metadata.mime_type = mimeType;
+  const mimeType = normalizeMimeType(inlineData.mimeType ?? inlineData.mime_type);
+  if (mimeType) metadata.mime_type = mimeType;
   const byteSize = inlineData.byteSize ?? inlineData.byte_size ?? inlineData.size;
   if (Number.isInteger(byteSize) && byteSize >= 0) {
     metadata.byte_size = byteSize;
@@ -144,13 +158,18 @@ function metadataFromInlineData(inlineData) {
     const derived = deriveBase64ByteSize(inlineData.data);
     if (derived !== undefined) metadata.byte_size = derived;
   }
+  metadata.media_kind = mediaKindFor(inlineData, {
+    mimeType,
+    reference: inlineData.displayName ?? inlineData.display_name ?? inlineData.name,
+  });
   maybeAddHash(metadata, inlineData);
   return Object.keys(metadata).length ? metadata : null;
 }
 
 function explicitMediaKind(value) {
   const mediaKind = value?.mediaKind ?? value?.media_kind;
-  return typeof mediaKind === "string" && VALID_MEDIA_KINDS.has(mediaKind) ? mediaKind : null;
+  const normalized = typeof mediaKind === "string" ? mediaKind.trim().toLowerCase() : "";
+  return VALID_MEDIA_KINDS.has(normalized) ? normalized : null;
 }
 
 async function metadataFromMediaReference(value, { cwd } = {}) {
@@ -160,8 +179,8 @@ async function metadataFromMediaReference(value, { cwd } = {}) {
     .find((item) => typeof item === "string" && item.trim());
   const metadata = reference ? { ...(await mediaReferenceMetadata(reference, { root: cwd }) ?? {}) } : {};
 
-  const mimeType = value.mimeType ?? value.mime_type;
-  if (typeof mimeType === "string" && mimeType.trim()) metadata.mime_type = mimeType;
+  const mimeType = normalizeMimeType(value.mimeType ?? value.mime_type);
+  if (mimeType) metadata.mime_type = mimeType;
   const byteSize = value.byteSize ?? value.byte_size ?? value.size;
   if (Number.isInteger(byteSize) && byteSize >= 0) metadata.byte_size = byteSize;
   const name = value.displayName ?? value.display_name ?? value.name ?? value.basename;
@@ -171,7 +190,12 @@ async function metadataFromMediaReference(value, { cwd } = {}) {
     if (inferredMimeType) metadata.mime_type = inferredMimeType;
   }
   const mediaKind = explicitMediaKind(value);
-  if (mediaKind) metadata.media_kind = mediaKind;
+  if (mediaKind || reference || Object.keys(metadata).length > 0) {
+    metadata.media_kind = mediaKind ?? mediaKindFor(value, {
+      mimeType: metadata.mime_type,
+      reference: name ?? reference,
+    });
+  }
   maybeAddHash(metadata, value);
   return Object.keys(metadata).length ? metadata : null;
 }
@@ -180,8 +204,8 @@ async function metadataFromFileData(fileData, { cwd } = {}) {
   if (!fileData || typeof fileData !== "object") return null;
   const metadata = {};
   const fileReference = fileData.fileUri ?? fileData.file_uri ?? fileData.uri;
-  const mimeType = fileData.mimeType ?? fileData.mime_type;
-  if (typeof mimeType === "string" && mimeType.trim()) {
+  const mimeType = normalizeMimeType(fileData.mimeType ?? fileData.mime_type);
+  if (mimeType) {
     metadata.mime_type = mimeType;
   } else {
     const inferredMimeType = inferMediaMime(fileReference ?? fileData.displayName ?? fileData.name);
@@ -196,6 +220,10 @@ async function metadataFromFileData(fileData, { cwd } = {}) {
   }
   const name = fileData.displayName ?? fileData.name ?? mediaBasename(fileReference);
   if (typeof name === "string" && name.trim()) metadata.basename = basename(name);
+  metadata.media_kind = mediaKindFor(fileData, {
+    mimeType: metadata.mime_type,
+    reference: name ?? fileReference,
+  });
   maybeAddHash(metadata, fileData);
   return Object.keys(metadata).length ? metadata : null;
 }
