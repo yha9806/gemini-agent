@@ -31,6 +31,10 @@ import {
   runTelemetryPriorities,
 } from "./telemetry-priorities.mjs";
 import {
+  formatTelemetryMultimodalRepairText,
+  runTelemetryMultimodalRepairKind,
+} from "./telemetry-multimodal-repair.mjs";
+import {
   formatTelemetrySummaryText,
   runTelemetrySummary,
 } from "./telemetry-summary.mjs";
@@ -119,6 +123,7 @@ function printUsage() {
     "  gemini-agent telemetry raw prune --state sent --keep-days <n> [--max-sent-bytes <n>] [--global] [--dry-run|--write] [--json]",
     "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry priorities [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
+    "  gemini-agent telemetry multimodal repair-kind --correction-version <id> [--global] [--dry-run|--write] [--limit <n>] [--json]",
     "  gemini-agent telemetry doctor [--global] [--json]",
     "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry retry-failed [--global] --reason <reason> [--dry-run|--write] [--batch-size <n>]",
@@ -710,6 +715,50 @@ function parseTelemetryPrioritiesOptions(args) {
     }
   }
 
+  return options;
+}
+
+function parseTelemetryMultimodalRepairKindOptions(args) {
+  const options = {
+    dryRun: true,
+    global: false,
+    json: false,
+  };
+  let sawDryRun = false;
+  let sawWrite = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--dry-run") {
+      sawDryRun = true;
+      options.dryRun = true;
+    } else if (arg === "--write") {
+      sawWrite = true;
+      options.dryRun = false;
+    } else if (arg === "--correction-version") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--correction-version requires an id.");
+      if (!/^[A-Za-z0-9._-]{1,48}$/.test(value)) {
+        throw new Error("--correction-version contains invalid characters.");
+      }
+      options.correctionVersion = value;
+      index += 1;
+    } else if (arg === "--limit") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--limit requires a positive integer.");
+      options.limit = positiveIntegerOption(value, "--limit");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry multimodal repair-kind argument: ${arg}`);
+    }
+  }
+
+  if (sawDryRun && sawWrite) throw new Error("--dry-run and --write cannot be used together.");
+  if (!options.correctionVersion) throw new Error("--correction-version is required.");
   return options;
 }
 
@@ -1490,6 +1539,29 @@ async function runTelemetryPrioritiesCommand(args = []) {
   output.write(formatTelemetryPrioritiesText(report));
 }
 
+async function runTelemetryMultimodal(args = []) {
+  const [subcommand, ...subArgs] = args;
+  if (subcommand === "repair-kind") {
+    const options = parseTelemetryMultimodalRepairKindOptions(subArgs);
+    const report = await runTelemetryMultimodalRepairKind({
+      cwd: process.cwd(),
+      home: process.env.HOME,
+      scope: telemetryScope(options),
+      correctionVersion: options.correctionVersion,
+      dryRun: options.dryRun,
+      limit: options.limit,
+    });
+    if (options.json) {
+      output.write(`${JSON.stringify(report, null, 2)}\n`);
+      return;
+    }
+    output.write(formatTelemetryMultimodalRepairText(report));
+    return;
+  }
+
+  throw new Error("telemetry multimodal requires repair-kind.");
+}
+
 async function runTelemetryQuarantine(args = []) {
   const options = parseTelemetryQuarantineOptions(args);
   const context = await requireEnabledTelemetryContextForOptions(options);
@@ -1642,6 +1714,11 @@ async function runTelemetry(args) {
 
   if (subcommand === "priorities") {
     await runTelemetryPrioritiesCommand(subArgs);
+    return;
+  }
+
+  if (subcommand === "multimodal") {
+    await runTelemetryMultimodal(subArgs);
     return;
   }
 

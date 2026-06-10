@@ -1497,6 +1497,133 @@ test("telemetry priorities rejects invalid arguments", async () => {
   }
 });
 
+test("telemetry multimodal repair-kind dry-runs aggregate-only historical repairs", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-multimodal-repair-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(101, {
+        command: "gemini_artifact_review",
+        prompt: "raw multimodal repair prompt should not print",
+        response: "raw multimodal repair response should not print",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", byte_size: 10, basename: "private-repair.png" }],
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "multimodal",
+      "repair-kind",
+      "--correction-version",
+      "media-kind-v1",
+      "--dry-run",
+    ], { cwd });
+
+    assert.equal(stderr, "");
+    assert.match(stdout, /Telemetry Multimodal Repair/);
+    assert.match(stdout, /Repairable events: 1/);
+    assert.doesNotMatch(stdout, /raw multimodal repair prompt should not print/);
+    assert.doesNotMatch(stdout, /raw multimodal repair response should not print/);
+    assert.doesNotMatch(stdout, /evt_cli_101|private-repair\.png/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry multimodal repair-kind --write queues corrections without exposing ids", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-multimodal-repair-home-"));
+  const project = await mkdtemp(join(tmpdir(), "gemini-agent-cli-multimodal-repair-project-"));
+  try {
+    await saveTelemetryConfig({
+      cwd: home,
+      scope: "local",
+      endpoint: "https://vulca-api.onrender.com/api/v1/gemini-agent/telemetry/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd: home,
+      event: telemetryEvent(102, {
+        command: "palette-split",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", byte_size: 10, basename: "palette_mask.png", media_kind: "unknown" }],
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "multimodal",
+      "repair-kind",
+      "--global",
+      "--correction-version",
+      "media-kind-v1",
+      "--write",
+      "--json",
+    ], {
+      cwd: project,
+      env: { ...process.env, HOME: home },
+    });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.scope, "global");
+    assert.equal(parsed.storage_cwd, home);
+    assert.equal(parsed.dry_run, false);
+    assert.equal(parsed.queued_count, 1);
+    assert.equal(parsed.repairable_events, 1);
+    assert.equal(Object.hasOwn(parsed, "event_ids"), false);
+    assert.doesNotMatch(stdout, /evt_cli_102|palette_mask\.png/);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("telemetry multimodal repair-kind rejects unsafe arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-multimodal-repair-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "multimodal", "repair-kind", "--correction-version", "bad/version"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--correction-version contains invalid characters/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "multimodal", "repair-kind", "--correction-version", "media-kind-v1", "--limit", "0"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--limit requires a positive integer/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "multimodal", "repair-kind", "--correction-version", "media-kind-v1", "--dry-run", "--write"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--dry-run and --write cannot be used together/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry summary rejects unknown arguments", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
 
