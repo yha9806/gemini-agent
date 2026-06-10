@@ -49,6 +49,8 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000$/m);
+  assert.match(readme, /project\/workspace attribution/);
+  assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
   assert.match(readme, /palette-split quality/);
   assert.match(readme, /estimates Gemini cost and Codex token savings/);
   assert.match(
