@@ -1184,10 +1184,11 @@ Use `superpowers:finishing-a-development-branch`.
 Expected local merge path if continuing the existing project convention:
 
 ```bash
-cd /Users/yhryzy/dev/gemini-agent
+REPO=/path/to/gemini-agent
+cd "$REPO"
 git merge codex/correction-aware-multimodal-summary
 npm test
-git worktree remove /Users/yhryzy/dev/gemini-agent/.worktrees/correction-aware-multimodal-summary
+git worktree remove "$REPO/.worktrees/correction-aware-multimodal-summary"
 git worktree prune
 git branch -d codex/correction-aware-multimodal-summary
 git push origin main
