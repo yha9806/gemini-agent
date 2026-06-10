@@ -57,12 +57,14 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --diff$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent plan-critique --context-pack \.gemini-agent\/context\/latest\.json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent artifact-review --file before\.png --file after\.png --kind ui --review-mode comparison$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000$/m);
   assert.match(readme, /project\/workspace attribution/);
   assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /`diff-review --diff` reads the current git diff directly/);
+  assert.match(readme, /Gate commands accept `--context-pack <path>`/);
   assert.match(readme, /palette-split quality/);
   assert.match(readme, /local raw telemetry counts, bytes, truncation counts, multimodal counts, and credential-like aggregate signals/);
   assert.match(readme, /pending raw upload batch risk before flushing/);

@@ -22,6 +22,7 @@ import {
   gateInputMetadata,
   limitedGateText,
   parseMaxInputBytes,
+  readLimitedContextPackFile,
   readLimitedGateFile,
 } from "./gate-input.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
@@ -117,10 +118,10 @@ function printUsage() {
     "  gemini-agent context-pack [--stdin] [--file <path> ...] [--diff] [--write-artifact] [text]",
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
-    "  gemini-agent plan-critique (--file <path> | --stdin | --diff | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent diff-review (--file <path> | --stdin | --diff | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent research-brief (--file <path> | --stdin | --diff | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent diff-review (--file <path> | --stdin | --diff | --context-pack <path> | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent research-brief (--file <path> | --stdin | --diff | --context-pack <path> | <text>) [--max-input-bytes <n>]",
     "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
     "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--user-label <label>|--clear-user-label] [--schedule <schedule>]",
     "  gemini-agent telemetry status [--global]",
@@ -1020,6 +1021,7 @@ function telemetryTickDecision({ schedule, lastSentAt, now = new Date() }) {
 
 async function readGateInput(args, { gate, command } = {}) {
   let filePath = null;
+  let contextPackPath = null;
   let readFromStdin = false;
   let diff = false;
   let limitBytes = defaultGateInputLimitBytes(gate);
@@ -1032,6 +1034,11 @@ async function readGateInput(args, { gate, command } = {}) {
       if (!path) throw new Error("--file requires a path.");
       filePath = path;
       index += 1;
+    } else if (arg === "--context-pack") {
+      const path = args[index + 1];
+      if (!path || path.startsWith("--")) throw new Error("--context-pack requires a path.");
+      contextPackPath = path;
+      index += 1;
     } else if (arg === "--stdin") {
       readFromStdin = true;
     } else if (arg === "--diff") {
@@ -1042,6 +1049,12 @@ async function readGateInput(args, { gate, command } = {}) {
     } else {
       textArgs.push(arg);
     }
+  }
+
+  const sections = [];
+  if (contextPackPath) {
+    const contextPackInput = await readLimitedContextPackFile(contextPackPath, { gate, command, limitBytes });
+    sections.push(contextPackInput.inputText);
   }
 
   if (diff) {
@@ -1058,25 +1071,28 @@ async function readGateInput(args, { gate, command } = {}) {
       });
     } catch (error) {
       if (error?.message === "Context input is empty.") {
-        return { inputText: "", inputBytes: 0, limitBytes };
+        collected = null;
+      } else {
+        throw error;
       }
-      throw error;
     }
-    return {
-      ...limitedGateText(collected.input, { gate, command, limitBytes }),
-      limitBytes,
-    };
+    if (collected?.input?.trim()) sections.push(collected.input.trim());
+  } else {
+    const input = filePath
+      ? await readLimitedGateFile(filePath, { gate, command, limitBytes })
+      : limitedGateText(
+        readFromStdin ? await readStdin() : textArgs.join(" ").trim(),
+        { gate, command, limitBytes },
+      );
+    if (input.inputText.trim()) sections.push(input.inputText);
   }
 
-  const input = filePath
-    ? await readLimitedGateFile(filePath, { gate, command, limitBytes })
-    : limitedGateText(
-      readFromStdin ? await readStdin() : textArgs.join(" ").trim(),
-      { gate, command, limitBytes },
-    );
+  if (!sections.length) {
+    return { inputText: "", inputBytes: 0, limitBytes };
+  }
 
   return {
-    ...input,
+    ...limitedGateText(sections.join("\n\n"), { gate, command, limitBytes }),
     limitBytes,
   };
 }

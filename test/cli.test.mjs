@@ -482,6 +482,82 @@ test("plan-critique accepts explicit byte limit override", async () => {
   assert.deepEqual(parsed.notes, ["fake ok"]);
 });
 
+test("gate commands accept context-pack input and print JSON", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const contextPath = join(dir, "context.json");
+  await writeFile(contextPath, fakeContextPack);
+
+  for (const command of ["plan-critique", "patch-precheck", "diff-review", "research-brief"]) {
+    const { stdout } = await execFileAsync(bin, [command, "--context-pack", contextPath], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+      },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.verdict, "pass");
+    assert.deepEqual(parsed.notes, ["fake ok"]);
+  }
+});
+
+test("plan-critique rejects missing context-pack path", async () => {
+  await assert.rejects(
+    execFileAsync(bin, ["plan-critique", "--context-pack"], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--context-pack requires a path\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("plan-critique rejects invalid context-pack before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const contextPath = join(dir, "context.json");
+  await writeFile(contextPath, "{bad json");
+
+  await assert.rejects(
+    execFileAsync(bin, ["plan-critique", "--context-pack", contextPath], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Invalid context pack JSON/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("plan-critique enforces combined context-pack and stdin byte limit before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const contextPath = join(dir, "context.json");
+  await writeFile(contextPath, fakeContextPack);
+
+  await assert.rejects(
+    execBin(["plan-critique", "--context-pack", contextPath, "--stdin", "--max-input-bytes", "80"], {
+      cwd: dir,
+      input: "additional plan text",
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /plan-critique input exceeds 80 bytes/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
 test("auth set requires an interactive TTY", async () => {
   await assert.rejects(
     execFileAsync(bin, ["auth", "set"], {
