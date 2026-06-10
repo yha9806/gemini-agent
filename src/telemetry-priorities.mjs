@@ -402,7 +402,7 @@ function contextPackReusePriority(economics) {
     severity: "medium",
     score: 70,
     title: `Increase context-pack reuse for ${candidate.command}.`,
-    action: `Increase context-pack reuse for ${candidate.command} before routing more large gate inputs to Gemini.`,
+    action: `Increase context-pack reuse for ${candidate.command}: run gemini-agent context-pack --bootstrap --write-artifact when the pack is missing or stale, then use gemini-agent ${candidate.command} --auto-context-pack with narrow --stdin or --diff input.`,
     command: candidate.command,
     evidence: [
       `Gate events: ${formatNumber(nonnegativeMetric(candidate.event_count))}`,

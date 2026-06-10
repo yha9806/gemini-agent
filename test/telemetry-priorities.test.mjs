@@ -561,6 +561,8 @@ test("runTelemetryPriorities recommends context pack reuse for heavy low-reuse g
     assert.ok(workflow);
     assert.equal(workflow.command, "plan-critique");
     assert.match(workflow.action, /Increase context-pack reuse for plan-critique/);
+    assert.match(workflow.action, /gemini-agent context-pack --bootstrap --write-artifact/);
+    assert.match(workflow.action, /gemini-agent plan-critique --auto-context-pack/);
     assert.ok(workflow.evidence.some((item) => item === "Gate events: 5"));
     assert.ok(workflow.evidence.some((item) => item === "Context-pack reuse rate: 0.0%"));
     assert.ok(workflow.evidence.some((item) => item === "Average gate input bytes: 4,099"));

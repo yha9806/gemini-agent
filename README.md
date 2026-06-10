@@ -9,6 +9,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent ask "Reply with exactly: gemini-agent-ok"
 ./bin/gemini-agent diff-review --stdin
 ./bin/gemini-agent diff-review --diff
+./bin/gemini-agent diff-review --auto-context-pack --diff
 ./bin/gemini-agent plan-critique --stdin --max-input-bytes 131072
 ./bin/gemini-agent plan-critique --context-pack .gemini-agent/context/latest.json
 ./bin/gemini-agent plan-critique --auto-context-pack --stdin
@@ -62,6 +63,7 @@ Global Gemini review gate for Codex.
 - `plan-critique` has a conservative default input byte limit to control review cost; gate commands also accept `--max-input-bytes <n>` for intentional overrides.
 - Gate commands accept `--context-pack <path>` so Codex can ask Gemini to critique compact prior context instead of pasting large raw project slices again.
 - Gate commands accept `--auto-context-pack` to reuse project-root `.gemini-agent/context/latest.json` explicitly without hand-writing the path.
+- For current branch review, `diff-review --auto-context-pack --diff` is the preferred context-reuse path when `.gemini-agent/context/latest.json` is relevant.
 - `context-pack --bootstrap --write-artifact` creates the project-root context artifact used by `--auto-context-pack` from a bounded root-file allowlist and current git diff.
 - Oversized gate failures print concrete `context-pack --bootstrap --write-artifact` and `--auto-context-pack` retry commands so Codex can switch to compact context before raising byte limits.
 - Large raw gate calls print a non-blocking stderr preflight warning before Gemini credentials are resolved; stdout remains the structured review JSON.
