@@ -257,6 +257,67 @@ test("runTelemetryPriorities uses usage-applicable coverage for instrumentation 
   }
 });
 
+test("runTelemetryPriorities points instrumentation work at the top usage gap command", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(30, {
+        command: "ask",
+        prompt: "private priority gap prompt",
+        response: "private priority gap response",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "private-priority-gap.png" }],
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(31, { command: "ask" }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(32, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+          codex_tokens_saved_estimate: 100,
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const instrumentation = report.priorities.find((item) => item.kind === "instrumentation");
+
+    assert.ok(instrumentation);
+    assert.match(instrumentation.action, /Fix token usage capture for ask/);
+    assert.ok(instrumentation.evidence.some((item) => item === "Top usage gap: ask missing 2 usage-applicable events"));
+    assert.match(text, /Top usage gap: ask missing 2 usage-applicable events/);
+    assert.doesNotMatch(serialized, /private priority gap prompt/);
+    assert.doesNotMatch(serialized, /private priority gap response/);
+    assert.doesNotMatch(serialized, /evt_priority_000030/);
+    assert.doesNotMatch(serialized, /private-priority-gap\.png/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities does not warn on usage when no events need usage metadata", async () => {
   const cwd = await temporaryWorkspace();
   try {

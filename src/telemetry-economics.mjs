@@ -186,9 +186,8 @@ function enrichEconomics(item, pricing) {
   };
 }
 
-function topCommands(commandMap, pricing, limit) {
-  return [...commandMap.values()]
-    .map((item) => enrichEconomics(item, pricing))
+function topCommands(commandRows, limit) {
+  return [...commandRows]
     .sort((left, right) => (
       right.codex_tokens_saved_estimate - left.codex_tokens_saved_estimate
       || right.total_tokens - left.total_tokens
@@ -197,20 +196,45 @@ function topCommands(commandMap, pricing, limit) {
     .slice(0, limit);
 }
 
+function usageGapCommands(commandRows, totals, limit) {
+  return [...commandRows]
+    .filter((item) => item.usage_applicable_event_count > 0 && item.usage_applicable_missing_count > 0)
+    .sort((left, right) => (
+      right.usage_applicable_missing_count - left.usage_applicable_missing_count
+      || left.command.localeCompare(right.command)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      command: item.command,
+      usage_applicable_event_count: item.usage_applicable_event_count,
+      usage_applicable_missing_count: item.usage_applicable_missing_count,
+      usage_applicable_coverage_rate: item.usage_applicable_coverage_rate,
+      missing_share_of_total_applicable_gap: nullableRatio(
+        item.usage_applicable_missing_count,
+        totals.usage_applicable_missing_count,
+        4,
+      ),
+    }));
+}
+
 function recommendation(kind, message) {
   return { kind, message };
 }
 
-function buildRecommendations({ totals, topCommandRows }) {
+function buildRecommendations({ totals, topCommandRows, usageGapRows }) {
   const recommendations = [];
   if (
     totals.usage_applicable_event_count > 0
     && totals.usage_applicable_coverage_rate !== null
     && totals.usage_applicable_coverage_rate < 0.8
   ) {
+    const topGap = usageGapRows[0];
+    const gapSentence = topGap
+      ? ` Top gap: ${topGap.command} has ${topGap.usage_applicable_missing_count} missing usage-applicable events.`
+      : "";
     recommendations.push(recommendation(
       "instrumentation",
-      "Usage metadata coverage for Gemini runtime events is below 80%; improve token capture before making strong ROI claims.",
+      `Usage metadata coverage for Gemini runtime events is below 80%; improve token capture before making strong ROI claims.${gapSentence}`,
     ));
   }
   const highSavings = topCommandRows.find((item) => (
@@ -284,7 +308,9 @@ export async function runTelemetryEconomics({
   }
 
   const enrichedTotals = enrichEconomics(totals, pricing);
-  const commandRows = topCommands(commands, pricing, topLimit);
+  const enrichedCommandRows = [...commands.values()].map((item) => enrichEconomics(item, pricing));
+  const commandRows = topCommands(enrichedCommandRows, topLimit);
+  const usageGapRows = usageGapCommands(enrichedCommandRows, enrichedTotals, topLimit);
 
   return {
     scope: context.scope,
@@ -293,9 +319,11 @@ export async function runTelemetryEconomics({
     pricing,
     totals: enrichedTotals,
     top_commands: commandRows,
+    usage_gap_commands: usageGapRows,
     recommendations: buildRecommendations({
       totals: enrichedTotals,
       topCommandRows: commandRows,
+      usageGapRows,
     }),
     limitations: [
       "Gemini cost is estimated from configured per-million-token prices, not provider billing export.",
@@ -321,6 +349,13 @@ function formatCommandRows(rows) {
   if (rows.length === 0) return "None";
   return rows.map((item, index) => (
     `${index + 1}. ${item.command}: ${formatNumber(item.codex_tokens_saved_estimate)} estimated saved, ${formatUsd(item.gemini_estimated_cost_usd)} Gemini cost, ${formatPercent(item.usage_applicable_coverage_rate)} usage-applicable coverage`
+  )).join("\n");
+}
+
+function formatUsageGapRows(rows) {
+  if (rows.length === 0) return "None";
+  return rows.map((item, index) => (
+    `${index + 1}. ${item.command}: ${formatNumber(item.usage_applicable_missing_count)} missing of ${formatNumber(item.usage_applicable_event_count)} usage-applicable events, ${formatPercent(item.usage_applicable_coverage_rate)} coverage, ${formatPercent(item.missing_share_of_total_applicable_gap)} of missing usage gap`
   )).join("\n");
 }
 
@@ -351,6 +386,9 @@ export function formatTelemetryEconomicsText(report) {
     "",
     "Top command economics:",
     formatCommandRows(report.top_commands),
+    "",
+    "Usage metadata gaps:",
+    formatUsageGapRows(report.usage_gap_commands),
     "",
     "Recommendations:",
     recommendations,

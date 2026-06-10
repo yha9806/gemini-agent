@@ -130,9 +130,13 @@ function deliveryPriority(summary) {
 
 function instrumentationPriority(summary, economics, multimodalCoverage) {
   const usage = usageApplicableCoverage(economics);
+  const topUsageGap = economics.usage_gap_commands?.[0] ?? null;
   const reasons = [];
   if (usage !== null && usage < 0.8) {
     reasons.push(`Usage-applicable coverage: ${formatPercent(usage)}`);
+    if (topUsageGap) {
+      reasons.push(`Top usage gap: ${topUsageGap.command} missing ${formatNumber(topUsageGap.usage_applicable_missing_count)} usage-applicable events`);
+    }
   }
   if (multimodalCoverage.min !== null && multimodalCoverage.min < 0.75) {
     reasons.push(`Multimodal metadata minimum coverage: ${formatPercent(multimodalCoverage.min)}`);
@@ -146,7 +150,9 @@ function instrumentationPriority(summary, economics, multimodalCoverage) {
     severity: usage !== null && usage < 0.5 ? "high" : "medium",
     score: 88,
     title: "Improve telemetry instrumentation before making stronger product claims.",
-    action: "Fill token usage and multimodal MIME, byte-size, and media-kind fields in capture paths.",
+    action: topUsageGap
+      ? `Fix token usage capture for ${topUsageGap.command}; fill multimodal MIME, byte-size, and media-kind fields in capture paths.`
+      : "Fill token usage and multimodal MIME, byte-size, and media-kind fields in capture paths.",
     evidence: reasons,
   });
 }

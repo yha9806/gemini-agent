@@ -266,6 +266,98 @@ test("runTelemetryEconomics separates usage-applicable runtime events from synth
   }
 });
 
+test("runTelemetryEconomics reports aggregate usage metadata gaps safely", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(40, {
+        command: "beta",
+        prompt: "private gap prompt beta",
+        response: "private gap response beta",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "private-gap-design.png" }],
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(41, { command: "beta" }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(42, { command: "alpha" }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(43, { command: "alpha" }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(44, {
+        command: "alpha",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+          codex_tokens_saved_estimate: 100,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(45, { command: "gamma" }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(46, { command: "artifact-review-backfill" }),
+    });
+
+    const report = await runTelemetryEconomics({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const text = formatTelemetryEconomicsText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.deepEqual(
+      report.usage_gap_commands.map((item) => ({
+        command: item.command,
+        missing: item.usage_applicable_missing_count,
+        applicable: item.usage_applicable_event_count,
+        coverage: item.usage_applicable_coverage_rate,
+        share: item.missing_share_of_total_applicable_gap,
+      })),
+      [
+        { command: "alpha", missing: 2, applicable: 3, coverage: 0.3333, share: 0.4 },
+        { command: "beta", missing: 2, applicable: 2, coverage: 0, share: 0.4 },
+        { command: "gamma", missing: 1, applicable: 1, coverage: 0, share: 0.2 },
+      ],
+    );
+    assert.match(text, /Usage metadata gaps/);
+    assert.match(text, /alpha: 2 missing of 3 usage-applicable events, 33\.3% coverage, 40\.0% of missing usage gap/);
+    assert.match(
+      report.recommendations.map((item) => item.message).join("\n"),
+      /Top gap: alpha has 2 missing usage-applicable events\./,
+    );
+    assert.doesNotMatch(serialized, /private gap prompt/);
+    assert.doesNotMatch(serialized, /private gap response/);
+    assert.doesNotMatch(serialized, /evt_000040/);
+    assert.doesNotMatch(serialized, /private-gap-design\.png/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryEconomics handles datasets with no usage-applicable events", async () => {
   const cwd = await temporaryWorkspace();
   try {
@@ -286,6 +378,8 @@ test("runTelemetryEconomics handles datasets with no usage-applicable events", a
     assert.equal(report.totals.usage_applicable_event_count, 0);
     assert.equal(report.totals.usage_applicable_missing_count, 0);
     assert.equal(report.totals.usage_applicable_coverage_rate, null);
+    assert.deepEqual(report.usage_gap_commands, []);
+    assert.match(formatTelemetryEconomicsText(report), /Usage metadata gaps:\nNone/);
     assert.doesNotMatch(
       report.recommendations.map((item) => item.message).join("\n"),
       /Usage metadata coverage/,
