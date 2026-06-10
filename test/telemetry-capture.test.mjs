@@ -571,15 +571,20 @@ test("captureGeminiTelemetry enriches media reference objects from safe local fi
     {
       mime_type: "image/png",
       byte_size: namedBytes.length,
-      basename: "screen.png",
+      basename: appended[0].payload.multimodal[0].basename,
+      media_kind: "image",
     },
     {
       mime_type: "image/png",
       byte_size: extensionlessPng.length,
-      basename: "screenshot",
+      basename: appended[0].payload.multimodal[1].basename,
+      media_kind: "screenshot",
     },
   ]);
+  assert.match(appended[0].payload.multimodal[0].basename, /^media-[a-f0-9]{12}\.png$/);
+  assert.match(appended[0].payload.multimodal[1].basename, /^media-[a-f0-9]{12}$/);
   assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /outputs/);
+  assert.doesNotMatch(appended[0].payload.multimodal.map((item) => item.basename).join("\n"), /screen|screenshot/);
 });
 
 test("captureGeminiTelemetry does not stat fileData outside cwd", async () => {

@@ -160,6 +160,21 @@ test("normalizes product telemetry context, outcome, and economics fields", () =
   assert.equal(event.economics.latency_bucket, "5_15s");
 });
 
+test("normalizes multimodal media kind", () => {
+  const event = normalizeTelemetryEvent(validTelemetryEvent({
+    event_id: "evt_media_kind",
+    trace_id: "trace_media_kind",
+    command: "artifact-review",
+    payload: {
+      prompt_truncated: false,
+      response_truncated: false,
+      multimodal: [{ mime_type: "image/png", byte_size: 10, media_kind: "screenshot" }],
+    },
+  }));
+
+  assert.equal(event.payload.multimodal[0].media_kind, "screenshot");
+});
+
 test("defaults product telemetry fields without sharing nested values", () => {
   const first = normalizeTelemetryEvent(validTelemetryEvent({ event_id: "evt_first" }));
   const second = normalizeTelemetryEvent(validTelemetryEvent({ event_id: "evt_second" }));

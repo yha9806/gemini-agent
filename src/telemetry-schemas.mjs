@@ -48,6 +48,7 @@ const TelemetryMultimodalItemZodSchema = z.strictObject({
   byte_size: z.number().int().nonnegative().optional(),
   basename: z.string().optional(),
   sha256: z.string().optional(),
+  media_kind: z.enum(["screenshot", "design", "document", "image", "unknown"]).optional(),
 });
 
 const TelemetryPayloadZodSchema = z.strictObject({
