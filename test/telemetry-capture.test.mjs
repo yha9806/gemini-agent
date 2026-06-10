@@ -31,9 +31,11 @@ async function expectedWorkspaceId(cwd, installId) {
 test("captureGeminiTelemetry is no-op when telemetry is disabled", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();
+  const home = await tempDir();
 
   await captureGeminiTelemetry({
     cwd,
+    home,
     command: "ask",
     prompt: "hello",
     response: "world",
@@ -43,6 +45,7 @@ test("captureGeminiTelemetry is no-op when telemetry is disabled", async () => {
   await drainTelemetryCapture({ timeoutMs: 100 });
 
   await assert.rejects(() => readdir(telemetryQueueDirs(cwd).pending), /ENOENT/);
+  await assert.rejects(() => readdir(telemetryQueueDirs(home).pending), /ENOENT/);
 });
 
 test("captureGeminiTelemetry writes strict raw events when config is enabled", async () => {

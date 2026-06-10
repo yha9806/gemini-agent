@@ -30,6 +30,11 @@ const fakeReview = JSON.stringify({
   notes: ["fake ok"],
 });
 const CLI_TEST_HOME = await mkdtemp(join(tmpdir(), "gemini-agent-cli-home-"));
+const CLI_TEST_ENV = {
+  ...process.env,
+  HOME: CLI_TEST_HOME,
+  USERPROFILE: CLI_TEST_HOME,
+};
 after(async () => {
   await rm(CLI_TEST_HOME, { recursive: true, force: true });
 });
@@ -125,7 +130,7 @@ async function withTelemetryReceiver(handler) {
   };
 }
 
-function execBin(args, { input = "", env = process.env, cwd } = {}) {
+function execBin(args, { input = "", env = CLI_TEST_ENV, cwd } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { env, cwd });
     let stdout = "";
