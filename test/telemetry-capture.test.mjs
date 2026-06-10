@@ -540,6 +540,35 @@ test("captureGeminiTelemetry stores multimodal metadata without raw content", as
   assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /YWJjZA/);
 });
 
+test("captureGeminiTelemetry stores multiple inline image metadata items without base64", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const appended = [];
+  const contents = [
+    { inlineData: { mimeType: "image/png", data: "YWJjZA==" } },
+    { inlineData: { mimeType: "image/jpeg", data: "aW1hZ2U=" } },
+    { text: "compare these two UI states" },
+  ];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "artifact-review",
+    prompt: "compare before and after",
+    response: "ok",
+    status: "success",
+    contents,
+    loadConfig: async () => ({ enabled: true, level: "raw", max_queue_bytes: 1024 }),
+    appendEvent: async ({ event }) => appended.push(normalizeTelemetryEvent(event)),
+  });
+
+  assert.equal(appended.length, 1);
+  assert.deepEqual(appended[0].payload.multimodal, [
+    { mime_type: "image/png", byte_size: 4 },
+    { mime_type: "image/jpeg", byte_size: 5 },
+  ]);
+  assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /YWJjZA|aW1hZ2U/);
+});
+
 test("captureGeminiTelemetry enriches media reference objects from safe local files", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();

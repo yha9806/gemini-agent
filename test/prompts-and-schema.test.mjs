@@ -147,6 +147,23 @@ test("builds artifact review prompt with artifact kind and policy", () => {
   assert.match(prompt, /implementation_hints_for_codex/);
 });
 
+test("builds comparison artifact review prompt for visual diff", () => {
+  const prompt = buildArtifactReviewPrompt({
+    artifactKind: "ui",
+    reviewMode: "comparison",
+    sources: ["before.png", "after.png"],
+    policy: null,
+  });
+
+  assert.match(prompt, /Review mode: comparison/);
+  assert.match(prompt, /Compare the attached artifacts in source order/);
+  assert.match(prompt, /visual changes/);
+  assert.match(prompt, /regressions/);
+  assert.match(prompt, /before\.png/);
+  assert.match(prompt, /after\.png/);
+  assert.match(prompt, /"artifact_type": "design"/);
+});
+
 test("falls back unknown artifact review kinds to schema-safe image type", () => {
   const prompt = buildArtifactReviewPrompt({
     artifactKind: "wireframe",
