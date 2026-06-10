@@ -7,7 +7,13 @@ import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
-import { appendTelemetryEvent, telemetryQueueDirs } from "../src/telemetry-queue.mjs";
+import {
+  appendTelemetryEvent,
+  claimTelemetryBatch,
+  failTelemetryBatch,
+  loadTelemetryQueueSnapshot,
+  telemetryQueueDirs,
+} from "../src/telemetry-queue.mjs";
 
 const execFileAsync = promisify(execFile);
 const bin = new URL("../bin/gemini-agent", import.meta.url).pathname;
@@ -50,6 +56,36 @@ function telemetryEvent(index, overrides = {}) {
     },
     ...overrides,
   };
+}
+
+async function queueFailedCliEvents(cwd, { start = 1, count = 1, reason = "http_403" } = {}) {
+  for (let offset = 0; offset < count; offset += 1) {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(`retry_${start + offset}`, {
+        prompt: `raw cli prompt ${start + offset}`,
+        response: `raw cli response ${start + offset}`,
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", basename: `cli-secret-${start + offset}.png` }],
+        },
+      }),
+      maxQueueBytes: 10 * 1024 * 1024,
+    });
+  }
+  const batch = await claimTelemetryBatch({
+    cwd,
+    batchSize: count,
+    now: new Date("2026-06-10T10:00:00.000Z"),
+  });
+  await failTelemetryBatch({
+    cwd,
+    batchId: batch.batchId,
+    retryable: false,
+    reason,
+  });
+  return batch;
 }
 
 async function withTelemetryReceiver(handler) {
@@ -1177,6 +1213,173 @@ test("telemetry flush --dry-run previews with invalid endpoint and missing token
   assert.deepEqual(parsed.event_ids, [first.event_id]);
   const pendingFiles = await readdir(telemetryQueueDirs(dir).pending);
   assert.equal(pendingFiles.length, 1);
+});
+
+test("telemetry retry-failed dry-run prints aggregate-only preview", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-retry-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      scope: "local",
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await queueFailedCliEvents(cwd, { start: 10, count: 2, reason: "http_403" });
+
+    const { stdout } = await execBin(["telemetry", "retry-failed", "--reason", "http_403"], {
+      cwd,
+      env: { ...process.env, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    });
+    const parsed = JSON.parse(stdout);
+    const serialized = JSON.stringify(parsed);
+
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.dry_run, true);
+    assert.equal(parsed.scope, "local");
+    assert.equal(parsed.reason, "http_403");
+    assert.equal(parsed.would_move_count, 1);
+    assert.equal(parsed.moved_count, 0);
+    assert.doesNotMatch(serialized, /evt_cli_retry_10/);
+    assert.doesNotMatch(serialized, /batch_2026/);
+    assert.doesNotMatch(serialized, /raw cli prompt/);
+    assert.doesNotMatch(serialized, /raw cli response/);
+    assert.doesNotMatch(serialized, /cli-secret/);
+    assert.doesNotMatch(serialized, /queue\/failed/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry retry-failed write mode requires token env before moving files", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-retry-token-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      scope: "local",
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await queueFailedCliEvents(cwd, { start: 20, count: 1, reason: "http_403" });
+
+    await assert.rejects(
+      () => execBin(["telemetry", "retry-failed", "--reason", "http_403", "--write"], {
+        cwd,
+        env: { ...process.env, [TELEMETRY_TOKEN_ENV]: "" },
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Telemetry token env GEMINI_AGENT_TELEMETRY_TOKEN is empty/);
+        return true;
+      },
+    );
+
+    const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+    assert.equal(snapshot.pending.count, 0);
+    assert.equal(snapshot.failed.count, 1);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry retry-failed write mode moves bounded failed events to pending", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-retry-write-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      scope: "local",
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await queueFailedCliEvents(cwd, { start: 30, count: 2, reason: "http_403" });
+
+    const { stdout } = await execBin([
+      "telemetry",
+      "retry-failed",
+      "--reason",
+      "http_403",
+      "--write",
+      "--batch-size",
+      "1",
+    ], {
+      cwd,
+      env: { ...process.env, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.dry_run, false);
+    assert.equal(parsed.moved_count, 1);
+    assert.equal(parsed.remaining_failed_count_for_reason, 1);
+
+    const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+    assert.equal(snapshot.pending.count, 1);
+    assert.equal(snapshot.failed.count, 1);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry retry-failed rejects invalid arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-retry-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "retry-failed"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--reason is required/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "retry-failed", "--reason", "http_403", "--dry-run", "--write"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--dry-run and --write cannot be used together/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "retry-failed", "--reason", "http_403", "--batch-size", "0"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--batch-size requires a positive integer/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry retry-failed --global targets home telemetry storage", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-retry-global-cwd-"));
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-retry-global-home-"));
+  try {
+    await saveTelemetryConfig({
+      cwd: home,
+      scope: "local",
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await queueFailedCliEvents(home, { start: 40, count: 1, reason: "http_403" });
+
+    const { stdout } = await execBin(["telemetry", "retry-failed", "--global", "--reason", "http_403"], {
+      cwd,
+      env: { ...process.env, HOME: home, [TELEMETRY_TOKEN_ENV]: TELEMETRY_TOKEN },
+    });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(parsed.scope, "global");
+    assert.equal(parsed.storage_cwd, home);
+    assert.equal(parsed.would_move_count, 1);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
 });
 
 test("telemetry quarantine moves pending event out of normal flush path", async () => {
