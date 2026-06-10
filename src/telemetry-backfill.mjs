@@ -19,6 +19,8 @@ const DEFAULT_MAX_ARTIFACT_BYTES = 1024 * 1024;
 const DEFAULT_PROMPT_RAW = "Backfilled gemini-agent artifact review JSON.";
 const LOCAL_PATH_PATTERN = /\bfile:\/\/\/(?:Users|home|tmp|var|private|Volumes)\/[^\s"',)]+|\/(?:Users|home|tmp|var|private|Volumes)\/[^\s"',)]+/g;
 const CORRECTION_VERSION_PATTERN = /^[A-Za-z0-9._-]{1,48}$/;
+const SAFE_MEDIA_KINDS = new Set(["screenshot", "design", "document", "image", "unknown"]);
+const SYNTHETIC_BASENAME_PATTERN = /^media-[a-f0-9]{12}(?:\.[a-z0-9]+)?$/i;
 
 function utcNow() {
   return new Date().toISOString();
@@ -98,7 +100,49 @@ function projectRootFromArtifactsDir(artifactsDir) {
   return rootSegments.join(sep);
 }
 
+function normalizeMimeType(value) {
+  if (typeof value !== "string") return null;
+  const mimeType = value.split(";")[0].trim().toLowerCase();
+  return mimeType || null;
+}
+
+function safePersistedMediaKind(value, { mimeType, reference }) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (SAFE_MEDIA_KINDS.has(normalized)) return normalized;
+  const inferred = inferMediaKind({ mimeType, reference });
+  return SAFE_MEDIA_KINDS.has(inferred) ? inferred : "unknown";
+}
+
+function safePersistedBasename(value, { projectRoot }) {
+  const reference = typeof value === "string" && value.trim() ? value.trim() : "media";
+  if (SYNTHETIC_BASENAME_PATTERN.test(reference)) return reference;
+  return syntheticMediaBasename(reference, { salt: projectRoot ?? "artifact-backfill" });
+}
+
+function persistedMediaManifest(artifact, { projectRoot } = {}) {
+  if (!Array.isArray(artifact?.metadata?.media_manifest)) return null;
+  return artifact.metadata.media_manifest
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => {
+      const mimeType = normalizeMimeType(item.mime_type ?? item.mimeType);
+      const basename = safePersistedBasename(item.basename ?? item.name ?? item.displayName, { projectRoot });
+      const next = { basename };
+      if (mimeType) next.mime_type = mimeType;
+      const byteSize = item.byte_size ?? item.byteSize ?? item.size;
+      if (Number.isInteger(byteSize) && byteSize >= 0) next.byte_size = byteSize;
+      const mediaKind = safePersistedMediaKind(item.media_kind ?? item.mediaKind, {
+        mimeType,
+        reference: basename,
+      });
+      if (mediaKind) next.media_kind = mediaKind;
+      return next;
+    });
+}
+
 async function sourceManifest(artifact, { projectRoot } = {}) {
+  const persisted = persistedMediaManifest(artifact, { projectRoot });
+  if (persisted !== null) return persisted;
+
   const sources = Array.isArray(artifact?.metadata?.sources) ? artifact.metadata.sources : [];
   const manifest = [];
   for (const source of sources) {

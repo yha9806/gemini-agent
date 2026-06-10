@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
@@ -112,6 +112,82 @@ test("artifactReviewsToRawTelemetryBatch enriches media manifest from artifact s
   assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /outputs/);
   assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /screen/);
   assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
+});
+
+test("artifactReviewsToRawTelemetryBatch uses persisted safe media manifest when sources are gone", async () => {
+  const projectRoot = await tempDir();
+  const artifactsDir = join(projectRoot, ".gemini-agent", "artifacts");
+  const sourceDir = join(projectRoot, "outputs");
+  await mkdir(artifactsDir, { recursive: true });
+  await mkdir(sourceDir, { recursive: true });
+  const sourceBytes = Buffer.from("source no longer available later");
+  await writeFile(join(sourceDir, "private-screen.png"), sourceBytes);
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact({
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-06-03T14:55:51.114Z",
+      sources: ["outputs/private-screen.png"],
+      omitted_sources: [],
+      media_manifest: [{
+        mime_type: "image/png",
+        byte_size: sourceBytes.length,
+        basename: "media-abcdef123456.png",
+        media_kind: "screenshot",
+      }],
+    },
+  }));
+  await rm(join(sourceDir, "private-screen.png"));
+
+  const batch = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_persisted_manifest_test",
+  });
+
+  assert.equal(batch.events[0].media_manifest.length, 1);
+  assert.deepEqual(batch.events[0].media_manifest[0], {
+    mime_type: "image/png",
+    byte_size: sourceBytes.length,
+    basename: "media-abcdef123456.png",
+    media_kind: "screenshot",
+  });
+  assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /private-screen|outputs|source no longer available/);
+  assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
+});
+
+test("artifactReviewsToRawTelemetryBatch sanitizes unsafe persisted media manifest basenames", async () => {
+  const projectRoot = await tempDir();
+  const artifactsDir = join(projectRoot, ".gemini-agent", "artifacts");
+  await mkdir(artifactsDir, { recursive: true });
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact({
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-06-03T14:55:51.114Z",
+      sources: [],
+      omitted_sources: [],
+      media_manifest: [{
+        mime_type: "image/png",
+        byte_size: 123,
+        basename: "private-screen.png",
+        media_kind: "customer-secret-kind",
+      }],
+    },
+  }));
+
+  const batch = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_unsafe_manifest_test",
+  });
+
+  assert.equal(batch.events[0].media_manifest.length, 1);
+  assert.equal(batch.events[0].media_manifest[0].mime_type, "image/png");
+  assert.equal(batch.events[0].media_manifest[0].byte_size, 123);
+  assert.equal(batch.events[0].media_manifest[0].media_kind, "image");
+  assert.match(batch.events[0].media_manifest[0].basename, /^media-[a-f0-9]{12}\.png$/);
+  assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /private-screen|customer-secret/);
 });
 
 test("artifactReviewsToRawTelemetryBatch infers extensionless artifact source MIME from magic bytes", async () => {

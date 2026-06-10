@@ -73,10 +73,22 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   assert.equal(review.metadata.generated_at, "2026-05-28T12:00:00.000Z");
   assert.deepEqual(review.metadata.sources, ["design.png"]);
   assert.deepEqual(review.metadata.omitted_sources, []);
+  assert.ok(Array.isArray(review.metadata.media_manifest));
+  assert.deepEqual(review.metadata.media_manifest, [
+    {
+      mime_type: "image/png",
+      byte_size: pngBytes.length,
+      basename: review.metadata.media_manifest[0].basename,
+      media_kind: "design",
+    },
+  ]);
+  assert.match(review.metadata.media_manifest[0].basename, /^media-[a-f0-9]{12}\.png$/);
 
   const latest = JSON.parse(await readFile(join(dir, ".gemini-agent/artifacts/latest.json"), "utf8"));
   assert.equal(latest.kind, "artifact_review");
   assert.equal(latest.metadata.generated_at, "2026-05-28T12:00:00.000Z");
+  assert.equal(latest.metadata.media_manifest[0].byte_size, pngBytes.length);
+  assert.doesNotMatch(JSON.stringify(latest.metadata.media_manifest), /design\.png|inlineData|iVBOR|YWJjZA/);
 });
 
 test("runArtifactReview preserves explicit telemetry override and adds safe media references", async () => {

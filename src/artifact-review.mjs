@@ -2,12 +2,14 @@ import { createPartFromText } from "@google/genai";
 import { writeJsonArtifact } from "./artifact-store.mjs";
 import { generateArtifactReview, getDefaultModel } from "./gemini-client.mjs";
 import { detectArtifactMime, imagePartWithMetadataFromFile, resolveCwdFilePath } from "./input-collector.mjs";
+import { inferMediaKind, syntheticMediaBasename } from "./media-metadata.mjs";
 import { loadProjectPolicy } from "./policies.mjs";
 import { buildArtifactReviewPrompt } from "./prompts.mjs";
 import { normalizeArtifactReview } from "./schemas.mjs";
 
 const MAX_ARTIFACT_REVIEW_FILES = 4;
 const ARTIFACT_REVIEW_MODES = new Set(["single", "comparison"]);
+const SAFE_MEDIA_KINDS = new Set(["screenshot", "design", "document", "image", "unknown"]);
 
 function artifactTypeFor({ artifactKind = "image", mimeType }) {
   if (mimeType === "application/pdf") return "pdf";
@@ -44,15 +46,37 @@ function artifactTelemetryMediaKind(artifactKind) {
   return null;
 }
 
-function withArtifactTelemetryContents(telemetry, mediaRefs, { artifactKind } = {}) {
-  if (!telemetry) return telemetry;
+function withArtifactMediaKinds(mediaRefs, { artifactKind } = {}) {
   const mediaKind = artifactTelemetryMediaKind(artifactKind);
-  return {
-    ...telemetry,
-    contents: mediaRefs.map((mediaRef) => (
-      mediaKind ? { ...mediaRef, media_kind: mediaKind } : mediaRef
-    )),
-  };
+  return mediaRefs.map((mediaRef) => (
+    mediaKind ? { ...mediaRef, media_kind: mediaKind } : mediaRef
+  ));
+}
+
+function safeMediaKindForManifest(mediaRef) {
+  const explicit = typeof mediaRef.media_kind === "string" ? mediaRef.media_kind.trim().toLowerCase() : "";
+  if (SAFE_MEDIA_KINDS.has(explicit)) return explicit;
+  return inferMediaKind({
+    mimeType: mediaRef.mime_type,
+    reference: mediaRef.source,
+  });
+}
+
+function artifactMediaManifest(mediaRefs, { cwd } = {}) {
+  return mediaRefs.map((mediaRef) => {
+    const item = {
+      basename: syntheticMediaBasename(mediaRef.source, { salt: cwd }),
+    };
+    if (typeof mediaRef.mime_type === "string" && mediaRef.mime_type.trim()) {
+      item.mime_type = mediaRef.mime_type;
+    }
+    if (Number.isInteger(mediaRef.byte_size) && mediaRef.byte_size >= 0) {
+      item.byte_size = mediaRef.byte_size;
+    }
+    const mediaKind = safeMediaKindForManifest(mediaRef);
+    if (SAFE_MEDIA_KINDS.has(mediaKind)) item.media_kind = mediaKind;
+    return item;
+  });
 }
 
 export async function runArtifactReview({
@@ -99,6 +123,7 @@ export async function runArtifactReview({
     policy,
   });
   const contents = [...imageParts, createPartFromText(prompt)];
+  const telemetryContents = withArtifactMediaKinds(telemetryMediaRefs, { artifactKind });
 
   const generated = await generate({
     apiKey,
@@ -106,7 +131,7 @@ export async function runArtifactReview({
     contents,
     env,
     allowFakeResponse,
-    telemetry: withArtifactTelemetryContents(telemetry, telemetryMediaRefs, { artifactKind }),
+    telemetry: telemetry ? { ...telemetry, contents: telemetryContents } : telemetry,
   });
 
   const review = normalizeArtifactReview({
@@ -118,6 +143,7 @@ export async function runArtifactReview({
       generated_at: now.toISOString(),
       sources,
       omitted_sources: [],
+      media_manifest: artifactMediaManifest(telemetryContents, { cwd }),
       review_mode: mode,
     },
   });
