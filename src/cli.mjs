@@ -35,6 +35,10 @@ import {
   runTelemetryRawInventory,
 } from "./telemetry-raw-inventory.mjs";
 import {
+  formatTelemetryRawPruneText,
+  runTelemetryRawPrune,
+} from "./telemetry-raw-prune.mjs";
+import {
   assertRawConfirmation,
   disableTelemetryConfig,
   loadTelemetryConfigContext,
@@ -98,6 +102,7 @@ function printUsage() {
     "  gemini-agent telemetry preview [--global]",
     "  gemini-agent telemetry summary [--global] [--json]",
     "  gemini-agent telemetry raw inventory [--global] [--json]",
+    "  gemini-agent telemetry raw prune --state sent --keep-days <n> [--max-sent-bytes <n>] [--global] [--dry-run|--write] [--json]",
     "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry doctor [--global] [--json]",
     "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>] [--timeout-ms <n>]",
@@ -466,6 +471,67 @@ function parseTelemetryRawInventoryOptions(args) {
     }
   }
 
+  return options;
+}
+
+function nonnegativeIntegerOption(value, flag) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${flag} requires a nonnegative integer.`);
+  }
+  return parsed;
+}
+
+function parseTelemetryRawPruneOptions(args) {
+  const options = {
+    dryRun: true,
+    global: false,
+    json: false,
+  };
+  let sawDryRun = false;
+  let sawWrite = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--dry-run") {
+      sawDryRun = true;
+      options.dryRun = true;
+    } else if (arg === "--write") {
+      sawWrite = true;
+      options.dryRun = false;
+    } else if (arg === "--state") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--state sent is required.");
+      options.state = value;
+      index += 1;
+    } else if (arg === "--keep-days") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--keep-days is required.");
+      options.keepDays = nonnegativeIntegerOption(value, "--keep-days");
+      index += 1;
+    } else if (arg === "--max-sent-bytes") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--max-sent-bytes requires a nonnegative integer.");
+      options.maxSentBytes = nonnegativeIntegerOption(value, "--max-sent-bytes");
+      index += 1;
+    } else if (arg === "--now") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--now requires an ISO timestamp.");
+      options.now = new Date(value);
+      if (Number.isNaN(options.now.getTime())) throw new Error("--now requires a valid ISO timestamp.");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry raw prune argument: ${arg}`);
+    }
+  }
+
+  if (sawDryRun && sawWrite) throw new Error("--dry-run and --write cannot be used together.");
+  if (options.state !== "sent") throw new Error("--state sent is required.");
+  if (options.keepDays === undefined) throw new Error("--keep-days is required.");
   return options;
 }
 
@@ -1179,18 +1245,42 @@ async function runTelemetrySummaryCommand(args = []) {
 
 async function runTelemetryRaw(args = []) {
   const [subcommand, ...subArgs] = args;
-  if (subcommand !== "inventory") throw new Error("telemetry raw requires inventory.");
-  const options = parseTelemetryRawInventoryOptions(subArgs);
-  const report = await runTelemetryRawInventory({
-    cwd: process.cwd(),
-    home: process.env.HOME,
-    scope: telemetryScope(options),
-  });
-  if (options.json) {
-    output.write(`${JSON.stringify(report, null, 2)}\n`);
+  if (subcommand === "inventory") {
+    const options = parseTelemetryRawInventoryOptions(subArgs);
+    const report = await runTelemetryRawInventory({
+      cwd: process.cwd(),
+      home: process.env.HOME,
+      scope: telemetryScope(options),
+    });
+    if (options.json) {
+      output.write(`${JSON.stringify(report, null, 2)}\n`);
+      return;
+    }
+    output.write(formatTelemetryRawInventoryText(report));
     return;
   }
-  output.write(formatTelemetryRawInventoryText(report));
+
+  if (subcommand === "prune") {
+    const options = parseTelemetryRawPruneOptions(subArgs);
+    const report = await runTelemetryRawPrune({
+      cwd: process.cwd(),
+      home: process.env.HOME,
+      scope: telemetryScope(options),
+      state: options.state,
+      keepDays: options.keepDays,
+      maxSentBytes: options.maxSentBytes,
+      dryRun: options.dryRun,
+      now: options.now,
+    });
+    if (options.json) {
+      output.write(`${JSON.stringify(report, null, 2)}\n`);
+      return;
+    }
+    output.write(formatTelemetryRawPruneText(report));
+    return;
+  }
+
+  throw new Error("telemetry raw requires inventory or prune.");
 }
 
 async function runTelemetryEconomicsCommand(args = []) {

@@ -10,6 +10,7 @@ import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
 import {
   appendTelemetryEvent,
   claimTelemetryBatch,
+  completeTelemetryBatch,
   failTelemetryBatch,
   loadTelemetryQueueSnapshot,
   telemetryQueueDirs,
@@ -85,6 +86,20 @@ async function queueFailedCliEvents(cwd, { start = 1, count = 1, reason = "http_
     retryable: false,
     reason,
   });
+  return batch;
+}
+
+async function completeSentCliEvent(cwd, index, now) {
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(`sent_${index}`, {
+      prompt: `raw sent prompt ${index}`,
+      response: `raw sent response ${index}`,
+    }),
+    maxQueueBytes: 10 * 1024 * 1024,
+  });
+  const batch = await claimTelemetryBatch({ cwd, batchSize: 1, now });
+  await completeTelemetryBatch({ cwd, batchId: batch.batchId, now });
   return batch;
 }
 
@@ -931,6 +946,132 @@ test("telemetry raw inventory rejects unknown arguments", async () => {
       return true;
     },
   );
+});
+
+test("telemetry raw prune dry-run previews sent raw deletion without exposing content", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-prune-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await completeSentCliEvent(cwd, 1, new Date("2026-05-20T12:00:00.000Z"));
+    await completeSentCliEvent(cwd, 2, new Date("2026-06-09T12:00:00.000Z"));
+    const dirs = telemetryQueueDirs(cwd);
+    await mkdir(join(dirs.sent, "2026-05-19"), { recursive: true });
+    await writeFile(join(dirs.sent, "2026-05-19", "PRIVATE_TOKEN=secret.json"), "{}\n");
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "raw",
+      "prune",
+      "--state",
+      "sent",
+      "--keep-days",
+      "7",
+      "--now",
+      "2026-06-10T12:00:00.000Z",
+      "--json",
+    ], { cwd });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.dry_run, true);
+    assert.equal(parsed.would_delete_count, 2);
+    assert.equal(parsed.deleted_count, 0);
+    assert.equal((await readdir(join(dirs.sent, "2026-05-20"))).length, 1);
+    assert.doesNotMatch(stdout, /raw sent prompt|raw sent response|evt_cli_sent|PRIVATE_TOKEN|queue\/sent/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry raw prune write deletes only old sent raw data", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-prune-write-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await completeSentCliEvent(cwd, 1, new Date("2026-06-02T23:59:59.000Z"));
+    await completeSentCliEvent(cwd, 2, new Date("2026-06-03T00:00:00.000Z"));
+    const dirs = telemetryQueueDirs(cwd);
+
+    const { stdout } = await execBin([
+      "telemetry",
+      "raw",
+      "prune",
+      "--state",
+      "sent",
+      "--keep-days",
+      "7",
+      "--now",
+      "2026-06-10T12:00:00.000Z",
+      "--write",
+      "--json",
+    ], { cwd });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(parsed.dry_run, false);
+    assert.equal(parsed.deleted_count, 1);
+    await assert.rejects(() => readdir(join(dirs.sent, "2026-06-02")), /ENOENT/);
+    assert.equal((await readdir(join(dirs.sent, "2026-06-03"))).length, 1);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry raw prune rejects unsafe arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-prune-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "prune", "--keep-days", "7"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--state sent is required/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "prune", "--state", "sent"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--keep-days is required/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "prune", "--state", "sent", "--keep-days", "-1"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--keep-days requires a nonnegative integer/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "prune", "--state", "sent", "--keep-days", "7", "--dry-run", "--write"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--dry-run and --write cannot be used together/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "prune", "--state", "pending", "--keep-days", "7"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--state sent is required/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("telemetry economics prints safe human output", async () => {
