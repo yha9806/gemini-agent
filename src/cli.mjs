@@ -30,6 +30,11 @@ import {
 } from "./gate-input.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
 import { drainTelemetryCapture } from "./telemetry-capture.mjs";
+import {
+  contextPackTelemetryMetadata,
+  gateFreshInputModes,
+  gateTelemetryMetadata,
+} from "./telemetry-command-metadata.mjs";
 import { artifactReviewsToRawTelemetryBatch } from "./telemetry-backfill.mjs";
 import { normalizeTelemetryBatch } from "./telemetry-schemas.mjs";
 import { runTelemetryDoctor } from "./telemetry-doctor.mjs";
@@ -1062,6 +1067,7 @@ async function readGateInput(args, { gate, command } = {}) {
   }
 
   const sections = [];
+  const freshInputModes = [];
   if (autoContextPack) {
     const contextPackInput = await readAutoContextPackFile({
       gate,
@@ -1079,11 +1085,13 @@ async function readGateInput(args, { gate, command } = {}) {
 
   if (diff) {
     let collected;
+    const stdinText = readFromStdin ? await readStdin() : "";
+    const text = textArgs.join(" ");
     try {
       collected = await collectTextInput({
         stdinText: [
-          readFromStdin ? await readStdin() : "",
-          textArgs.join(" "),
+          stdinText,
+          text,
         ].filter(Boolean).join("\n"),
         files: filePath ? [filePath] : [],
         diff,
@@ -1096,24 +1104,47 @@ async function readGateInput(args, { gate, command } = {}) {
         throw error;
       }
     }
-    if (collected?.input?.trim()) sections.push(collected.input.trim());
+    if (collected?.input?.trim()) {
+      sections.push(collected.input.trim());
+      freshInputModes.push(...gateFreshInputModes({
+        stdinText,
+        text,
+        filePath,
+        sources: collected.sources,
+      }));
+    }
   } else {
-    const input = filePath
-      ? await readLimitedGateFile(filePath, { gate, command, limitBytes })
-      : limitedGateText(
-        readFromStdin ? await readStdin() : textArgs.join(" ").trim(),
-        { gate, command, limitBytes },
-      );
-    if (input.inputText.trim()) sections.push(input.inputText);
+    if (filePath) {
+      const input = await readLimitedGateFile(filePath, { gate, command, limitBytes });
+      if (input.inputText.trim()) {
+        sections.push(input.inputText);
+        freshInputModes.push("file");
+      }
+    } else {
+      const stdinText = readFromStdin ? await readStdin() : "";
+      const textInput = readFromStdin ? stdinText : textArgs.join(" ").trim();
+      const input = limitedGateText(textInput, { gate, command, limitBytes });
+      if (input.inputText.trim()) {
+        sections.push(input.inputText);
+        freshInputModes.push(readFromStdin ? "stdin" : "text");
+      }
+    }
   }
 
+  const metadata = gateTelemetryMetadata({
+    autoContextPack,
+    contextPackPath,
+    freshInputModes,
+  });
+
   if (!sections.length) {
-    return { inputText: "", inputBytes: 0, limitBytes };
+    return { inputText: "", inputBytes: 0, limitBytes, metadata };
   }
 
   return {
     ...limitedGateText(sections.join("\n\n"), { gate, command, limitBytes }),
     limitBytes,
+    metadata,
   };
 }
 
@@ -1241,7 +1272,7 @@ async function runAuth(args) {
 
 async function runGate(command, args) {
   const gate = GATE_COMMANDS.get(command);
-  const { inputText, inputBytes, limitBytes } = await readGateInput(args, { gate, command });
+  const { inputText, inputBytes, limitBytes, metadata } = await readGateInput(args, { gate, command });
   if (!inputText || !inputText.trim()) throw new Error("Gate input is empty.");
   const fakeAllowed = allowFakeResponse(process.env);
   if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
@@ -1260,7 +1291,10 @@ async function runGate(command, args) {
       cwd: process.cwd(),
       source: "cli",
       command,
-      metadata: gateInputMetadata({ gate, inputBytes, limitBytes }),
+      metadata: {
+        ...gateInputMetadata({ gate, inputBytes, limitBytes }),
+        ...metadata,
+      },
     },
   });
   output.write(reviewToPrettyJson(review));
@@ -1290,7 +1324,12 @@ async function runContextPackCommand(args) {
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,
-    telemetry: { cwd: effectiveCwd, source: "cli", command: "context-pack" },
+    telemetry: {
+      cwd: effectiveCwd,
+      source: "cli",
+      command: "context-pack",
+      metadata: contextPackTelemetryMetadata({ bootstrap, writeArtifact, collected }),
+    },
   });
   output.write(contextPackToPrettyJson(pack));
 }

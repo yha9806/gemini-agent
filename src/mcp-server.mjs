@@ -22,6 +22,10 @@ import {
   parseMaxInputBytes,
 } from "./gate-input.mjs";
 import { artifactReviewToPrettyJson, contextPackToPrettyJson, reviewToPrettyJson } from "./schemas.mjs";
+import {
+  contextPackTelemetryMetadata,
+  gateTelemetryMetadata,
+} from "./telemetry-command-metadata.mjs";
 
 if (fstatSync(0).isCharacterDevice()) {
   console.error("gemini-agent MCP server requires an MCP stdio client; standalone mode is not implemented.");
@@ -113,7 +117,10 @@ async function runReviewTool(gate, input, cwd = process.cwd(), maxInputBytes = n
       cwd,
       source: "mcp",
       command: gate,
-      metadata: gateInputMetadata({ gate, inputBytes, limitBytes }),
+      metadata: {
+        ...gateInputMetadata({ gate, inputBytes, limitBytes }),
+        ...gateTelemetryMetadata({ freshInputModes: ["stdin"] }),
+      },
     },
   });
   return textContent(reviewToPrettyJson(review));
@@ -179,7 +186,15 @@ server.registerTool(
       env: process.env,
       allowFakeResponse: fakeAllowed,
       writeArtifact: Boolean(write_artifact),
-      telemetry: { cwd: cwdValue, source: "mcp", command: "gemini_context_pack" },
+      telemetry: {
+        cwd: cwdValue,
+        source: "mcp",
+        command: "gemini_context_pack",
+        metadata: contextPackTelemetryMetadata({
+          writeArtifact: Boolean(write_artifact),
+          collected,
+        }),
+      },
     });
     return textContent(contextPackToPrettyJson(pack));
   },
