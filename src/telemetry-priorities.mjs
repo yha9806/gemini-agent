@@ -94,6 +94,13 @@ const MULTIMODAL_FIELD_CONFIG = [
   { name: "media-kind", key: "kind", missingKey: "unknown_kind_items", presentKey: "media_items_with_kind" },
 ];
 
+const BACKFILL_MANIFEST_SOURCES = new Set([
+  "artifact_media_manifest",
+  "artifact_sources",
+  "none",
+  "unknown",
+]);
+
 function topMissingMultimodalCommand(multimodal, field) {
   const rows = Array.isArray(multimodal?.top_commands) ? multimodal.top_commands : [];
   return rows
@@ -207,6 +214,41 @@ function multimodalGapEvidence(gaps) {
   return evidence;
 }
 
+function plural(value, singular, pluralText = `${singular}s`) {
+  return value === 1 ? singular : pluralText;
+}
+
+function safeBackfillManifestSource(value) {
+  return BACKFILL_MANIFEST_SOURCES.has(value) ? value : "unknown";
+}
+
+function hasArtifactBackfillByteGap(gaps) {
+  return gaps.some((item) => (
+    item.name === "byte-size"
+    && item.topCommand?.command === "artifact-review-backfill"
+    && item.topCommand.missing > 0
+  ));
+}
+
+function backfillManifestSourceEvidence(summary, gaps) {
+  if (!hasArtifactBackfillByteGap(gaps)) return [];
+  const rows = Array.isArray(summary.backfill?.media_manifest_sources)
+    ? summary.backfill.media_manifest_sources
+    : [];
+  const parts = rows
+    .map((item) => ({
+      source: safeBackfillManifestSource(item?.media_manifest_source),
+      events: nonnegativeMetric(item?.event_count),
+      mediaItems: nonnegativeMetric(item?.media_item_count),
+    }))
+    .filter((item) => item.events > 0 || item.mediaItems > 0)
+    .slice(0, 3)
+    .map((item) => (
+      `${item.source} ${formatNumber(item.events)} ${plural(item.events, "event")} / ${formatNumber(item.mediaItems)} media ${plural(item.mediaItems, "item")}`
+    ));
+  return parts.length > 0 ? [`Backfill media manifest sources: ${parts.join("; ")}`] : [];
+}
+
 function multimodalGapAction(gaps) {
   const actionable = gaps.filter((item) => item.topCommand);
   if (actionable.length === 0) return null;
@@ -248,6 +290,7 @@ function instrumentationPriority(summary, economics, multimodalCoverage, multimo
   if (multimodalWeak) {
     reasons.push(`Multimodal metadata minimum coverage: ${formatPercent(multimodalCoverage.min)}`);
     reasons.push(...multimodalGapEvidence(multimodalGaps));
+    reasons.push(...backfillManifestSourceEvidence(summary, multimodalGaps));
   }
   if (summary.invalid_events.count > 0) {
     reasons.push(`Invalid telemetry files: ${formatNumber(summary.invalid_events.count)}`);
