@@ -41,6 +41,12 @@ function zeroEconomics() {
     output_tokens: 0,
     total_tokens: 0,
     codex_tokens_saved_estimate: 0,
+    events_with_input_bytes: 0,
+    input_bytes_total: 0,
+    input_bytes_max: 0,
+    events_with_input_limit_bytes: 0,
+    input_limit_bytes_max: 0,
+    input_limit_hit_count: 0,
   };
 }
 
@@ -60,9 +66,22 @@ function safeInteger(value) {
   return Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
+function safeMetadataInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function safePositiveMetadataInteger(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 function nullableRatio(numerator, denominator, digits = 6) {
   if (denominator <= 0) return null;
   return Number((numerator / denominator).toFixed(digits));
+}
+
+function nullableAverage(total, count, digits = 2) {
+  if (count <= 0) return null;
+  return Number((total / count).toFixed(digits));
 }
 
 function roundCost(value) {
@@ -123,9 +142,24 @@ function savingsEstimate(event, inputTokens) {
   return Number.isInteger(explicit) && explicit >= 0 ? explicit : inputTokens;
 }
 
+function addGateInputEconomics(target, event) {
+  const inputBytes = safeMetadataInteger(event.metadata?.input_bytes);
+  if (inputBytes === null) return;
+  target.events_with_input_bytes += 1;
+  target.input_bytes_total += inputBytes;
+  target.input_bytes_max = Math.max(target.input_bytes_max, inputBytes);
+
+  const limitBytes = safePositiveMetadataInteger(event.metadata?.input_limit_bytes);
+  if (limitBytes === null) return;
+  target.events_with_input_limit_bytes += 1;
+  target.input_limit_bytes_max = Math.max(target.input_limit_bytes_max, limitBytes);
+  if (inputBytes >= limitBytes) target.input_limit_hit_count += 1;
+}
+
 function addEventEconomics(target, event) {
   const status = statusOf(event);
   updateStatus(target, status);
+  addGateInputEconomics(target, event);
   const applies = usageApplies(event);
   if (applies) target.usage_applicable_event_count += 1;
   else target.usage_not_applicable_event_count += 1;
@@ -208,6 +242,12 @@ function enrichEconomics(item, pricing) {
       item.total_tokens,
       item.codex_tokens_saved_estimate,
     ),
+    input_bytes_avg: nullableAverage(item.input_bytes_total, item.events_with_input_bytes),
+    input_limit_hit_rate: nullableRatio(
+      item.input_limit_hit_count,
+      item.events_with_input_limit_bytes,
+      4,
+    ),
     usage_coverage_rate: nullableRatio(item.events_with_usage, item.event_count, 4),
     usage_applicable_coverage_rate: nullableRatio(
       item.usage_applicable_event_count - item.usage_applicable_missing_count,
@@ -266,11 +306,33 @@ function usageGapCommands(commandRows, totals, limit) {
     }));
 }
 
+function gateInputCommands(commandRows, limit) {
+  return [...commandRows]
+    .filter((item) => item.events_with_input_bytes > 0)
+    .sort((left, right) => (
+      right.input_bytes_total - left.input_bytes_total
+      || right.input_bytes_max - left.input_bytes_max
+      || left.command.localeCompare(right.command)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      command: item.command,
+      events_with_input_bytes: item.events_with_input_bytes,
+      input_bytes_total: item.input_bytes_total,
+      input_bytes_avg: item.input_bytes_avg,
+      input_bytes_max: item.input_bytes_max,
+      events_with_input_limit_bytes: item.events_with_input_limit_bytes,
+      input_limit_bytes_max: item.input_limit_bytes_max,
+      input_limit_hit_count: item.input_limit_hit_count,
+      input_limit_hit_rate: item.input_limit_hit_rate,
+    }));
+}
+
 function recommendation(kind, message) {
   return { kind, message };
 }
 
-function buildRecommendations({ totals, topCommandRows, usageGapRows }) {
+function buildRecommendations({ totals, topCommandRows, usageGapRows, gateInputRows }) {
   const recommendations = [];
   if (
     totals.usage_applicable_adjusted_event_count > 0
@@ -306,6 +368,13 @@ function buildRecommendations({ totals, topCommandRows, usageGapRows }) {
     recommendations.push(recommendation(
       "workflow",
       `${inefficient.command} uses more than 2 Gemini tokens per estimated Codex token saved; review prompt size or routing.`,
+    ));
+  }
+  const inputLimitHit = gateInputRows.find((item) => item.input_limit_hit_count > 0);
+  if (inputLimitHit) {
+    recommendations.push(recommendation(
+      "workflow",
+      `${inputLimitHit.command} hit its configured input limit in ${inputLimitHit.input_limit_hit_count} event${inputLimitHit.input_limit_hit_count === 1 ? "" : "s"}; use context-pack or narrower review input before raising limits.`,
     ));
   }
   return recommendations;
@@ -360,6 +429,7 @@ export async function runTelemetryEconomics({
   const enrichedCommandRows = [...commands.values()].map((item) => enrichEconomics(item, pricing));
   const commandRows = topCommands(enrichedCommandRows, topLimit);
   const usageGapRows = usageGapCommands(enrichedCommandRows, enrichedTotals, topLimit);
+  const gateInputRows = gateInputCommands(enrichedCommandRows, topLimit);
 
   return {
     scope: context.scope,
@@ -369,14 +439,17 @@ export async function runTelemetryEconomics({
     totals: enrichedTotals,
     top_commands: commandRows,
     usage_gap_commands: usageGapRows,
+    gate_input_commands: gateInputRows,
     recommendations: buildRecommendations({
       totals: enrichedTotals,
       topCommandRows: commandRows,
       usageGapRows,
+      gateInputRows,
     }),
     limitations: [
       "Gemini cost is estimated from configured per-million-token prices, not provider billing export.",
       "Codex token savings are estimates, not measured Codex billing savings.",
+      "Gate input byte metrics require client telemetry metadata and are absent for older events.",
       "Local economics only include telemetry files available on this machine.",
     ],
   };
@@ -410,6 +483,13 @@ function formatUsageGapRows(rows) {
   )).join("\n");
 }
 
+function formatGateInputRows(rows) {
+  if (rows.length === 0) return "None";
+  return rows.map((item, index) => (
+    `${index + 1}. ${item.command}: ${formatNumber(item.events_with_input_bytes)} events, ${formatNumber(item.input_bytes_total)} bytes total, ${formatNumber(item.input_bytes_avg ?? 0)} avg, ${formatNumber(item.input_bytes_max)} max, ${formatPercent(item.input_limit_hit_rate)} at limit`
+  )).join("\n");
+}
+
 export function formatTelemetryEconomicsText(report) {
   const recommendations = report.recommendations.length
     ? report.recommendations.map((item) => `- ${item.message}`).join("\n")
@@ -437,12 +517,20 @@ export function formatTelemetryEconomicsText(report) {
     `- Estimated Gemini cost: ${formatUsd(report.totals.gemini_estimated_cost_usd)}`,
     `- Estimated Codex tokens saved: ${formatNumber(report.totals.codex_tokens_saved_estimate)}`,
     `- Gemini tokens per estimated Codex token saved: ${report.totals.gemini_tokens_per_codex_token_saved ?? "n/a"}`,
+    `- Gate input byte events: ${formatNumber(report.totals.events_with_input_bytes)}`,
+    `- Gate input total bytes: ${formatNumber(report.totals.input_bytes_total)}`,
+    `- Gate input avg bytes: ${report.totals.input_bytes_avg === null ? "n/a" : formatNumber(report.totals.input_bytes_avg)}`,
+    `- Gate input max bytes: ${formatNumber(report.totals.input_bytes_max)}`,
+    `- Gate input limit hit rate: ${formatPercent(report.totals.input_limit_hit_rate)}`,
     "",
     "Top command economics:",
     formatCommandRows(report.top_commands),
     "",
     "Usage metadata gaps:",
     formatUsageGapRows(report.usage_gap_commands),
+    "",
+    "Gate input bytes:",
+    formatGateInputRows(report.gate_input_commands),
     "",
     "Recommendations:",
     recommendations,

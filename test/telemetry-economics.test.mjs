@@ -358,6 +358,182 @@ test("runTelemetryEconomics reports aggregate usage metadata gaps safely", async
   }
 });
 
+test("runTelemetryEconomics aggregates gate input byte metadata safely", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(70, {
+        command: "plan_critique",
+        prompt: "private plan prompt should not appear",
+        response: "private plan response should not appear",
+        metadata: {
+          gate: "plan_critique",
+          input_bytes: 1000,
+          input_limit_bytes: 1000,
+        },
+        economics: {
+          input_tokens: 200,
+          output_tokens: 50,
+          total_tokens: 250,
+          codex_tokens_saved_estimate: 100,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(71, {
+        command: "plan-critique",
+        metadata: {
+          gate: "plan_critique",
+          input_bytes: 500,
+          input_limit_bytes: 1000,
+        },
+        economics: {
+          input_tokens: 100,
+          output_tokens: 25,
+          total_tokens: 125,
+          codex_tokens_saved_estimate: 50,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(72, {
+        command: "diff-review",
+        metadata: {
+          gate: "diff_review",
+          input_bytes: 250,
+          input_limit_bytes: 0,
+        },
+        economics: {
+          input_tokens: 100,
+          output_tokens: 25,
+          total_tokens: 125,
+          codex_tokens_saved_estimate: 200,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(73, {
+        command: "patch-precheck",
+        metadata: {
+          gate: "patch_precheck",
+          input_bytes: -1,
+          input_limit_bytes: 1000,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(74, { command: "research-brief" }),
+    });
+
+    const report = await runTelemetryEconomics({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const text = formatTelemetryEconomicsText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const commands = new Map(report.top_commands.map((item) => [item.command, item]));
+    const inputCommands = new Map(report.gate_input_commands.map((item) => [item.command, item]));
+
+    assert.equal(report.totals.events_with_input_bytes, 3);
+    assert.equal(report.totals.input_bytes_total, 1750);
+    assert.equal(report.totals.input_bytes_avg, 583.33);
+    assert.equal(report.totals.input_bytes_max, 1000);
+    assert.equal(report.totals.events_with_input_limit_bytes, 2);
+    assert.equal(report.totals.input_limit_bytes_max, 1000);
+    assert.equal(report.totals.input_limit_hit_count, 1);
+    assert.equal(report.totals.input_limit_hit_rate, 0.5);
+    assert.equal(commands.get("plan-critique").events_with_input_bytes, 2);
+    assert.equal(commands.get("plan-critique").input_bytes_total, 1500);
+    assert.equal(commands.get("plan-critique").input_bytes_avg, 750);
+    assert.equal(commands.get("plan-critique").input_limit_hit_count, 1);
+    assert.equal(commands.get("diff-review").events_with_input_limit_bytes, 0);
+    assert.deepEqual(
+      report.gate_input_commands.map((item) => ({
+        command: item.command,
+        events: item.events_with_input_bytes,
+        total: item.input_bytes_total,
+        avg: item.input_bytes_avg,
+        max: item.input_bytes_max,
+        limitHits: item.input_limit_hit_count,
+        hitRate: item.input_limit_hit_rate,
+      })),
+      [
+        {
+          command: "plan-critique",
+          events: 2,
+          total: 1500,
+          avg: 750,
+          max: 1000,
+          limitHits: 1,
+          hitRate: 0.5,
+        },
+        {
+          command: "diff-review",
+          events: 1,
+          total: 250,
+          avg: 250,
+          max: 250,
+          limitHits: 0,
+          hitRate: null,
+        },
+      ],
+    );
+    assert.equal(inputCommands.get("plan-critique").input_limit_bytes_max, 1000);
+    assert.match(text, /Gate input bytes/);
+    assert.match(text, /plan-critique: 2 events, 1,500 bytes total, 750 avg, 1,000 max, 50\.0% at limit/);
+    assert.match(
+      report.recommendations.map((item) => item.message).join("\n"),
+      /plan-critique hit its configured input limit in 1 event/,
+    );
+    assert.doesNotMatch(serialized, /private plan prompt|private plan response|evt_000070/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryEconomics reports empty gate input byte aggregates without NaN", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(80, { command: "diff-review" }),
+    });
+
+    const report = await runTelemetryEconomics({ cwd, scope: "local" });
+    const text = formatTelemetryEconomicsText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.totals.events_with_input_bytes, 0);
+    assert.equal(report.totals.input_bytes_total, 0);
+    assert.equal(report.totals.input_bytes_avg, null);
+    assert.equal(report.totals.input_bytes_max, 0);
+    assert.equal(report.totals.input_limit_hit_rate, null);
+    assert.deepEqual(report.gate_input_commands, []);
+    assert.match(text, /Gate input bytes:\nNone/);
+    assert.doesNotMatch(serialized, /NaN|Infinity/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryEconomics separates suspected test fixtures from adjusted runtime coverage", async () => {
   const cwd = await temporaryWorkspace();
   try {
