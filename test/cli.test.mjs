@@ -446,6 +446,26 @@ test("plan-critique rejects oversized stdin before auth lookup", async () => {
   );
 });
 
+test("diff-review wraps collected context input exceeds errors with context-pack advisor", async () => {
+  const oversizedInput = "x".repeat(4 * 1024 * 1024);
+
+  await assert.rejects(
+    execBin(["diff-review", "--stdin", "--diff"], {
+      input: oversizedInput,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /diff-review context input exceeds 4194304 bytes\./);
+      assert.match(error.stderr, /gemini-agent context-pack --bootstrap --write-artifact/);
+      assert.match(error.stderr, /gemini-agent diff-review --auto-context-pack/);
+      assert.match(error.stderr, /narrow fresh input/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
 test("plan-critique checks file size before auth lookup", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const planPath = join(dir, "plan.md");

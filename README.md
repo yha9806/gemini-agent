@@ -63,6 +63,7 @@ Global Gemini review gate for Codex.
 - Gate commands accept `--context-pack <path>` so Codex can ask Gemini to critique compact prior context instead of pasting large raw project slices again.
 - Gate commands accept `--auto-context-pack` to reuse project-root `.gemini-agent/context/latest.json` explicitly without hand-writing the path.
 - `context-pack --bootstrap --write-artifact` creates the project-root context artifact used by `--auto-context-pack` from a bounded root-file allowlist and current git diff.
+- Oversized gate failures print concrete `context-pack --bootstrap --write-artifact` and `--auto-context-pack` retry commands so Codex can switch to compact context before raising byte limits.
 - Global active Codex policy tells sessions to reuse project-root `.gemini-agent/context/latest.json` with gate `--auto-context-pack` or explicit `--context-pack`; regenerate the context pack first when it is missing, stale, or unrelated.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1, including bounded multi-file comparison for visual diff work.

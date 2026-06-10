@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  gateInputTooLargeMessage,
   readLimitedContextPackFile,
 } from "../src/gate-input.mjs";
 
@@ -69,4 +70,19 @@ test("readLimitedContextPackFile enforces byte limits", async () => {
     }),
     /plan-critique input exceeds 10 bytes/,
   );
+});
+
+test("gate input too large message gives concrete context-pack advisor commands", () => {
+  const message = gateInputTooLargeMessage({
+    gate: "diff_review",
+    command: "diff-review",
+    inputBytes: 97545,
+    limitBytes: 4096,
+  });
+
+  assert.match(message, /diff-review input exceeds 4096 bytes \(97545 bytes\)\./);
+  assert.match(message, /gemini-agent context-pack --bootstrap --write-artifact/);
+  assert.match(message, /gemini-agent diff-review --auto-context-pack/);
+  assert.match(message, /narrow fresh input/);
+  assert.doesNotMatch(message, /undefined|null/);
 });

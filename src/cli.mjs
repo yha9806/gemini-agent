@@ -20,6 +20,7 @@ import { parsePaletteSplitArgs, runPaletteSplit } from "./palette-mask.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
 import {
   defaultGateInputLimitBytes,
+  gateContextInputTooLargeMessage,
   gateInputMetadata,
   limitedGateText,
   parseMaxInputBytes,
@@ -1027,6 +1028,16 @@ function telemetryTickDecision({ schedule, lastSentAt, now = new Date() }) {
   throw new Error(`Unsupported telemetry schedule: ${schedule}`);
 }
 
+function gateCollectionError(error, { gate, command }) {
+  const match = /^Context input exceeds (\d+) bytes\.$/.exec(error?.message ?? "");
+  if (!match) return error;
+  return new Error(gateContextInputTooLargeMessage({
+    gate,
+    command,
+    limitBytes: Number(match[1]),
+  }));
+}
+
 async function readGateInput(args, { gate, command } = {}) {
   let filePath = null;
   let contextPackPath = null;
@@ -1101,7 +1112,7 @@ async function readGateInput(args, { gate, command } = {}) {
       if (error?.message === "Context input is empty.") {
         collected = null;
       } else {
-        throw error;
+        throw gateCollectionError(error, { gate, command });
       }
     }
     if (collected?.input?.trim()) {

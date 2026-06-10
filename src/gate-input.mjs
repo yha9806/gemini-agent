@@ -31,10 +31,28 @@ export function gateCommandLabel(gate, command = null) {
   return command || String(gate ?? "").replaceAll("_", "-") || "gate";
 }
 
+export function contextPackAdvisorMessage({ gate = null, command = null } = {}) {
+  const label = gateCommandLabel(gate, command);
+  return [
+    "Run: gemini-agent context-pack --bootstrap --write-artifact",
+    `Then retry: gemini-agent ${label} --auto-context-pack`,
+    "Add --stdin, --diff, or --file <path> only for narrow fresh input beyond the pack.",
+  ].join(" ");
+}
+
 export function gateInputTooLargeMessage({ gate, command, inputBytes, limitBytes }) {
   return [
     `${gateCommandLabel(gate, command)} input exceeds ${limitBytes} bytes (${inputBytes} bytes).`,
-    "Use context-pack first, narrow the input, or pass --max-input-bytes <n> if this is intentional.",
+    contextPackAdvisorMessage({ gate, command }),
+    "Or narrow the input, or pass --max-input-bytes <n> if this is intentional.",
+  ].join(" ");
+}
+
+export function gateContextInputTooLargeMessage({ gate, command, limitBytes }) {
+  return [
+    `${gateCommandLabel(gate, command)} context input exceeds ${limitBytes} bytes.`,
+    contextPackAdvisorMessage({ gate, command }),
+    "Or narrow the input before raising limits.",
   ].join(" ");
 }
 
