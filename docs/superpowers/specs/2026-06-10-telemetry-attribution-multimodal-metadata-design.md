@@ -69,7 +69,9 @@ Create a focused module such as `src/telemetry-attribution.mjs`.
 - injectable filesystem helpers for tests
 - `maxDepth`, defaulting to `6`
 
-The resolver should keep a bounded in-memory cache for successful and fallback resolutions during one process execution. The cache key should include the resolved `cwd`, relevant explicit values, relevant environment values, and salt inputs. This prevents repeated filesystem traversal on every Gemini call in long Codex sessions. The cache should have a hard entry cap, such as 256 entries, and evict the oldest entry when full. It should also coalesce concurrent requests by storing the active promise for a cache key, so simultaneous captures from the same workspace share one traversal.
+The resolver should keep a bounded in-memory cache for successful and expected fallback resolutions during one process execution. The cache key should include the resolved `cwd`, relevant explicit values, relevant environment values, and salt inputs. This prevents repeated filesystem traversal on every Gemini call in long Codex sessions. The cache should have a hard entry cap, such as 256 entries, and evict the oldest entry when full. It should also coalesce concurrent requests by storing the active promise for a cache key, so simultaneous captures from the same workspace share one traversal. Unexpected filesystem errors should return safe defaults but should not permanently cache the fallback result.
+
+When `homeDir` is not supplied, the resolver should default to `os.homedir()` so home-directory project-id rejection is active in normal runtime.
 
 ### Project ID Precedence
 
@@ -191,7 +193,7 @@ Extend local telemetry multimodal items with one optional field:
 }
 ```
 
-`basename` is not a human filename in v1. Store a sanitized synthetic basename such as `media-<hash><extension>` when a basename is useful for deduplication or debugging. The original media filename should not be stored by default, even inside governed raw telemetry, because filenames often contain customer, project, or person names. Ordinary summary/economics outputs must continue to ignore `basename`.
+`basename` is not a human filename in v1. Store a sanitized synthetic basename such as `media-<salted-hash><extension>` when a basename is useful for deduplication or debugging. The hash must include a stable non-public salt such as the allowed project root realpath or install-local salt, never only the filename. The original media filename should not be stored by default, even inside governed raw telemetry, because filenames often contain customer, project, or person names. Ordinary summary/economics outputs must continue to ignore `basename`.
 
 ### Media Kind Rules
 
