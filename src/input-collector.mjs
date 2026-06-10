@@ -164,7 +164,7 @@ export function detectArtifactMime(path) {
   return mimeType;
 }
 
-export async function imagePartFromFile(
+export async function imagePartWithMetadataFromFile(
   path,
   { maxImageBytes = DEFAULT_IMAGE_LIMIT_BYTES } = {},
 ) {
@@ -183,5 +183,18 @@ export async function imagePartFromFile(
     throw new Error("File does not match claimed image MIME.");
   }
 
-  return createPartFromBase64(content.toString("base64"), mimeType);
+  return {
+    part: createPartFromBase64(content.toString("base64"), mimeType),
+    metadata: {
+      mime_type: mimeType,
+      byte_size: size,
+    },
+  };
+}
+
+export async function imagePartFromFile(
+  path,
+  options = {},
+) {
+  return (await imagePartWithMetadataFromFile(path, options)).part;
 }

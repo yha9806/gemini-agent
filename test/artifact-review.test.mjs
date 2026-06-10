@@ -58,7 +58,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
     cwd: dir,
     source: "cli",
     command: "artifact-review",
-    contents: [{ source: "design.png" }],
+    contents: [{ source: "design.png", mime_type: "image/png", byte_size: pngBytes.length }],
   });
   assert.match(seenPrompt, /artifact review/i);
   assert.match(seenPrompt, /design\.png/);
@@ -98,7 +98,7 @@ test("runArtifactReview preserves explicit telemetry override and adds safe medi
 
   assert.deepEqual(seenTelemetry, {
     ...telemetry,
-    contents: [{ source: "design.png" }],
+    contents: [{ source: "design.png", mime_type: "image/png", byte_size: pngBytes.length }],
   });
   assert.deepEqual(telemetry, { cwd: "/override", source: "mcp", command: "gemini_artifact_review", awaitCapture: true });
 });
@@ -123,8 +123,8 @@ test("runArtifactReview passes safe media references for telemetry", async () =>
   });
 
   assert.deepEqual(seenTelemetry.contents, [
-    { source: "before.png", media_kind: "design" },
-    { source: "after.png", media_kind: "design" },
+    { source: "before.png", mime_type: "image/png", byte_size: pngBytes.length, media_kind: "design" },
+    { source: "after.png", mime_type: "image/png", byte_size: pngBytes.length, media_kind: "design" },
   ]);
   assert.doesNotMatch(JSON.stringify(seenTelemetry.contents), /inlineData|YWJjZA/);
 });

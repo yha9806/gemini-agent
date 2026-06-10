@@ -1,7 +1,7 @@
 import { createPartFromText } from "@google/genai";
 import { writeJsonArtifact } from "./artifact-store.mjs";
 import { generateArtifactReview, getDefaultModel } from "./gemini-client.mjs";
-import { detectArtifactMime, imagePartFromFile, resolveCwdFilePath } from "./input-collector.mjs";
+import { detectArtifactMime, imagePartWithMetadataFromFile, resolveCwdFilePath } from "./input-collector.mjs";
 import { loadProjectPolicy } from "./policies.mjs";
 import { buildArtifactReviewPrompt } from "./prompts.mjs";
 import { normalizeArtifactReview } from "./schemas.mjs";
@@ -44,13 +44,13 @@ function artifactTelemetryMediaKind(artifactKind) {
   return null;
 }
 
-function withArtifactTelemetryContents(telemetry, sources, { artifactKind } = {}) {
+function withArtifactTelemetryContents(telemetry, mediaRefs, { artifactKind } = {}) {
   if (!telemetry) return telemetry;
   const mediaKind = artifactTelemetryMediaKind(artifactKind);
   return {
     ...telemetry,
-    contents: sources.map((source) => (
-      mediaKind ? { source, media_kind: mediaKind } : { source }
+    contents: mediaRefs.map((mediaRef) => (
+      mediaKind ? { ...mediaRef, media_kind: mediaKind } : mediaRef
     )),
   };
 }
@@ -82,8 +82,14 @@ export async function runArtifactReview({
   }
 
   const imageParts = [];
-  for (const resolvedFile of resolvedFiles) {
-    imageParts.push(await imagePartFromFile(resolvedFile));
+  const telemetryMediaRefs = [];
+  for (let index = 0; index < resolvedFiles.length; index += 1) {
+    const { part, metadata } = await imagePartWithMetadataFromFile(resolvedFiles[index]);
+    imageParts.push(part);
+    telemetryMediaRefs.push({
+      source: sources[index],
+      ...metadata,
+    });
   }
   const policy = await loadProjectPolicy(cwd);
   const prompt = buildArtifactReviewPrompt({
@@ -100,7 +106,7 @@ export async function runArtifactReview({
     contents,
     env,
     allowFakeResponse,
-    telemetry: withArtifactTelemetryContents(telemetry, sources, { artifactKind }),
+    telemetry: withArtifactTelemetryContents(telemetry, telemetryMediaRefs, { artifactKind }),
   });
 
   const review = normalizeArtifactReview({
