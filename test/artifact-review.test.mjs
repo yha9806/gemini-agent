@@ -54,7 +54,12 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
 
   assert.equal(seenApiKey, "fake-key");
   assert.equal(seenAllowFakeResponse, false);
-  assert.deepEqual(seenTelemetry, { cwd: dir, source: "cli", command: "artifact-review" });
+  assert.deepEqual(seenTelemetry, {
+    cwd: dir,
+    source: "cli",
+    command: "artifact-review",
+    contents: [{ source: "design.png" }],
+  });
   assert.match(seenPrompt, /artifact review/i);
   assert.match(seenPrompt, /design\.png/);
   assert.deepEqual(seenContents[0], {
@@ -74,7 +79,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   assert.equal(latest.metadata.generated_at, "2026-05-28T12:00:00.000Z");
 });
 
-test("runArtifactReview passes explicit telemetry override to generation", async () => {
+test("runArtifactReview preserves explicit telemetry override and adds safe media references", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
   await writeFile(join(dir, "design.png"), pngBytes);
   const telemetry = { cwd: "/override", source: "mcp", command: "gemini_artifact_review", awaitCapture: true };
@@ -91,7 +96,37 @@ test("runArtifactReview passes explicit telemetry override to generation", async
     },
   });
 
-  assert.equal(seenTelemetry, telemetry);
+  assert.deepEqual(seenTelemetry, {
+    ...telemetry,
+    contents: [{ source: "design.png" }],
+  });
+  assert.deepEqual(telemetry, { cwd: "/override", source: "mcp", command: "gemini_artifact_review", awaitCapture: true });
+});
+
+test("runArtifactReview passes safe media references for telemetry", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
+  await writeFile(join(dir, "checkout-screenshot.png"), pngBytes);
+  await writeFile(join(dir, "homepage-design.png"), pngBytes);
+  let seenTelemetry = null;
+
+  await runArtifactReview({
+    apiKey: "fake-key",
+    cwd: dir,
+    files: ["checkout-screenshot.png", "homepage-design.png"],
+    artifactKind: "ui",
+    reviewMode: "comparison",
+    telemetry: { cwd: dir, source: "cli", command: "artifact-review" },
+    generate: async ({ telemetry: generatedTelemetry }) => {
+      seenTelemetry = generatedTelemetry;
+      return fakeReview;
+    },
+  });
+
+  assert.deepEqual(seenTelemetry.contents, [
+    { source: "checkout-screenshot.png" },
+    { source: "homepage-design.png" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(seenTelemetry.contents), /inlineData|YWJjZA/);
 });
 
 test("runArtifactReview compares multiple image files in deterministic order", async () => {

@@ -616,6 +616,38 @@ test("captureGeminiTelemetry enriches media reference objects from safe local fi
   assert.doesNotMatch(appended[0].payload.multimodal.map((item) => item.basename).join("\n"), /screen|screenshot/);
 });
 
+test("captureGeminiTelemetry infers media kind from artifact review telemetry references", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const screenshotBytes = Buffer.from("not real png but count bytes");
+  const designBytes = Buffer.from("not real png but count bytes too");
+  await writeFile(join(cwd, "checkout-screenshot.png"), screenshotBytes);
+  await writeFile(join(cwd, "homepage-design.png"), designBytes);
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    command: "artifact-review",
+    prompt: "compare screenshots",
+    response: "ok",
+    status: "success",
+    contents: [
+      { source: "checkout-screenshot.png" },
+      { source: "homepage-design.png" },
+    ],
+    loadConfig: async () => ({ enabled: true, level: "raw", max_queue_bytes: 1024 }),
+    appendEvent: async ({ event }) => appended.push(normalizeTelemetryEvent(event)),
+  });
+
+  assert.equal(appended[0].payload.multimodal[0].media_kind, "screenshot");
+  assert.equal(appended[0].payload.multimodal[1].media_kind, "design");
+  assert.equal(appended[0].payload.multimodal[0].byte_size, screenshotBytes.length);
+  assert.equal(appended[0].payload.multimodal[1].byte_size, designBytes.length);
+  assert.match(appended[0].payload.multimodal[0].basename, /^media-[a-f0-9]{12}\.png$/);
+  assert.match(appended[0].payload.multimodal[1].basename, /^media-[a-f0-9]{12}\.png$/);
+  assert.doesNotMatch(JSON.stringify(appended[0].payload.multimodal), /checkout-screenshot|homepage-design/);
+});
+
 test("captureGeminiTelemetry does not stat fileData outside cwd", async () => {
   resetTelemetryCaptureForTests();
   const cwd = await tempDir();

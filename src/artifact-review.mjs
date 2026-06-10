@@ -36,6 +36,14 @@ function normalizeReviewMode(mode, sourceCount) {
   return value;
 }
 
+function withArtifactTelemetryContents(telemetry, sources) {
+  if (!telemetry) return telemetry;
+  return {
+    ...telemetry,
+    contents: sources.map((source) => ({ source })),
+  };
+}
+
 export async function runArtifactReview({
   apiKey,
   cwd = process.cwd(),
@@ -81,7 +89,7 @@ export async function runArtifactReview({
     contents,
     env,
     allowFakeResponse,
-    telemetry,
+    telemetry: withArtifactTelemetryContents(telemetry, sources),
   });
 
   const review = normalizeArtifactReview({
