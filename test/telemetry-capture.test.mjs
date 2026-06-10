@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -24,8 +24,8 @@ async function readPendingEvents(cwd) {
   )));
 }
 
-function expectedWorkspaceId(cwd) {
-  return `ws_${createHash("sha256").update(cwd).digest("hex").slice(0, 24)}`;
+async function expectedWorkspaceId(cwd, installId) {
+  return `ws_${createHash("sha256").update(`${installId}\0${await realpath(cwd)}`).digest("hex").slice(0, 24)}`;
 }
 
 test("captureGeminiTelemetry is no-op when telemetry is disabled", async () => {
@@ -80,12 +80,80 @@ test("captureGeminiTelemetry writes strict raw events when config is enabled", a
   });
   assert.equal(events[0].context.cwd, cwd);
   assert.equal(events[0].context.install_id, config.install_id);
-  assert.equal(events[0].context.workspace_id, expectedWorkspaceId(cwd));
+  assert.equal(events[0].context.workspace_id, await expectedWorkspaceId(cwd, config.install_id));
   assert.equal(events[0].context.user_label, "local-admin");
   assert.doesNotMatch(events[0].context.workspace_id, /gemini-agent|tmp|Users/);
   assert.equal(events[0].context.session_id, null);
   assert.equal(events[0].outcome.task_outcome, "unknown");
   assert.equal(events[0].economics.latency_bucket, "lt_1s");
+});
+
+test("captureGeminiTelemetry derives package attribution and salted workspace", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const nested = join(cwd, "src", "feature");
+  await mkdir(nested, { recursive: true });
+  await writeFile(join(cwd, "package.json"), JSON.stringify({ name: "@emoart/challenge" }));
+  const config = await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    now: new Date("2026-06-10T09:00:00.000Z"),
+  });
+
+  await captureGeminiTelemetry({
+    cwd: nested,
+    command: "artifact-review",
+    prompt: "review image",
+    response: "ok",
+    status: "success",
+    latencyMs: 1,
+    loadConfig: async () => ({ scope: "local", storageCwd: cwd, config }),
+  });
+  await drainTelemetryCapture({ timeoutMs: 1000 });
+
+  const events = await readPendingEvents(cwd);
+  assert.equal(events[0].project_id, "emoart-challenge");
+  assert.match(events[0].context.workspace_id, /^ws_[a-f0-9]{24}$/);
+  assert.equal(events[0].metadata.attribution.project_source, "package_json");
+  assert.equal(events[0].metadata.attribution.workspace_source, "project_root_hash");
+  assert.doesNotMatch(JSON.stringify(events[0].metadata.attribution), new RegExp(cwd));
+});
+
+test("captureGeminiTelemetry preserves explicit attribution metadata", async () => {
+  resetTelemetryCaptureForTests();
+  const cwd = await tempDir();
+  const appended = [];
+
+  await captureGeminiTelemetry({
+    cwd,
+    projectId: "Vulca Platform",
+    context: { workspace_id: "ws_vulca", user_label: "operator" },
+    command: "diff-review",
+    prompt: "review",
+    response: "ok",
+    status: "success",
+    loadConfig: async () => ({
+      scope: "local",
+      storageCwd: cwd,
+      config: {
+        enabled: true,
+        level: "raw",
+        deployment_id: "gemini-agent-main",
+        install_id: "install_alpha",
+        user_label: "config-user",
+        max_queue_bytes: 1024 * 1024,
+        max_event_bytes: 1024 * 1024,
+      },
+    }),
+    appendEvent: async ({ event }) => appended.push(normalizeTelemetryEvent(event)),
+  });
+
+  assert.equal(appended[0].project_id, "vulca-platform");
+  assert.equal(appended[0].context.workspace_id, "ws_vulca");
+  assert.equal(appended[0].context.user_label, "operator");
+  assert.equal(appended[0].metadata.attribution.project_source, "explicit");
+  assert.equal(appended[0].metadata.attribution.workspace_source, "explicit");
 });
 
 test("captureGeminiTelemetry preserves explicit product telemetry metadata", async () => {
@@ -148,6 +216,10 @@ test("captureGeminiTelemetry preserves explicit product telemetry metadata", asy
   assert.equal(appended[0].economics.cost_bucket, "low");
   assert.deepEqual(appended[0].metadata, {
     actual_model: "gemini-3.1-flash-image",
+    attribution: {
+      project_source: "default",
+      workspace_source: "explicit",
+    },
     workflow: "palette-split",
   });
 });

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { basename } from "node:path";
+import { resolveTelemetryAttribution } from "./telemetry-attribution.mjs";
 import { appendTelemetryEvent } from "./telemetry-queue.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
 import {
@@ -226,6 +227,7 @@ async function buildTelemetryEvent({
   installId,
   userLabel,
   projectId,
+  workspaceId,
   maxEventBytes,
   context,
   outcome,
@@ -240,7 +242,7 @@ async function buildTelemetryEvent({
     latency_bucket: economics?.latency_bucket ?? latencyBucket(latencyMs),
   };
   const providedContext = context && typeof context === "object" ? context : {};
-  const resolvedWorkspaceId = providedContext.workspace_id ?? workspaceIdFromCwd(cwd);
+  const resolvedWorkspaceId = providedContext.workspace_id ?? workspaceId ?? workspaceIdFromCwd(cwd);
 
   return {
     schema_version: 1,
@@ -288,7 +290,7 @@ async function captureGeminiTelemetryTask({
   now = new Date(),
   contents = null,
   deploymentId = null,
-  projectId = DEFAULT_PROJECT_ID,
+  projectId = null,
   context = null,
   outcome = null,
   economics = null,
@@ -301,6 +303,15 @@ async function captureGeminiTelemetryTask({
   const config = telemetryContext.config;
   if (!config?.enabled || config.level !== "raw") return { queued: false };
   const resolvedDeploymentId = deploymentId ?? config.deployment_id ?? DEFAULT_TELEMETRY_DEPLOYMENT_ID;
+  const attribution = await resolveTelemetryAttribution({
+    cwd,
+    homeDir: home,
+    projectId,
+    context,
+    installId: config.install_id ?? null,
+    deploymentId: resolvedDeploymentId,
+  });
+  const providedMetadata = metadata && typeof metadata === "object" ? metadata : {};
 
   const event = await buildTelemetryEvent({
     cwd,
@@ -316,12 +327,16 @@ async function captureGeminiTelemetryTask({
     deploymentId: resolvedDeploymentId,
     installId: config.install_id ?? null,
     userLabel: config.user_label ?? null,
-    projectId,
+    projectId: attribution.project_id,
+    workspaceId: attribution.workspace_id,
     maxEventBytes: config.max_event_bytes,
     context,
     outcome,
     economics,
-    metadata,
+    metadata: {
+      ...providedMetadata,
+      attribution: attribution.metadata,
+    },
   });
   await appendEvent({ cwd: telemetryContext.storageCwd, event, maxQueueBytes: config.max_queue_bytes });
   return { queued: true, event_id: event.event_id };
