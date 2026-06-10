@@ -948,6 +948,78 @@ test("telemetry raw inventory rejects unknown arguments", async () => {
   );
 });
 
+test("telemetry raw preflight reports pending upload risk without exposing content", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-preflight-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(96, {
+        command: "artifact-review",
+        prompt: "Authorization: Bearer cli-secret-token",
+        response: "raw preflight response should not print",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "private-cli-design.png", mime_type: "image/png", byte_size: 10 }],
+        },
+      }),
+    });
+    await appendTelemetryEvent({ cwd, event: telemetryEvent(97) });
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "raw",
+      "preflight",
+      "--batch-size",
+      "1",
+      "--json",
+    ], { cwd });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.pending.total_count, 2);
+    assert.equal(parsed.batch.would_send_count, 1);
+    assert.equal(parsed.risk.credential_like_prompt_events, 1);
+    assert.equal(parsed.risk.media_item_count, 1);
+    assert.doesNotMatch(stdout, /cli-secret-token/);
+    assert.doesNotMatch(stdout, /raw preflight response should not print/);
+    assert.doesNotMatch(stdout, /evt_cli_96|private-cli-design|queue\/pending/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry raw preflight rejects invalid arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-preflight-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "preflight", "--batch-size", "0"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--batch-size requires a positive integer/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "preflight", "--unknown"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Unknown telemetry raw preflight argument/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry raw prune dry-run previews sent raw deletion without exposing content", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-prune-"));
   try {

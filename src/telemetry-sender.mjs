@@ -345,7 +345,7 @@ function acceptedEventIdsForAck(ack, batch) {
   return ack.accepted_event_ids;
 }
 
-export async function previewTelemetryFlush({
+export async function buildTelemetryFlushPreview({
   cwd = process.cwd(),
   now = new Date(),
   batchSize = 100,
@@ -357,12 +357,16 @@ export async function previewTelemetryFlush({
   const peeked = await peekTelemetryEvents({ cwd, batchSize });
   if (peeked.events.length === 0) {
     return {
-      ok: true,
-      dry_run: true,
-      would_send_count: 0,
-      event_ids: [],
-      batch_bytes: 0,
-      exceeds_max_bytes: false,
+      events: [],
+      batch: null,
+      preview: {
+        ok: true,
+        dry_run: true,
+        would_send_count: 0,
+        event_ids: [],
+        batch_bytes: 0,
+        exceeds_max_bytes: false,
+      },
     };
   }
 
@@ -373,13 +377,21 @@ export async function previewTelemetryFlush({
   });
   const batchBytes = byteLength(batch);
   return {
-    ok: true,
-    dry_run: true,
-    would_send_count: batch.events.length,
-    event_ids: batch.events.map((event) => event.event_id),
-    batch_bytes: batchBytes,
-    exceeds_max_bytes: maxBytes !== undefined && batchBytes > maxBytes,
+    events: peeked.events,
+    batch,
+    preview: {
+      ok: true,
+      dry_run: true,
+      would_send_count: batch.events.length,
+      event_ids: batch.events.map((event) => event.event_id),
+      batch_bytes: batchBytes,
+      exceeds_max_bytes: maxBytes !== undefined && batchBytes > maxBytes,
+    },
   };
+}
+
+export async function previewTelemetryFlush(options = {}) {
+  return (await buildTelemetryFlushPreview(options)).preview;
 }
 
 export async function flushTelemetryQueue({

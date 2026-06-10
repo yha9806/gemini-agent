@@ -9,6 +9,7 @@ import {
   telemetryQueueDirs,
 } from "../src/telemetry-queue.mjs";
 import {
+  buildTelemetryFlushPreview,
   flushTelemetryQueue,
   previewTelemetryFlush,
   receiverMetrics,
@@ -260,6 +261,29 @@ test("previewTelemetryFlush returns planned batch without moving files", async (
     "evt_000001",
     "evt_000002",
   ]);
+});
+
+test("previewTelemetryFlush shares batch selection with structured preview builder", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(1) });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(2) });
+
+  const structured = await buildTelemetryFlushPreview({
+    cwd,
+    batchSize: 1,
+    now: NOW,
+    maxBytes: 10,
+  });
+  const publicPreview = await previewTelemetryFlush({
+    cwd,
+    batchSize: 1,
+    now: NOW,
+    maxBytes: 10,
+  });
+
+  assert.deepEqual(publicPreview, structured.preview);
+  assert.deepEqual(structured.events.map((event) => event.event_id), ["evt_000001"]);
+  assert.equal(structured.batch.events.length, 1);
 });
 
 test("flushTelemetryQueue dry run does not require endpoint or token and does not send or move files", async () => {

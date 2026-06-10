@@ -48,6 +48,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry summary --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw inventory --global$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw inventory --global --json$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw preflight --global --batch-size 1 --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --write --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global$/m);
@@ -59,6 +60,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /palette-split quality/);
   assert.match(readme, /local raw telemetry counts, bytes, truncation counts, multimodal counts, and credential-like aggregate signals/);
+  assert.match(readme, /pending raw upload batch risk before flushing/);
   assert.match(readme, /local sent-telemetry retention with dry-run by default/);
   assert.match(readme, /estimates Gemini cost and Codex token savings/);
   assert.match(

@@ -35,6 +35,10 @@ import {
   runTelemetryRawInventory,
 } from "./telemetry-raw-inventory.mjs";
 import {
+  formatTelemetryRawPreflightText,
+  runTelemetryRawPreflight,
+} from "./telemetry-raw-preflight.mjs";
+import {
   formatTelemetryRawPruneText,
   runTelemetryRawPrune,
 } from "./telemetry-raw-prune.mjs";
@@ -102,6 +106,7 @@ function printUsage() {
     "  gemini-agent telemetry preview [--global]",
     "  gemini-agent telemetry summary [--global] [--json]",
     "  gemini-agent telemetry raw inventory [--global] [--json]",
+    "  gemini-agent telemetry raw preflight [--global] [--batch-size <n>] [--max-bytes <n>] [--json]",
     "  gemini-agent telemetry raw prune --state sent --keep-days <n> [--max-sent-bytes <n>] [--global] [--dry-run|--write] [--json]",
     "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry doctor [--global] [--json]",
@@ -468,6 +473,42 @@ function parseTelemetryRawInventoryOptions(args) {
       options.json = true;
     } else {
       throw new Error(`Unknown telemetry raw inventory argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseTelemetryRawPreflightOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--batch-size") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--batch-size requires a positive integer.");
+      options.batchSize = positiveIntegerOption(value, "--batch-size");
+      index += 1;
+    } else if (arg === "--max-bytes") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--max-bytes requires a positive integer.");
+      options.maxBytes = positiveIntegerOption(value, "--max-bytes");
+      index += 1;
+    } else if (arg === "--now") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--now requires an ISO timestamp.");
+      options.now = new Date(value);
+      if (Number.isNaN(options.now.getTime())) throw new Error("--now requires a valid ISO timestamp.");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry raw preflight argument: ${arg}`);
     }
   }
 
@@ -1260,6 +1301,24 @@ async function runTelemetryRaw(args = []) {
     return;
   }
 
+  if (subcommand === "preflight") {
+    const options = parseTelemetryRawPreflightOptions(subArgs);
+    const report = await runTelemetryRawPreflight({
+      cwd: process.cwd(),
+      home: process.env.HOME,
+      scope: telemetryScope(options),
+      batchSize: options.batchSize,
+      maxBytes: options.maxBytes,
+      now: options.now,
+    });
+    if (options.json) {
+      output.write(`${JSON.stringify(report, null, 2)}\n`);
+      return;
+    }
+    output.write(formatTelemetryRawPreflightText(report));
+    return;
+  }
+
   if (subcommand === "prune") {
     const options = parseTelemetryRawPruneOptions(subArgs);
     const report = await runTelemetryRawPrune({
@@ -1280,7 +1339,7 @@ async function runTelemetryRaw(args = []) {
     return;
   }
 
-  throw new Error("telemetry raw requires inventory or prune.");
+  throw new Error("telemetry raw requires inventory, preflight, or prune.");
 }
 
 async function runTelemetryEconomicsCommand(args = []) {
