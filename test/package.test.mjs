@@ -46,6 +46,8 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry summary --global$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry summary --global --json$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw inventory --global$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw inventory --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent artifact-review --file before\.png --file after\.png --kind ui --review-mode comparison$/m);
@@ -54,6 +56,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /palette-split quality/);
+  assert.match(readme, /local raw telemetry counts, bytes, truncation counts, multimodal counts, and credential-like aggregate signals/);
   assert.match(readme, /estimates Gemini cost and Codex token savings/);
   assert.match(
     readme,

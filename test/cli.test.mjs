@@ -887,6 +887,52 @@ test("telemetry summary --json prints stable JSON and supports global scope", as
   assert.doesNotMatch(stdout, /global raw response should not print/);
 });
 
+test("telemetry raw inventory reports raw data risk without exposing raw content", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-inventory-"));
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(95, {
+      command: "artifact-review",
+      prompt: "Authorization: Bearer secret-token",
+      response: "raw inventory response should not print",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ basename: "private-design.png", mime_type: "image/png", byte_size: 10 }],
+      },
+    }),
+  });
+
+  const { stdout, stderr } = await execBin(["telemetry", "raw", "inventory", "--json"], { cwd });
+  const parsed = JSON.parse(stdout);
+
+  assert.equal(stderr, "");
+  assert.equal(parsed.totals.event_count, 1);
+  assert.equal(parsed.totals.credential_like_prompt_events, 1);
+  assert.equal(parsed.totals.media_item_count, 1);
+  assert.doesNotMatch(stdout, /secret-token/);
+  assert.doesNotMatch(stdout, /raw inventory response should not print/);
+  assert.doesNotMatch(stdout, /evt_cli_95|private-design/);
+});
+
+test("telemetry raw inventory rejects unknown arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-inventory-args-"));
+  await assert.rejects(
+    () => execBin(["telemetry", "raw", "inventory", "--unknown"], { cwd }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Unknown telemetry raw inventory argument/);
+      return true;
+    },
+  );
+});
+
 test("telemetry economics prints safe human output", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-economics-"));
   try {

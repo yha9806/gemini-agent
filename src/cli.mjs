@@ -31,6 +31,10 @@ import {
   runTelemetrySummary,
 } from "./telemetry-summary.mjs";
 import {
+  formatTelemetryRawInventoryText,
+  runTelemetryRawInventory,
+} from "./telemetry-raw-inventory.mjs";
+import {
   assertRawConfirmation,
   disableTelemetryConfig,
   loadTelemetryConfigContext,
@@ -93,6 +97,7 @@ function printUsage() {
     "  gemini-agent telemetry status [--global]",
     "  gemini-agent telemetry preview [--global]",
     "  gemini-agent telemetry summary [--global] [--json]",
+    "  gemini-agent telemetry raw inventory [--global] [--json]",
     "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry doctor [--global] [--json]",
     "  gemini-agent telemetry flush [--global] [--dry-run] [--batch-size <n>] [--max-bytes <n>] [--timeout-ms <n>]",
@@ -438,6 +443,26 @@ function parseTelemetrySummaryOptions(args) {
       options.json = true;
     } else {
       throw new Error(`Unknown telemetry summary argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseTelemetryRawInventoryOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown telemetry raw inventory argument: ${arg}`);
     }
   }
 
@@ -1152,6 +1177,22 @@ async function runTelemetrySummaryCommand(args = []) {
   output.write(formatTelemetrySummaryText(summary));
 }
 
+async function runTelemetryRaw(args = []) {
+  const [subcommand, ...subArgs] = args;
+  if (subcommand !== "inventory") throw new Error("telemetry raw requires inventory.");
+  const options = parseTelemetryRawInventoryOptions(subArgs);
+  const report = await runTelemetryRawInventory({
+    cwd: process.cwd(),
+    home: process.env.HOME,
+    scope: telemetryScope(options),
+  });
+  if (options.json) {
+    output.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  output.write(formatTelemetryRawInventoryText(report));
+}
+
 async function runTelemetryEconomicsCommand(args = []) {
   const options = parseTelemetryEconomicsOptions(args);
   const report = await runTelemetryEconomics({
@@ -1306,6 +1347,11 @@ async function runTelemetry(args) {
 
   if (subcommand === "summary") {
     await runTelemetrySummaryCommand(subArgs);
+    return;
+  }
+
+  if (subcommand === "raw") {
+    await runTelemetryRaw(subArgs);
     return;
   }
 
