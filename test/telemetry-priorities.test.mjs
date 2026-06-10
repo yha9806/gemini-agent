@@ -386,6 +386,120 @@ test("runTelemetryPriorities uses adjusted coverage when suspected test fixtures
   }
 });
 
+test("runTelemetryPriorities explains workflow priorities with gate input bytes", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(45, {
+        command: "plan_critique",
+        prompt: "private workflow prompt should not appear",
+        response: "private workflow response should not appear",
+        metadata: {
+          gate: "plan_critique",
+          input_bytes: 131072,
+          input_limit_bytes: 131072,
+        },
+        economics: {
+          input_tokens: 10_000,
+          output_tokens: 1_000,
+          total_tokens: 11_000,
+          codex_tokens_saved_estimate: 1_000,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(46, {
+        command: "plan-critique",
+        metadata: {
+          gate: "plan_critique",
+          input_bytes: 65536,
+          input_limit_bytes: 131072,
+        },
+        economics: {
+          input_tokens: 5_000,
+          output_tokens: 500,
+          total_tokens: 5_500,
+          codex_tokens_saved_estimate: 500,
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const workflow = report.priorities.find((item) => item.kind === "workflow");
+
+    assert.ok(workflow);
+    assert.equal(workflow.command, "plan-critique");
+    assert.match(workflow.action, /Use context-pack or narrower review input before raising plan-critique limits/);
+    assert.ok(workflow.evidence.some((item) => item === "Gate input byte events: 2"));
+    assert.ok(workflow.evidence.some((item) => item === "Average gate input bytes: 98,304"));
+    assert.ok(workflow.evidence.some((item) => item === "Max gate input bytes: 131,072"));
+    assert.ok(workflow.evidence.some((item) => item === "Gate input limit hit rate: 50.0%"));
+    assert.match(text, /Gate input byte events: 2/);
+    assert.doesNotMatch(serialized, /private workflow prompt/);
+    assert.doesNotMatch(serialized, /private workflow response/);
+    assert.doesNotMatch(serialized, /evt_priority_000045/);
+    assert.doesNotMatch(serialized, /\/Users\/example/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities keeps workflow priority stable without gate input bytes", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(47, {
+        command: "plan-critique",
+        economics: {
+          input_tokens: 10_000,
+          output_tokens: 1_000,
+          total_tokens: 11_000,
+          codex_tokens_saved_estimate: 1_000,
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const workflow = report.priorities.find((item) => item.kind === "workflow");
+
+    assert.ok(workflow);
+    assert.equal(workflow.command, "plan-critique");
+    assert.equal(
+      workflow.action,
+      "Reduce prompt size, narrow context packs, or route only the parts Gemini can handle cheaply.",
+    );
+    assert.ok(workflow.evidence.some((item) => item === "Gemini tokens per estimated Codex token saved: 11"));
+    assert.equal(workflow.evidence.some((item) => /Gate input/.test(item)), false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities does not recommend usage fixes when only multimodal metadata is weak", async () => {
   const cwd = await temporaryWorkspace();
   try {

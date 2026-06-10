@@ -224,6 +224,27 @@ function economicsPriority(economics) {
   });
 }
 
+function nonnegativeMetric(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function nullableMetricRatio(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function gateInputForCommand(economics, command) {
+  const rows = Array.isArray(economics.gate_input_commands) ? economics.gate_input_commands : [];
+  const row = rows.find((item) => item?.command === command);
+  if (!row || nonnegativeMetric(row.events_with_input_bytes) <= 0) return null;
+  return {
+    eventsWithInputBytes: nonnegativeMetric(row.events_with_input_bytes),
+    inputBytesAvg: nonnegativeMetric(row.input_bytes_avg),
+    inputBytesMax: nonnegativeMetric(row.input_bytes_max),
+    inputLimitHitCount: nonnegativeMetric(row.input_limit_hit_count),
+    inputLimitHitRate: nullableMetricRatio(row.input_limit_hit_rate),
+  };
+}
+
 function workflowPriority(economics) {
   const candidate = economics.top_commands.find((item) => (
     item.codex_tokens_saved_estimate > 0
@@ -231,16 +252,28 @@ function workflowPriority(economics) {
     && item.gemini_tokens_per_codex_token_saved > 2
   ));
   if (!candidate) return null;
+  const gateInput = gateInputForCommand(economics, candidate.command);
+  const gateInputEvidence = gateInput
+    ? [
+      `Gate input byte events: ${formatNumber(gateInput.eventsWithInputBytes)}`,
+      `Average gate input bytes: ${formatNumber(gateInput.inputBytesAvg)}`,
+      `Max gate input bytes: ${formatNumber(gateInput.inputBytesMax)}`,
+      `Gate input limit hit rate: ${formatPercent(gateInput.inputLimitHitRate)}`,
+    ]
+    : [];
   return priority({
     kind: "workflow",
     severity: "medium",
     score: 68,
     title: `Optimize Gemini routing for ${candidate.command}.`,
-    action: "Reduce prompt size, narrow context packs, or route only the parts Gemini can handle cheaply.",
+    action: gateInput?.inputLimitHitCount > 0
+      ? `Use context-pack or narrower review input before raising ${candidate.command} limits.`
+      : "Reduce prompt size, narrow context packs, or route only the parts Gemini can handle cheaply.",
     command: candidate.command,
     evidence: [
       `Gemini tokens per estimated Codex token saved: ${candidate.gemini_tokens_per_codex_token_saved}`,
       `Estimated Codex tokens saved: ${formatNumber(candidate.codex_tokens_saved_estimate)}`,
+      ...gateInputEvidence,
     ],
   });
 }
