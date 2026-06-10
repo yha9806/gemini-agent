@@ -1812,6 +1812,7 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
         context_pack_mode: "none",
         fresh_input_mode: "file",
         has_fresh_input: true,
+        context_pack_preflight_warning: true,
       },
     }),
     telemetryEvent(304, {
@@ -1820,6 +1821,7 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
         gate: "research_brief",
         context_pack_mode: "not-a-real-mode",
         fresh_input_mode: "/Users/example/private/file.md",
+        context_pack_preflight_warning: true,
       },
     }),
     telemetryEvent(305, {
@@ -1850,6 +1852,7 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
   assert.equal(summary.context_loop.no_context_pack_event_count, 1);
   assert.equal(summary.context_loop.unknown_context_pack_mode_event_count, 2);
   assert.equal(summary.context_loop.has_fresh_input_count, 3);
+  assert.equal(summary.context_loop.context_pack_preflight_warning_count, 2);
   assert.deepEqual(summary.context_loop.top_context_pack_modes, [
     { context_pack_mode: "unknown", event_count: 2 },
     { context_pack_mode: "auto", event_count: 1 },
@@ -1872,6 +1875,7 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       no_context_pack_event_count: 0,
       unknown_context_pack_mode_event_count: 1,
       has_fresh_input_count: 1,
+      context_pack_preflight_warning_count: 0,
     },
     {
       command: "diff-review",
@@ -1882,6 +1886,7 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       no_context_pack_event_count: 0,
       unknown_context_pack_mode_event_count: 0,
       has_fresh_input_count: 1,
+      context_pack_preflight_warning_count: 0,
     },
     {
       command: "patch-precheck",
@@ -1892,6 +1897,7 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       no_context_pack_event_count: 1,
       unknown_context_pack_mode_event_count: 0,
       has_fresh_input_count: 1,
+      context_pack_preflight_warning_count: 1,
     },
     {
       command: "research-brief",
@@ -1902,6 +1908,7 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       no_context_pack_event_count: 0,
       unknown_context_pack_mode_event_count: 1,
       has_fresh_input_count: 0,
+      context_pack_preflight_warning_count: 1,
     },
   ]);
   assert.doesNotMatch(serialized, /\/Users\/example|latest\.json|file\.md|not-a-real-mode/);

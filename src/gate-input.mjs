@@ -57,6 +57,30 @@ export function gateContextInputTooLargeMessage({ gate, command, limitBytes }) {
   ].join(" ");
 }
 
+export function shouldWarnContextPackPreflight({
+  inputBytes,
+  contextPackMode = "unknown",
+  thresholdBytes = GATE_CONTEXT_PACK_PREFLIGHT_THRESHOLD_BYTES,
+} = {}) {
+  if (contextPackMode === "auto" || contextPackMode === "explicit") return false;
+  return Number.isFinite(inputBytes) && inputBytes > thresholdBytes;
+}
+
+export function gateContextPackPreflightMetadata({
+  inputBytes,
+  contextPackMode = "unknown",
+  thresholdBytes = GATE_CONTEXT_PACK_PREFLIGHT_THRESHOLD_BYTES,
+} = {}) {
+  return {
+    context_pack_preflight_warning: shouldWarnContextPackPreflight({
+      inputBytes,
+      contextPackMode,
+      thresholdBytes,
+    }),
+    context_pack_preflight_threshold_bytes: thresholdBytes,
+  };
+}
+
 export function gateContextPackPreflightMessage({
   gate,
   command,
@@ -64,8 +88,7 @@ export function gateContextPackPreflightMessage({
   contextPackMode = "unknown",
   thresholdBytes = GATE_CONTEXT_PACK_PREFLIGHT_THRESHOLD_BYTES,
 } = {}) {
-  if (contextPackMode === "auto" || contextPackMode === "explicit") return null;
-  if (!Number.isFinite(inputBytes) || inputBytes <= thresholdBytes) return null;
+  if (!shouldWarnContextPackPreflight({ inputBytes, contextPackMode, thresholdBytes })) return null;
   return [
     `${gateCommandLabel(gate, command)} raw input is ${inputBytes} bytes; current run will continue.`,
     contextPackAdvisorMessage({ gate, command }),

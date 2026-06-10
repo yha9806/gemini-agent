@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   gateContextPackPreflightMessage,
+  gateContextPackPreflightMetadata,
   gateInputTooLargeMessage,
   readLimitedContextPackFile,
 } from "../src/gate-input.mjs";
@@ -116,4 +117,22 @@ test("gateContextPackPreflightMessage warns only for large raw gate input", () =
   assert.match(message, /gemini-agent diff-review --auto-context-pack/);
   assert.match(message, /narrow fresh input/);
   assert.doesNotMatch(message, /undefined|null/);
+});
+
+test("gateContextPackPreflightMetadata records only safe warning fields", () => {
+  assert.deepEqual(gateContextPackPreflightMetadata({
+    inputBytes: 64 * 1024,
+    contextPackMode: "none",
+  }), {
+    context_pack_preflight_warning: true,
+    context_pack_preflight_threshold_bytes: 16 * 1024,
+  });
+
+  assert.deepEqual(gateContextPackPreflightMetadata({
+    inputBytes: 64 * 1024,
+    contextPackMode: "auto",
+  }), {
+    context_pack_preflight_warning: false,
+    context_pack_preflight_threshold_bytes: 16 * 1024,
+  });
 });

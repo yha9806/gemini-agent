@@ -21,6 +21,7 @@ import { buildGatePrompt } from "./prompts.mjs";
 import {
   defaultGateInputLimitBytes,
   gateContextPackPreflightMessage,
+  gateContextPackPreflightMetadata,
   gateContextInputTooLargeMessage,
   gateInputMetadata,
   limitedGateText,
@@ -1286,6 +1287,10 @@ async function runGate(command, args) {
   const gate = GATE_COMMANDS.get(command);
   const { inputText, inputBytes, limitBytes, metadata } = await readGateInput(args, { gate, command });
   if (!inputText || !inputText.trim()) throw new Error("Gate input is empty.");
+  const preflightMetadata = gateContextPackPreflightMetadata({
+    inputBytes,
+    contextPackMode: metadata.context_pack_mode,
+  });
   const preflightMessage = gateContextPackPreflightMessage({
     gate,
     command,
@@ -1313,6 +1318,7 @@ async function runGate(command, args) {
       metadata: {
         ...gateInputMetadata({ gate, inputBytes, limitBytes }),
         ...metadata,
+        ...preflightMetadata,
       },
     },
   });

@@ -56,6 +56,7 @@ function zeroEconomics() {
     no_context_pack_event_count: 0,
     unknown_context_pack_mode_event_count: 0,
     has_fresh_input_count: 0,
+    context_pack_preflight_warning_count: 0,
   };
 }
 
@@ -191,6 +192,9 @@ function addContextLoopEconomics(target, event) {
   else if (contextPackMode === "none") target.no_context_pack_event_count += 1;
   else target.unknown_context_pack_mode_event_count += 1;
   if (hasFreshInput) target.has_fresh_input_count += 1;
+  if (event.metadata?.context_pack_preflight_warning === true) {
+    target.context_pack_preflight_warning_count += 1;
+  }
 }
 
 function addEventEconomics(target, event) {
@@ -296,6 +300,11 @@ function enrichEconomics(item, pricing) {
       item.gate_event_count,
       4,
     ),
+    context_pack_preflight_warning_rate: nullableRatio(
+      item.context_pack_preflight_warning_count,
+      item.gate_event_count,
+      4,
+    ),
     usage_coverage_rate: nullableRatio(item.events_with_usage, item.event_count, 4),
     usage_applicable_coverage_rate: nullableRatio(
       item.usage_applicable_event_count - item.usage_applicable_missing_count,
@@ -331,6 +340,8 @@ function contextLoopGateCommands(commandRows, limit) {
       no_context_pack_event_count: item.no_context_pack_event_count,
       unknown_context_pack_mode_event_count: item.unknown_context_pack_mode_event_count,
       has_fresh_input_count: item.has_fresh_input_count,
+      context_pack_preflight_warning_count: item.context_pack_preflight_warning_count,
+      context_pack_preflight_warning_rate: item.context_pack_preflight_warning_rate,
       events_with_input_bytes: item.events_with_input_bytes,
       input_bytes_total: item.input_bytes_total,
       input_bytes_avg: item.input_bytes_avg,
@@ -515,6 +526,8 @@ export async function runTelemetryEconomics({
     no_context_pack_event_count: enrichedTotals.no_context_pack_event_count,
     unknown_context_pack_mode_event_count: enrichedTotals.unknown_context_pack_mode_event_count,
     has_fresh_input_count: enrichedTotals.has_fresh_input_count,
+    context_pack_preflight_warning_count: enrichedTotals.context_pack_preflight_warning_count,
+    context_pack_preflight_warning_rate: enrichedTotals.context_pack_preflight_warning_rate,
     top_gate_commands: contextLoopGateCommands(enrichedCommandRows, topLimit),
   };
 
@@ -581,7 +594,7 @@ function formatGateInputRows(rows) {
 function formatContextLoopRows(rows) {
   if (rows.length === 0) return "None";
   return rows.map((item, index) => (
-    `${index + 1}. ${item.command}: ${formatNumber(item.event_count)} gate events, ${formatPercent(item.context_pack_reuse_rate)} context-pack reuse, ${formatPercent(item.auto_context_pack_rate)} auto, ${formatNumber(item.input_bytes_avg ?? 0)} avg input bytes`
+    `${index + 1}. ${item.command}: ${formatNumber(item.event_count)} gate events, ${formatPercent(item.context_pack_reuse_rate)} context-pack reuse, ${formatPercent(item.auto_context_pack_rate)} auto, ${formatPercent(item.context_pack_preflight_warning_rate)} preflight warning, ${formatNumber(item.input_bytes_avg ?? 0)} avg input bytes`
   )).join("\n");
 }
 
@@ -631,6 +644,7 @@ export function formatTelemetryEconomicsText(report) {
     `- Gate events: ${formatNumber(report.context_loop?.gate_event_count ?? 0)}`,
     `- Context-pack reuse rate: ${formatPercent(report.context_loop?.context_pack_reuse_rate ?? null)}`,
     `- Auto context-pack rate: ${formatPercent(report.context_loop?.auto_context_pack_rate ?? null)}`,
+    `- Context-pack preflight warning rate: ${formatPercent(report.context_loop?.context_pack_preflight_warning_rate ?? null)}`,
     "Top context-loop gate commands:",
     formatContextLoopRows(report.context_loop?.top_gate_commands ?? []),
     "",

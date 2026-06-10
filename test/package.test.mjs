@@ -71,6 +71,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /`context-pack --bootstrap --write-artifact` creates the project-root context artifact used by `--auto-context-pack`/);
   assert.match(readme, /Oversized gate failures print concrete `context-pack --bootstrap --write-artifact` and `--auto-context-pack` retry commands/);
   assert.match(readme, /Large raw gate calls print a non-blocking stderr preflight warning before Gemini credentials are resolved/);
+  assert.match(readme, /Telemetry summary and economics aggregate context-pack preflight warning counts and rates without exposing raw gate input/);
   assert.match(readme, /Global active Codex policy tells sessions to reuse project-root `\.gemini-agent\/context\/latest\.json` with gate `--auto-context-pack` or explicit `--context-pack`/);
   assert.match(readme, /regenerate the context pack first when it is missing, stale, or unrelated/);
   assert.match(readme, /palette-split quality/);

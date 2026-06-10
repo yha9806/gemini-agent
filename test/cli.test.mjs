@@ -521,6 +521,38 @@ test("diff-review emits context-pack preflight warning for large raw stdin witho
   assert.match(stderr, /gemini-agent diff-review --auto-context-pack/);
 });
 
+test("diff-review queues safe context-pack preflight metadata for large raw stdin", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-preflight-telemetry-"));
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  const { stdout, stderr } = await execBin(["diff-review", "--stdin"], {
+    cwd: dir,
+    input: "x".repeat(20 * 1024),
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.verdict, "pass");
+  assert.match(stderr, /diff-review raw input is 20480 bytes/);
+
+  const pending = await readdir(telemetryQueueDirs(dir).pending);
+  assert.equal(pending.length, 1);
+  const event = JSON.parse(await readFile(join(telemetryQueueDirs(dir).pending, pending[0]), "utf8"));
+  assert.equal(event.metadata.context_pack_preflight_warning, true);
+  assert.equal(event.metadata.context_pack_preflight_threshold_bytes, 16 * 1024);
+});
+
 test("diff-review suppresses context-pack preflight warning when auto context pack is used", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-preflight-auto-"));
   await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });

@@ -117,6 +117,7 @@ function zeroContextLoop() {
     no_context_pack_event_count: 0,
     unknown_context_pack_mode_event_count: 0,
     has_fresh_input_count: 0,
+    context_pack_preflight_warning_count: 0,
   };
 }
 
@@ -317,7 +318,7 @@ function topSimpleCounts(map, keyName, limit) {
     }));
 }
 
-function updateContextLoopCommand(map, command, contextPackMode, hasFreshInput) {
+function updateContextLoopCommand(map, command, contextPackMode, hasFreshInput, contextPackPreflightWarning) {
   const key = canonicalCommand(command);
   const item = map.get(key) ?? {
     key,
@@ -332,6 +333,7 @@ function updateContextLoopCommand(map, command, contextPackMode, hasFreshInput) 
   else if (contextPackMode === "none") item.no_context_pack_event_count += 1;
   else item.unknown_context_pack_mode_event_count += 1;
   if (hasFreshInput) item.has_fresh_input_count += 1;
+  if (contextPackPreflightWarning) item.context_pack_preflight_warning_count += 1;
   map.set(key, item);
 }
 
@@ -352,6 +354,7 @@ function topContextLoopCommands(map, limit) {
       no_context_pack_event_count: item.no_context_pack_event_count,
       unknown_context_pack_mode_event_count: item.unknown_context_pack_mode_event_count,
       has_fresh_input_count: item.has_fresh_input_count,
+      context_pack_preflight_warning_count: item.context_pack_preflight_warning_count,
     }));
 }
 
@@ -896,6 +899,7 @@ function addContextLoopEvent(accumulator, event) {
   const freshInputMode = safeFreshInputMode(event.metadata?.fresh_input_mode);
   const hasFreshInput = event.metadata?.has_fresh_input === true
     || !["none", "unknown"].includes(freshInputMode);
+  const contextPackPreflightWarning = event.metadata?.context_pack_preflight_warning === true;
 
   accumulator.contextLoop.gate_event_count += 1;
   if (contextPackMode === "auto" || contextPackMode === "explicit") {
@@ -906,10 +910,17 @@ function addContextLoopEvent(accumulator, event) {
   else if (contextPackMode === "none") accumulator.contextLoop.no_context_pack_event_count += 1;
   else accumulator.contextLoop.unknown_context_pack_mode_event_count += 1;
   if (hasFreshInput) accumulator.contextLoop.has_fresh_input_count += 1;
+  if (contextPackPreflightWarning) accumulator.contextLoop.context_pack_preflight_warning_count += 1;
 
   updateSimpleCount(accumulator.contextPackModes, contextPackMode);
   updateSimpleCount(accumulator.freshInputModes, freshInputMode);
-  updateContextLoopCommand(accumulator.contextLoopCommands, event.command, contextPackMode, hasFreshInput);
+  updateContextLoopCommand(
+    accumulator.contextLoopCommands,
+    event.command,
+    contextPackMode,
+    hasFreshInput,
+    contextPackPreflightWarning,
+  );
 }
 
 function addPaletteSplitEvent(accumulator, event, status) {
@@ -1320,6 +1331,7 @@ export function formatTelemetrySummaryText(summary) {
     `- No context-pack events: ${formatNumber(summary.context_loop?.no_context_pack_event_count ?? 0)}`,
     `- Unknown context-pack mode events: ${formatNumber(summary.context_loop?.unknown_context_pack_mode_event_count ?? 0)}`,
     `- Fresh input events: ${formatNumber(summary.context_loop?.has_fresh_input_count ?? 0)}`,
+    `- Context-pack preflight warnings: ${formatNumber(summary.context_loop?.context_pack_preflight_warning_count ?? 0)}`,
     "",
     "Recommendations:",
     recommendations,

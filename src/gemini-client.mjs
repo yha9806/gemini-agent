@@ -106,7 +106,18 @@ export async function generateJson({
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
 
   if (allowFakeResponse && env.GEMINI_AGENT_FAKE_RESPONSE) {
-    return normalize(parseJsonObject(env.GEMINI_AGENT_FAKE_RESPONSE));
+    const responseText = env.GEMINI_AGENT_FAKE_RESPONSE;
+    const started = Date.now();
+    const normalized = normalize(parseJsonObject(responseText));
+    await captureTelemetry(telemetry, {
+      command: "generate-json",
+      prompt,
+      response: responseText,
+      status: "success",
+      latencyMs: Date.now() - started,
+      contents,
+    });
+    return normalized;
   }
 
   let response;
