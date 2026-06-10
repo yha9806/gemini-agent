@@ -2,8 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import {
+  inferMediaKind,
+  inferMediaMime,
   mediaReferenceMetadata,
   mediaBasename,
+  syntheticMediaBasename,
 } from "./media-metadata.mjs";
 import {
   RAW_TELEMETRY_SCHEMA_VERSION,
@@ -101,13 +104,20 @@ async function sourceManifest(artifact, { projectRoot } = {}) {
   for (const source of sources) {
     const safeSource = sanitizeBackfillValue(source);
     const referenceMetadata = await mediaReferenceMetadata(source, { root: projectRoot }) ?? {};
+    const inferenceReference = mediaBasename(safeSource) ?? `${safeSource}`;
+    const mimeType = referenceMetadata.mime_type ?? inferMediaMime(inferenceReference);
+    const mediaKind = referenceMetadata.media_kind ?? inferMediaKind({
+      mimeType,
+      reference: inferenceReference,
+    });
     const item = {
-      basename: referenceMetadata.basename ?? mediaBasename(safeSource) ?? basename(`${safeSource}`),
+      basename: referenceMetadata.basename
+        ?? syntheticMediaBasename(inferenceReference, { salt: projectRoot ?? "artifact-backfill" }),
     };
-    const mimeType = referenceMetadata.mime_type;
     if (mimeType) item.mime_type = mimeType;
     const byteSize = referenceMetadata.byte_size;
     if (byteSize !== undefined) item.byte_size = byteSize;
+    if (mediaKind) item.media_kind = mediaKind;
     manifest.push(item);
   }
   return manifest;

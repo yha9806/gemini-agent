@@ -104,12 +104,13 @@ test("artifactReviewsToRawTelemetryBatch enriches media manifest from artifact s
     batchId: "batch_backfill_media_test",
   });
 
-  assert.deepEqual(batch.events[0].media_manifest, [{
-    basename: "screen.png",
-    mime_type: "image/png",
-    byte_size: sourceBytes.length,
-  }]);
+  assert.equal(batch.events[0].media_manifest.length, 1);
+  assert.equal(batch.events[0].media_manifest[0].mime_type, "image/png");
+  assert.equal(batch.events[0].media_manifest[0].byte_size, sourceBytes.length);
+  assert.equal(batch.events[0].media_manifest[0].media_kind, "image");
+  assert.match(batch.events[0].media_manifest[0].basename, /^media-[a-f0-9]{12}\.png$/);
   assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /outputs/);
+  assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /screen/);
   assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
 });
 
@@ -139,11 +140,12 @@ test("artifactReviewsToRawTelemetryBatch infers extensionless artifact source MI
     batchId: "batch_backfill_extensionless_media_test",
   });
 
-  assert.deepEqual(batch.events[0].media_manifest, [{
-    basename: "screenshot",
-    mime_type: "image/png",
-    byte_size: sourceBytes.length,
-  }]);
+  assert.equal(batch.events[0].media_manifest.length, 1);
+  assert.equal(batch.events[0].media_manifest[0].mime_type, "image/png");
+  assert.equal(batch.events[0].media_manifest[0].byte_size, sourceBytes.length);
+  assert.equal(batch.events[0].media_manifest[0].media_kind, "screenshot");
+  assert.match(batch.events[0].media_manifest[0].basename, /^media-[a-f0-9]{12}$/);
+  assert.doesNotMatch(batch.events[0].media_manifest[0].basename, /screenshot/);
 });
 
 test("artifactReviewsToRawTelemetryBatch creates deterministic correction events", async () => {
@@ -218,10 +220,40 @@ test("artifactReviewsToRawTelemetryBatch does not stat source paths outside the 
     batchId: "batch_backfill_outside_media_test",
   });
 
-  assert.deepEqual(batch.events[0].media_manifest, [{
-    basename: "outside.png",
-    mime_type: "image/png",
-  }]);
+  assert.equal(batch.events[0].media_manifest.length, 1);
+  assert.equal(batch.events[0].media_manifest[0].mime_type, "image/png");
+  assert.equal(batch.events[0].media_manifest[0].media_kind, "image");
+  assert.equal(Object.hasOwn(batch.events[0].media_manifest[0], "byte_size"), false);
+  assert.match(batch.events[0].media_manifest[0].basename, /^media-[a-f0-9]{12}\.png$/);
+  assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /outside/);
+});
+
+test("artifactReviewsToRawTelemetryBatch infers safe MIME and kind from sanitized outside sources", async () => {
+  const projectRoot = await tempDir();
+  const artifactsDir = join(projectRoot, ".gemini-agent", "artifacts");
+  await mkdir(artifactsDir, { recursive: true });
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact({
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-06-03T14:55:51.114Z",
+      sources: ["/local/customer-documents/private-figma-mockup.svg"],
+      omitted_sources: [],
+    },
+  }));
+
+  const batch = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_safe_source_inference",
+  });
+
+  assert.equal(batch.events[0].media_manifest.length, 1);
+  assert.equal(batch.events[0].media_manifest[0].mime_type, "image/svg+xml");
+  assert.equal(batch.events[0].media_manifest[0].media_kind, "design");
+  assert.match(batch.events[0].media_manifest[0].basename, /^media-[a-f0-9]{12}\.svg$/);
+  assert.equal(Object.hasOwn(batch.events[0].media_manifest[0], "byte_size"), false);
+  assert.doesNotMatch(JSON.stringify(batch.events[0].media_manifest), /customer|private|figma|mockup|local/);
 });
 
 test("artifactReviewsToRawTelemetryBatch enforces file count and byte limits", async () => {
