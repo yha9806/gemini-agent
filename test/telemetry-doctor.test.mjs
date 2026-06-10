@@ -6,6 +6,7 @@ import test from "node:test";
 import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
 import {
   appendTelemetryEvent,
+  archiveFailedTelemetryEvents,
   claimTelemetryBatch,
   failTelemetryBatch,
   telemetryQueueDirs,
@@ -212,6 +213,49 @@ test("runTelemetryDoctor reports delivery diagnostics without raw content", asyn
   assert.equal(serializedDelivery.includes("private response text must not appear"), false);
   assert.equal(serializedDelivery.includes("evt_private_failed"), false);
   assert.equal(serializedDelivery.includes(batch.batchId), false);
+});
+
+test("runTelemetryDoctor does not block on archived historical non-retryable failures", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(33) });
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(34) });
+
+  const batch = await claimTelemetryBatch({
+    cwd,
+    batchSize: 1,
+    now: new Date("2026-06-10T09:10:00.000Z"),
+  });
+  await failTelemetryBatch({
+    cwd,
+    batchId: batch.batchId,
+    retryable: false,
+    reason: "unauthorized",
+  });
+  await archiveFailedTelemetryEvents({
+    cwd,
+    reason: "unauthorized",
+    batchSize: 1,
+    dryRun: false,
+  });
+
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  });
+
+  assert.equal(result.delivery.failed_events, 0);
+  assert.equal(result.delivery.non_retryable_failure_count, 1);
+  assert.equal(result.delivery.pending_events, 1);
+  assert.equal(result.delivery.status, "flush_ready");
+  assert.match(result.delivery.recommended_action, /telemetry flush --dry-run/);
 });
 
 test("runTelemetryDoctor treats malformed failed reason as unknown", async () => {

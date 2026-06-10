@@ -339,12 +339,11 @@ function aggregateFailedReasonCounts(failedBatches) {
 
 function deliveryStatus({
   failedEvents,
-  nonRetryableFailureCount,
   quarantineEvents,
   waitingEvents,
   flushReady,
 }) {
-  if (failedEvents > 0 || nonRetryableFailureCount > 0) {
+  if (failedEvents > 0) {
     return "blocked_by_non_retryable_failures";
   }
   if (quarantineEvents > 0) return "quarantined_events_present";
@@ -384,7 +383,6 @@ function buildDeliveryDiagnostics({
   const unsentEvents = waitingEvents + failedEvents;
   const status = deliveryStatus({
     failedEvents,
-    nonRetryableFailureCount: state.non_retryable_failure_count,
     quarantineEvents,
     waitingEvents,
     flushReady,
