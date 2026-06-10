@@ -8,6 +8,12 @@ const QUEUE_STATES = ["pending", "inflight", "sent", "failed", "quarantine"];
 const DEFAULT_INPUT_PRICE_PER_MILLION = 1.5;
 const DEFAULT_OUTPUT_PRICE_PER_MILLION = 9;
 const DEFAULT_MODEL = "gemini-3.5-flash";
+const USAGE_NOT_APPLICABLE_COMMANDS = new Set([
+  "artifact-review-backfill",
+  "artifact-review-backfill-correction",
+  "telemetry validate",
+  "telemetry-validate",
+]);
 
 function zeroStatusCounts() {
   return {
@@ -26,6 +32,9 @@ function zeroEconomics() {
     unknown_count: 0,
     events_with_usage: 0,
     events_missing_usage: 0,
+    usage_applicable_event_count: 0,
+    usage_not_applicable_event_count: 0,
+    usage_applicable_missing_count: 0,
     input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
@@ -86,6 +95,10 @@ function hasUsage(event) {
     || event.economics?.total_tokens != null;
 }
 
+function usageApplies(event) {
+  return !USAGE_NOT_APPLICABLE_COMMANDS.has(canonicalCommand(event.command));
+}
+
 function savingsEstimate(event, inputTokens) {
   const explicit = event.economics?.codex_tokens_saved_estimate;
   return Number.isInteger(explicit) && explicit >= 0 ? explicit : inputTokens;
@@ -94,8 +107,12 @@ function savingsEstimate(event, inputTokens) {
 function addEventEconomics(target, event) {
   const status = statusOf(event);
   updateStatus(target, status);
+  const applies = usageApplies(event);
+  if (applies) target.usage_applicable_event_count += 1;
+  else target.usage_not_applicable_event_count += 1;
   if (!hasUsage(event)) {
     target.events_missing_usage += 1;
+    if (applies) target.usage_applicable_missing_count += 1;
     return;
   }
   const inputTokens = safeInteger(event.economics?.input_tokens);
@@ -160,6 +177,11 @@ function enrichEconomics(item, pricing) {
       item.codex_tokens_saved_estimate,
     ),
     usage_coverage_rate: nullableRatio(item.events_with_usage, item.event_count, 4),
+    usage_applicable_coverage_rate: nullableRatio(
+      item.usage_applicable_event_count - item.usage_applicable_missing_count,
+      item.usage_applicable_event_count,
+      4,
+    ),
     success_rate: nullableRatio(item.success_count, item.success_count + item.error_count, 4),
   };
 }
@@ -181,10 +203,14 @@ function recommendation(kind, message) {
 
 function buildRecommendations({ totals, topCommandRows }) {
   const recommendations = [];
-  if (totals.event_count > 0 && totals.usage_coverage_rate !== null && totals.usage_coverage_rate < 0.8) {
+  if (
+    totals.usage_applicable_event_count > 0
+    && totals.usage_applicable_coverage_rate !== null
+    && totals.usage_applicable_coverage_rate < 0.8
+  ) {
     recommendations.push(recommendation(
       "instrumentation",
-      "Usage metadata coverage is below 80%; improve token capture before making strong ROI claims.",
+      "Usage metadata coverage for Gemini runtime events is below 80%; improve token capture before making strong ROI claims.",
     ));
   }
   const highSavings = topCommandRows.find((item) => (
@@ -294,7 +320,7 @@ function formatPercent(value) {
 function formatCommandRows(rows) {
   if (rows.length === 0) return "None";
   return rows.map((item, index) => (
-    `${index + 1}. ${item.command}: ${formatNumber(item.codex_tokens_saved_estimate)} estimated saved, ${formatUsd(item.gemini_estimated_cost_usd)} Gemini cost, ${formatPercent(item.usage_coverage_rate)} usage coverage`
+    `${index + 1}. ${item.command}: ${formatNumber(item.codex_tokens_saved_estimate)} estimated saved, ${formatUsd(item.gemini_estimated_cost_usd)} Gemini cost, ${formatPercent(item.usage_applicable_coverage_rate)} usage-applicable coverage`
   )).join("\n");
 }
 
@@ -313,6 +339,9 @@ export function formatTelemetryEconomicsText(report) {
     "Totals:",
     `- Events: ${formatNumber(report.totals.event_count)}`,
     `- Usage coverage: ${formatPercent(report.totals.usage_coverage_rate)}`,
+    `- Usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_coverage_rate)}`,
+    `- Usage-applicable events: ${formatNumber(report.totals.usage_applicable_event_count)}`,
+    `- Usage not applicable events: ${formatNumber(report.totals.usage_not_applicable_event_count)}`,
     `- Gemini input tokens: ${formatNumber(report.totals.input_tokens)}`,
     `- Gemini output tokens: ${formatNumber(report.totals.output_tokens)}`,
     `- Gemini total tokens: ${formatNumber(report.totals.total_tokens)}`,

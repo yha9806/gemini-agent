@@ -194,6 +194,107 @@ test("runTelemetryEconomics supports price overrides and global scope", async ()
   }
 });
 
+test("runTelemetryEconomics separates usage-applicable runtime events from synthetic events", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(20, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+          codex_tokens_saved_estimate: 100,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(21, {
+        command: "plan-critique",
+        status: "error",
+        error_type: "APIError",
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(22, { command: "artifact-review-backfill" }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(23, { command: "artifact-review-backfill-correction" }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(24, { command: "telemetry validate" }),
+    });
+
+    const report = await runTelemetryEconomics({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const text = formatTelemetryEconomicsText(report);
+    const commands = new Map(report.top_commands.map((item) => [item.command, item]));
+
+    assert.equal(report.totals.event_count, 5);
+    assert.equal(report.totals.events_with_usage, 1);
+    assert.equal(report.totals.events_missing_usage, 4);
+    assert.equal(report.totals.usage_coverage_rate, 0.2);
+    assert.equal(report.totals.usage_applicable_event_count, 2);
+    assert.equal(report.totals.usage_not_applicable_event_count, 3);
+    assert.equal(report.totals.usage_applicable_missing_count, 1);
+    assert.equal(report.totals.usage_applicable_coverage_rate, 0.5);
+    assert.equal(commands.get("artifact-review-backfill").usage_applicable_event_count, 0);
+    assert.equal(commands.get("artifact-review-backfill").usage_not_applicable_event_count, 1);
+    assert.equal(commands.get("plan-critique").usage_applicable_missing_count, 1);
+    assert.match(text, /plan-critique: .*0\.0% usage-applicable coverage/);
+    assert.match(text, /artifact-review-backfill: .*n\/a usage-applicable coverage/);
+    assert.match(
+      report.recommendations.map((item) => item.message).join("\n"),
+      /Usage metadata coverage for Gemini runtime events is below 80%/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryEconomics handles datasets with no usage-applicable events", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(30, { command: "artifact-review-backfill" }),
+    });
+
+    const report = await runTelemetryEconomics({ cwd, scope: "local" });
+
+    assert.equal(report.totals.usage_coverage_rate, 0);
+    assert.equal(report.totals.usage_applicable_event_count, 0);
+    assert.equal(report.totals.usage_applicable_missing_count, 0);
+    assert.equal(report.totals.usage_applicable_coverage_rate, null);
+    assert.doesNotMatch(
+      report.recommendations.map((item) => item.message).join("\n"),
+      /Usage metadata coverage/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryEconomics rejects invalid options", async () => {
   await assert.rejects(
     () => runTelemetryEconomics({ topLimit: 0 }),

@@ -216,6 +216,76 @@ test("runTelemetryPriorities supports global scope, top limit, and pricing overr
   }
 });
 
+test("runTelemetryPriorities uses usage-applicable coverage for instrumentation priority", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(20, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 50,
+          total_tokens: 150,
+          codex_tokens_saved_estimate: 100,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(21, { command: "artifact-review-backfill" }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const instrumentation = report.priorities.find((item) => item.kind === "instrumentation");
+
+    assert.equal(report.totals.usage_coverage_rate, 0.5);
+    assert.equal(report.totals.usage_applicable_coverage_rate, 1);
+    assert.equal(instrumentation, undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities does not warn on usage when no events need usage metadata", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(30, { command: "artifact-review-backfill" }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const instrumentation = report.priorities.find((item) => item.kind === "instrumentation");
+
+    assert.equal(report.totals.usage_coverage_rate, 0);
+    assert.equal(report.totals.usage_applicable_coverage_rate, null);
+    assert.equal(instrumentation, undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities rejects invalid options", async () => {
   await assert.rejects(
     () => runTelemetryPriorities({ topLimit: 0 }),

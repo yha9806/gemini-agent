@@ -39,6 +39,13 @@ function usageCoverage(economics) {
   return economics.totals.usage_coverage_rate;
 }
 
+function usageApplicableCoverage(economics) {
+  if (Object.hasOwn(economics.totals, "usage_applicable_coverage_rate")) {
+    return economics.totals.usage_applicable_coverage_rate;
+  }
+  return economics.totals.usage_coverage_rate;
+}
+
 function mediaCoverage(multimodal) {
   if (!multimodal || multimodal.item_count <= 0) {
     return {
@@ -122,10 +129,10 @@ function deliveryPriority(summary) {
 }
 
 function instrumentationPriority(summary, economics, multimodalCoverage) {
-  const usage = usageCoverage(economics);
+  const usage = usageApplicableCoverage(economics);
   const reasons = [];
   if (usage !== null && usage < 0.8) {
-    reasons.push(`Usage coverage: ${formatPercent(usage)}`);
+    reasons.push(`Usage-applicable coverage: ${formatPercent(usage)}`);
   }
   if (multimodalCoverage.min !== null && multimodalCoverage.min < 0.75) {
     reasons.push(`Multimodal metadata minimum coverage: ${formatPercent(multimodalCoverage.min)}`);
@@ -279,6 +286,7 @@ export async function runTelemetryPriorities({
       pending_count: summary.event_counts.pending,
       failed_count: summary.event_counts.failed,
       usage_coverage_rate: usageCoverage(economics),
+      usage_applicable_coverage_rate: usageApplicableCoverage(economics),
       multimodal_event_count: summary.multimodal.event_count,
       multimodal_item_count: summary.multimodal.item_count,
       multimodal_metadata_coverage_min: multimodal.min,
@@ -311,6 +319,7 @@ export function formatTelemetryPrioritiesText(report) {
     `Storage: ${report.storage_cwd}`,
     `Events: ${formatNumber(report.totals.event_count)} total, ${formatPercent(report.totals.error_rate)} error rate, ${formatNumber(report.totals.pending_count)} pending, ${formatNumber(report.totals.failed_count)} failed`,
     `Usage coverage: ${formatPercent(report.totals.usage_coverage_rate)}`,
+    `Usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_coverage_rate)}`,
     `Estimated Gemini cost: ${formatUsd(report.totals.gemini_estimated_cost_usd)}`,
     `Estimated Codex tokens saved: ${formatNumber(report.totals.codex_tokens_saved_estimate)}`,
     "",
