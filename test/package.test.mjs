@@ -65,6 +65,8 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /`diff-review --diff` reads the current git diff directly/);
   assert.match(readme, /Gate commands accept `--context-pack <path>`/);
+  assert.match(readme, /Global active Codex policy tells sessions to reuse project-root `\.gemini-agent\/context\/latest\.json` with gate `--context-pack`/);
+  assert.match(readme, /regenerate the context pack first when it is missing, stale, or unrelated/);
   assert.match(readme, /palette-split quality/);
   assert.match(readme, /local raw telemetry counts, bytes, truncation counts, multimodal counts, and credential-like aggregate signals/);
   assert.match(readme, /pending raw upload batch risk before flushing/);

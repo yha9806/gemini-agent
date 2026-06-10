@@ -261,6 +261,18 @@ test("active policy names commands, recursion guard, priorities, and runtime mod
   assert.match(ACTIVE_POLICY_BLOCK, /sensitive\/customer\/credential content/i);
 });
 
+test("active policy tells Codex how to safely reuse context packs for gates", () => {
+  assert.match(ACTIVE_POLICY_BLOCK, /--context-pack <path>/);
+  assert.match(ACTIVE_POLICY_BLOCK, /\.gemini-agent\/context\/latest\.json/);
+  assert.match(ACTIVE_POLICY_BLOCK, /project root/i);
+  assert.match(ACTIVE_POLICY_BLOCK, /missing, stale, or unrelated/i);
+  assert.match(ACTIVE_POLICY_BLOCK, /regenerate/i);
+  assert.match(ACTIVE_POLICY_BLOCK, /narrow current input/i);
+  for (const gate of ["plan-critique", "patch-precheck", "diff-review", "research-brief"]) {
+    assert.match(ACTIVE_POLICY_BLOCK, new RegExp(`${gate}[\\s\\S]*--context-pack|--context-pack[\\s\\S]*${gate}`));
+  }
+});
+
 test("unknown mode fails", async () => {
   await assert.rejects(
     planCodexGlobalInstall({ home: await tempHome(), mode: "passive" }),

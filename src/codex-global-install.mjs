@@ -19,6 +19,8 @@ Only send large source, diffs, logs, images, PDFs, or other content to gemini-ag
 - \`diff-review\`: ask gemini-agent to review finished diffs before commits, releases, or handoff when an independent review would reduce risk.
 - \`research-brief\`: ask gemini-agent for compact sourced research briefs when current or external context is useful.
 
+Context-pack reuse: when a relevant context pack already exists, pass it to \`plan-critique\`, \`patch-precheck\`, \`diff-review\`, or \`research-brief\` with \`--context-pack <path>\` instead of resending the same raw project slice. Prefer the project root artifact \`.gemini-agent/context/latest.json\`; if that file is missing, stale, or unrelated to the current task, regenerate the context pack first. Add only narrow current input on stdin or \`--diff\` when the gate needs fresh details beyond the pack, and keep combined input bounded.
+
 Priority: user instructions > Superpowers process gates > Codex execution/verification > gemini-agent advice.
 Codex remains the execution authority for direct edits, tests, verification, commits, rollback decisions, and final claims. Gemini-agent gives advice and summaries; it does not directly edit, test, or commit.
 Recursion guard: do not call gemini-agent merely to review or summarize another gemini-agent response unless the user explicitly asks or a project gate requires it.
