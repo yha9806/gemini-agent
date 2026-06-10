@@ -67,6 +67,7 @@ Global Gemini review gate for Codex.
 - `context-pack --bootstrap --write-artifact` creates the project-root context artifact used by `--auto-context-pack` from a bounded root-file allowlist and current git diff.
 - Oversized gate failures print concrete `context-pack --bootstrap --write-artifact` and `--auto-context-pack` retry commands so Codex can switch to compact context before raising byte limits.
 - Large raw gate calls print a non-blocking stderr preflight warning before Gemini credentials are resolved; stdout remains the structured review JSON.
+- Large raw `diff-review --diff` calls with an existing context pack suggest `diff-review --auto-context-pack --diff`; the current run continues and stdout remains JSON.
 - Global active Codex policy tells sessions to reuse project-root `.gemini-agent/context/latest.json` with gate `--auto-context-pack` or explicit `--context-pack`; regenerate the context pack first when it is missing, stale, or unrelated.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1, including bounded multi-file comparison for visual diff work.
