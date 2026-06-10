@@ -6,6 +6,9 @@ import { loadProjectPolicy } from "./policies.mjs";
 import { buildArtifactReviewPrompt } from "./prompts.mjs";
 import { normalizeArtifactReview } from "./schemas.mjs";
 
+const MAX_ARTIFACT_REVIEW_FILES = 4;
+const ARTIFACT_REVIEW_MODES = new Set(["single", "comparison"]);
+
 function artifactTypeFor({ artifactKind = "image", mimeType }) {
   if (mimeType === "application/pdf") return "pdf";
 
@@ -16,11 +19,30 @@ function artifactTypeFor({ artifactKind = "image", mimeType }) {
   return "image";
 }
 
+function normalizeArtifactFiles({ file, files }) {
+  const values = Array.isArray(files) ? files : file ? [file] : [];
+  const normalized = values.map((value) => String(value ?? "").trim()).filter(Boolean);
+  if (normalized.length === 0) throw new Error("--file requires a path.");
+  if (normalized.length > MAX_ARTIFACT_REVIEW_FILES) {
+    throw new Error(`artifact-review supports at most ${MAX_ARTIFACT_REVIEW_FILES} files.`);
+  }
+  return normalized;
+}
+
+function normalizeReviewMode(mode, sourceCount) {
+  const value = String(mode ?? "").trim().toLowerCase();
+  if (!value) return sourceCount > 1 ? "comparison" : "single";
+  if (!ARTIFACT_REVIEW_MODES.has(value)) throw new Error("--review-mode must be single or comparison.");
+  return value;
+}
+
 export async function runArtifactReview({
   apiKey,
   cwd = process.cwd(),
   file,
+  files = null,
   artifactKind = "image",
+  reviewMode = null,
   env = process.env,
   allowFakeResponse = false,
   now = new Date(),
@@ -28,24 +50,30 @@ export async function runArtifactReview({
   generate = generateArtifactReview,
   telemetry = { cwd, source: "cli", command: "artifact-review" },
 } = {}) {
-  if (!file) throw new Error("--file requires a path.");
+  const sources = normalizeArtifactFiles({ file, files });
+  const mode = normalizeReviewMode(reviewMode, sources.length);
 
-  const resolvedFile = resolveCwdFilePath(file, { cwd });
-  const mimeType = detectArtifactMime(file);
+  const resolvedFiles = sources.map((source) => resolveCwdFilePath(source, { cwd }));
+  const mimeTypes = sources.map((source) => detectArtifactMime(source));
+  const mimeType = mimeTypes[0];
   const artifactType = artifactTypeFor({ artifactKind, mimeType });
 
-  if (mimeType === "application/pdf") {
+  if (mimeTypes.some((type) => type === "application/pdf")) {
     throw new Error("PDF artifact review requires Files API support.");
   }
 
-  const imagePart = await imagePartFromFile(resolvedFile);
+  const imageParts = [];
+  for (const resolvedFile of resolvedFiles) {
+    imageParts.push(await imagePartFromFile(resolvedFile));
+  }
   const policy = await loadProjectPolicy(cwd);
   const prompt = buildArtifactReviewPrompt({
     artifactKind,
-    sources: [file],
+    reviewMode: mode,
+    sources,
     policy,
   });
-  const contents = [imagePart, createPartFromText(prompt)];
+  const contents = [...imageParts, createPartFromText(prompt)];
 
   const generated = await generate({
     apiKey,
@@ -63,8 +91,9 @@ export async function runArtifactReview({
       ...generated.metadata,
       model: getDefaultModel(),
       generated_at: now.toISOString(),
-      sources: [file],
+      sources,
       omitted_sources: [],
+      review_mode: mode,
     },
   });
 

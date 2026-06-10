@@ -94,6 +94,64 @@ test("runArtifactReview passes explicit telemetry override to generation", async
   assert.equal(seenTelemetry, telemetry);
 });
 
+test("runArtifactReview compares multiple image files in deterministic order", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
+  await writeFile(join(dir, "before.png"), pngBytes);
+  await writeFile(join(dir, "after.png"), pngBytes);
+
+  let seenPrompt = "";
+  let seenContents = null;
+  const review = await runArtifactReview({
+    apiKey: "fake-key",
+    cwd: dir,
+    files: ["before.png", "after.png"],
+    artifactKind: "ui",
+    reviewMode: "comparison",
+    now: new Date("2026-06-10T12:00:00.000Z"),
+    generate: async ({ prompt, contents }) => {
+      seenPrompt = prompt;
+      seenContents = contents;
+      return fakeReview;
+    },
+  });
+
+  assert.match(seenPrompt, /compare/i);
+  assert.match(seenPrompt, /visual changes/i);
+  assert.equal(seenContents.length, 3);
+  assert.deepEqual(seenContents[0], {
+    inlineData: {
+      data: pngBytes.toString("base64"),
+      mimeType: "image/png",
+    },
+  });
+  assert.deepEqual(seenContents[1], {
+    inlineData: {
+      data: pngBytes.toString("base64"),
+      mimeType: "image/png",
+    },
+  });
+  assert.deepEqual(seenContents[2], { text: seenPrompt });
+  assert.deepEqual(review.metadata.sources, ["before.png", "after.png"]);
+  assert.equal(review.metadata.review_mode, "comparison");
+});
+
+test("runArtifactReview rejects too many files before generation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
+  for (const name of ["a.png", "b.png", "c.png", "d.png", "e.png"]) {
+    await writeFile(join(dir, name), pngBytes);
+  }
+
+  await assert.rejects(
+    () => runArtifactReview({
+      apiKey: "fake-key",
+      cwd: dir,
+      files: ["a.png", "b.png", "c.png", "d.png", "e.png"],
+      generate: assert.fail,
+    }),
+    /at most 4 files/,
+  );
+});
+
 test("runArtifactReview rejects PDF with explicit unsupported runtime error", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
   const pdfPath = join(dir, "paper.pdf");

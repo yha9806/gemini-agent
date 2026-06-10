@@ -99,15 +99,20 @@ export function buildContextPackPrompt({ input, sources = [], policy = null }) {
   ].join("\n");
 }
 
-export function buildArtifactReviewPrompt({ artifactKind = "image", sources = [], policy = null }) {
+export function buildArtifactReviewPrompt({ artifactKind = "image", reviewMode = "single", sources = [], policy = null }) {
   const artifactType = normalizeArtifactKind(artifactKind);
+  const mode = String(reviewMode ?? "").trim().toLowerCase() === "comparison" ? "comparison" : "single";
+  const reviewInstruction = mode === "comparison"
+    ? "Compare the attached artifacts in source order. Focus on visual changes, regressions, hierarchy shifts, accessibility concerns, implementation-relevant differences, and uncertainty."
+    : "Analyze the attached or referenced artifact and produce a structured artifact review. Focus on details Codex can use for implementation, design, research, or follow-up questions.";
 
   return [
     "You are Gemini acting as an artifact review coprocessor for Codex.",
     `Artifact kind: ${artifactKind}`,
+    `Review mode: ${mode}`,
     `Use artifact_type exactly: ${artifactType}`,
     "",
-    "Analyze the attached or referenced artifact and produce a structured artifact review. Focus on details Codex can use for implementation, design, research, or follow-up questions.",
+    reviewInstruction,
     "",
     "Project policy:",
     renderPolicy(policy),
