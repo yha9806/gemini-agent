@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { stdin as input, stdout as output } from "node:process";
+import { stdin as input, stderr as errorOutput, stdout as output } from "node:process";
 import { runArtifactReview } from "./artifact-review.mjs";
 import { applyCodexGlobalInstall } from "./codex-global-install.mjs";
 import { runContextPack } from "./context-pack.mjs";
@@ -20,6 +20,7 @@ import { parsePaletteSplitArgs, runPaletteSplit } from "./palette-mask.mjs";
 import { buildGatePrompt } from "./prompts.mjs";
 import {
   defaultGateInputLimitBytes,
+  gateContextPackPreflightMessage,
   gateContextInputTooLargeMessage,
   gateInputMetadata,
   limitedGateText,
@@ -1285,6 +1286,13 @@ async function runGate(command, args) {
   const gate = GATE_COMMANDS.get(command);
   const { inputText, inputBytes, limitBytes, metadata } = await readGateInput(args, { gate, command });
   if (!inputText || !inputText.trim()) throw new Error("Gate input is empty.");
+  const preflightMessage = gateContextPackPreflightMessage({
+    gate,
+    command,
+    inputBytes,
+    contextPackMode: metadata.context_pack_mode,
+  });
+  if (preflightMessage) errorOutput.write(`${preflightMessage}\n`);
   const fakeAllowed = allowFakeResponse(process.env);
   if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
     throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");

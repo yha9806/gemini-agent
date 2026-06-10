@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  gateContextPackPreflightMessage,
   gateInputTooLargeMessage,
   readLimitedContextPackFile,
 } from "../src/gate-input.mjs";
@@ -81,6 +82,36 @@ test("gate input too large message gives concrete context-pack advisor commands"
   });
 
   assert.match(message, /diff-review input exceeds 4096 bytes \(97545 bytes\)\./);
+  assert.match(message, /gemini-agent context-pack --bootstrap --write-artifact/);
+  assert.match(message, /gemini-agent diff-review --auto-context-pack/);
+  assert.match(message, /narrow fresh input/);
+  assert.doesNotMatch(message, /undefined|null/);
+});
+
+test("gateContextPackPreflightMessage warns only for large raw gate input", () => {
+  assert.equal(gateContextPackPreflightMessage({
+    gate: "diff_review",
+    command: "diff-review",
+    inputBytes: 16 * 1024,
+    contextPackMode: "none",
+  }), null);
+
+  assert.equal(gateContextPackPreflightMessage({
+    gate: "diff_review",
+    command: "diff-review",
+    inputBytes: 64 * 1024,
+    contextPackMode: "auto",
+  }), null);
+
+  const message = gateContextPackPreflightMessage({
+    gate: "diff_review",
+    command: "diff-review",
+    inputBytes: 64 * 1024,
+    contextPackMode: "none",
+  });
+
+  assert.match(message, /diff-review raw input is 65536 bytes/);
+  assert.match(message, /current run will continue/);
   assert.match(message, /gemini-agent context-pack --bootstrap --write-artifact/);
   assert.match(message, /gemini-agent diff-review --auto-context-pack/);
   assert.match(message, /narrow fresh input/);

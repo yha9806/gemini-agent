@@ -502,6 +502,47 @@ test("plan-critique accepts explicit byte limit override", async () => {
   assert.deepEqual(parsed.notes, ["fake ok"]);
 });
 
+test("diff-review emits context-pack preflight warning for large raw stdin without breaking JSON stdout", async () => {
+  const { stdout, stderr } = await execBin(["diff-review", "--stdin"], {
+    input: "x".repeat(20 * 1024),
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.verdict, "pass");
+  assert.match(stderr, /diff-review raw input is 20480 bytes; current run will continue\./);
+  assert.match(stderr, /gemini-agent context-pack --bootstrap --write-artifact/);
+  assert.match(stderr, /gemini-agent diff-review --auto-context-pack/);
+});
+
+test("diff-review suppresses context-pack preflight warning when auto context pack is used", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-preflight-auto-"));
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), fakeContextPack);
+
+  const { stdout, stderr } = await execBin(["diff-review", "--auto-context-pack", "--stdin"], {
+    cwd: dir,
+    input: "x".repeat(20 * 1024),
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.verdict, "pass");
+  assert.equal(stderr, "");
+});
+
 test("gate commands accept context-pack input and print JSON", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const contextPath = join(dir, "context.json");

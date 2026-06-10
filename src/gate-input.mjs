@@ -8,6 +8,7 @@ import { normalizeContextPack } from "./schemas.mjs";
 const execFileAsync = promisify(execFile);
 
 export const PLAN_CRITIQUE_DEFAULT_INPUT_LIMIT_BYTES = 128 * 1024;
+export const GATE_CONTEXT_PACK_PREFLIGHT_THRESHOLD_BYTES = 16 * 1024;
 
 export function defaultGateInputLimitBytes(gate) {
   return gate === "plan_critique"
@@ -53,6 +54,21 @@ export function gateContextInputTooLargeMessage({ gate, command, limitBytes }) {
     `${gateCommandLabel(gate, command)} context input exceeds ${limitBytes} bytes.`,
     contextPackAdvisorMessage({ gate, command }),
     "Or narrow the input before raising limits.",
+  ].join(" ");
+}
+
+export function gateContextPackPreflightMessage({
+  gate,
+  command,
+  inputBytes,
+  contextPackMode = "unknown",
+  thresholdBytes = GATE_CONTEXT_PACK_PREFLIGHT_THRESHOLD_BYTES,
+} = {}) {
+  if (contextPackMode === "auto" || contextPackMode === "explicit") return null;
+  if (!Number.isFinite(inputBytes) || inputBytes <= thresholdBytes) return null;
+  return [
+    `${gateCommandLabel(gate, command)} raw input is ${inputBytes} bytes; current run will continue.`,
+    contextPackAdvisorMessage({ gate, command }),
   ].join(" ");
 }
 
