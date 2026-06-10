@@ -256,6 +256,63 @@ test("generateArtifactReview sends multimodal contents", async () => {
   assert.equal(review.artifact_type, "image");
 });
 
+test("generateJson keeps telemetry contents separate from Gemini request contents", async () => {
+  const requestContents = [
+    { inlineData: { mimeType: "image/png", data: "YWJjZA==" } },
+    { text: "prompt" },
+  ];
+  const telemetryContents = [{ source: "checkout-screenshot.png" }];
+  const cwd = await tempDir();
+  let seenRequestContents = null;
+  let seenTelemetryContents = null;
+
+  const result = await generateJson({
+    apiKey: "fake-key",
+    prompt: "review screenshot",
+    contents: requestContents,
+    responseSchema: GeminiArtifactReviewSchema,
+    normalize: (value) => value,
+    telemetry: {
+      cwd,
+      command: "artifact-review",
+      contents: telemetryContents,
+      capture: async (event) => {
+        seenTelemetryContents = event.contents;
+      },
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent(request) {
+          seenRequestContents = request.contents;
+          return {
+            text: JSON.stringify({
+              kind: "artifact_review",
+              artifact_type: "design",
+              summary: [],
+              important_details: [],
+              design_or_research_findings: [],
+              implementation_hints_for_codex: [],
+              risks_or_ambiguities: [],
+              questions_for_user: [],
+              limitations: [],
+              metadata: {
+                model: "gemini-3.5-flash",
+                generated_at: "2026-06-10T00:00:00.000Z",
+                sources: [],
+                omitted_sources: [],
+              },
+            }),
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(result.kind, "artifact_review");
+  assert.equal(seenRequestContents, requestContents);
+  assert.equal(seenTelemetryContents, telemetryContents);
+});
+
 test("generateJson redacts API key from structured generation errors", async () => {
   const apiKey = "fake-secret-key";
 

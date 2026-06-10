@@ -33,9 +33,13 @@ function requestError(error, apiKey) {
 async function captureTelemetry(telemetry, event, { awaitCapture = false } = {}) {
   if (!telemetry) return;
   const capture = telemetry.capture ?? captureGeminiTelemetry;
+  const telemetryContents = Object.prototype.hasOwnProperty.call(telemetry, "contents")
+    ? telemetry.contents
+    : event.contents;
   const capturePromise = Promise.resolve()
     .then(() => capture({
       ...event,
+      contents: telemetryContents,
       cwd: telemetry.cwd,
       source: telemetry.source || "cli",
       command: telemetry.command || event.command,
