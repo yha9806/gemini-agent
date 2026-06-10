@@ -15,6 +15,8 @@ const USAGE_NOT_APPLICABLE_COMMANDS = new Set([
   "telemetry validate",
   "telemetry-validate",
 ]);
+const CONTEXT_PACK_MODES = new Set(["auto", "explicit", "none"]);
+const FRESH_INPUT_MODES = new Set(["none", "stdin", "file", "diff", "text", "mixed"]);
 
 function zeroStatusCounts() {
   return {
@@ -47,6 +49,13 @@ function zeroEconomics() {
     events_with_input_limit_bytes: 0,
     input_limit_bytes_max: 0,
     input_limit_hit_count: 0,
+    gate_event_count: 0,
+    context_pack_reused_event_count: 0,
+    auto_context_pack_event_count: 0,
+    explicit_context_pack_event_count: 0,
+    no_context_pack_event_count: 0,
+    unknown_context_pack_mode_event_count: 0,
+    has_fresh_input_count: 0,
   };
 }
 
@@ -96,6 +105,16 @@ function sanitizeDimension(value, fallback = "unknown") {
 
 function canonicalCommand(value) {
   return sanitizeDimension(value).toLowerCase().replaceAll("_", "-");
+}
+
+function safeContextPackMode(value) {
+  const mode = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return CONTEXT_PACK_MODES.has(mode) ? mode : "unknown";
+}
+
+function safeFreshInputMode(value) {
+  const mode = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return FRESH_INPUT_MODES.has(mode) ? mode : "unknown";
 }
 
 function statusOf(event) {
@@ -156,10 +175,29 @@ function addGateInputEconomics(target, event) {
   if (inputBytes >= limitBytes) target.input_limit_hit_count += 1;
 }
 
+function addContextLoopEconomics(target, event) {
+  if (!event.metadata?.gate) return;
+  const contextPackMode = safeContextPackMode(event.metadata?.context_pack_mode);
+  const freshInputMode = safeFreshInputMode(event.metadata?.fresh_input_mode);
+  const hasFreshInput = event.metadata?.has_fresh_input === true
+    || !["none", "unknown"].includes(freshInputMode);
+
+  target.gate_event_count += 1;
+  if (contextPackMode === "auto" || contextPackMode === "explicit") {
+    target.context_pack_reused_event_count += 1;
+  }
+  if (contextPackMode === "auto") target.auto_context_pack_event_count += 1;
+  else if (contextPackMode === "explicit") target.explicit_context_pack_event_count += 1;
+  else if (contextPackMode === "none") target.no_context_pack_event_count += 1;
+  else target.unknown_context_pack_mode_event_count += 1;
+  if (hasFreshInput) target.has_fresh_input_count += 1;
+}
+
 function addEventEconomics(target, event) {
   const status = statusOf(event);
   updateStatus(target, status);
   addGateInputEconomics(target, event);
+  addContextLoopEconomics(target, event);
   const applies = usageApplies(event);
   if (applies) target.usage_applicable_event_count += 1;
   else target.usage_not_applicable_event_count += 1;
@@ -248,6 +286,16 @@ function enrichEconomics(item, pricing) {
       item.events_with_input_limit_bytes,
       4,
     ),
+    context_pack_reuse_rate: nullableRatio(
+      item.context_pack_reused_event_count,
+      item.gate_event_count,
+      4,
+    ),
+    auto_context_pack_rate: nullableRatio(
+      item.auto_context_pack_event_count,
+      item.gate_event_count,
+      4,
+    ),
     usage_coverage_rate: nullableRatio(item.events_with_usage, item.event_count, 4),
     usage_applicable_coverage_rate: nullableRatio(
       item.usage_applicable_event_count - item.usage_applicable_missing_count,
@@ -261,6 +309,33 @@ function enrichEconomics(item, pricing) {
     ),
     success_rate: nullableRatio(item.success_count, item.success_count + item.error_count, 4),
   };
+}
+
+function contextLoopGateCommands(commandRows, limit) {
+  return [...commandRows]
+    .filter((item) => item.gate_event_count > 0)
+    .sort((left, right) => (
+      right.gate_event_count - left.gate_event_count
+      || right.context_pack_reused_event_count - left.context_pack_reused_event_count
+      || left.command.localeCompare(right.command)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      command: item.command,
+      event_count: item.gate_event_count,
+      context_pack_reused_event_count: item.context_pack_reused_event_count,
+      context_pack_reuse_rate: item.context_pack_reuse_rate,
+      auto_context_pack_event_count: item.auto_context_pack_event_count,
+      auto_context_pack_rate: item.auto_context_pack_rate,
+      explicit_context_pack_event_count: item.explicit_context_pack_event_count,
+      no_context_pack_event_count: item.no_context_pack_event_count,
+      unknown_context_pack_mode_event_count: item.unknown_context_pack_mode_event_count,
+      has_fresh_input_count: item.has_fresh_input_count,
+      events_with_input_bytes: item.events_with_input_bytes,
+      input_bytes_total: item.input_bytes_total,
+      input_bytes_avg: item.input_bytes_avg,
+      input_bytes_max: item.input_bytes_max,
+    }));
 }
 
 function topCommands(commandRows, limit) {
@@ -430,6 +505,18 @@ export async function runTelemetryEconomics({
   const commandRows = topCommands(enrichedCommandRows, topLimit);
   const usageGapRows = usageGapCommands(enrichedCommandRows, enrichedTotals, topLimit);
   const gateInputRows = gateInputCommands(enrichedCommandRows, topLimit);
+  const contextLoop = {
+    gate_event_count: enrichedTotals.gate_event_count,
+    context_pack_reused_event_count: enrichedTotals.context_pack_reused_event_count,
+    context_pack_reuse_rate: enrichedTotals.context_pack_reuse_rate,
+    auto_context_pack_event_count: enrichedTotals.auto_context_pack_event_count,
+    auto_context_pack_rate: enrichedTotals.auto_context_pack_rate,
+    explicit_context_pack_event_count: enrichedTotals.explicit_context_pack_event_count,
+    no_context_pack_event_count: enrichedTotals.no_context_pack_event_count,
+    unknown_context_pack_mode_event_count: enrichedTotals.unknown_context_pack_mode_event_count,
+    has_fresh_input_count: enrichedTotals.has_fresh_input_count,
+    top_gate_commands: contextLoopGateCommands(enrichedCommandRows, topLimit),
+  };
 
   return {
     scope: context.scope,
@@ -440,6 +527,7 @@ export async function runTelemetryEconomics({
     top_commands: commandRows,
     usage_gap_commands: usageGapRows,
     gate_input_commands: gateInputRows,
+    context_loop: contextLoop,
     recommendations: buildRecommendations({
       totals: enrichedTotals,
       topCommandRows: commandRows,
@@ -490,6 +578,13 @@ function formatGateInputRows(rows) {
   )).join("\n");
 }
 
+function formatContextLoopRows(rows) {
+  if (rows.length === 0) return "None";
+  return rows.map((item, index) => (
+    `${index + 1}. ${item.command}: ${formatNumber(item.event_count)} gate events, ${formatPercent(item.context_pack_reuse_rate)} context-pack reuse, ${formatPercent(item.auto_context_pack_rate)} auto, ${formatNumber(item.input_bytes_avg ?? 0)} avg input bytes`
+  )).join("\n");
+}
+
 export function formatTelemetryEconomicsText(report) {
   const recommendations = report.recommendations.length
     ? report.recommendations.map((item) => `- ${item.message}`).join("\n")
@@ -531,6 +626,13 @@ export function formatTelemetryEconomicsText(report) {
     "",
     "Gate input bytes:",
     formatGateInputRows(report.gate_input_commands),
+    "",
+    "Context loop:",
+    `- Gate events: ${formatNumber(report.context_loop?.gate_event_count ?? 0)}`,
+    `- Context-pack reuse rate: ${formatPercent(report.context_loop?.context_pack_reuse_rate ?? null)}`,
+    `- Auto context-pack rate: ${formatPercent(report.context_loop?.auto_context_pack_rate ?? null)}`,
+    "Top context-loop gate commands:",
+    formatContextLoopRows(report.context_loop?.top_gate_commands ?? []),
     "",
     "Recommendations:",
     recommendations,

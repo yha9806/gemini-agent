@@ -384,6 +384,36 @@ function workflowPriority(economics) {
   });
 }
 
+function contextPackReusePriority(economics) {
+  const rows = Array.isArray(economics.context_loop?.top_gate_commands)
+    ? economics.context_loop.top_gate_commands
+    : [];
+  const candidate = rows.find((item) => (
+    nonnegativeMetric(item.event_count) >= 5
+    && nonnegativeMetric(item.input_bytes_avg) > 1024
+    && nullableMetricRatio(item.context_pack_reuse_rate) !== null
+    && item.context_pack_reuse_rate < 0.5
+  ));
+  if (!candidate) return null;
+  const reuseRate = nullableMetricRatio(candidate.context_pack_reuse_rate);
+  const autoRate = nullableMetricRatio(candidate.auto_context_pack_rate);
+  return priority({
+    kind: "workflow",
+    severity: "medium",
+    score: 70,
+    title: `Increase context-pack reuse for ${candidate.command}.`,
+    action: `Increase context-pack reuse for ${candidate.command} before routing more large gate inputs to Gemini.`,
+    command: candidate.command,
+    evidence: [
+      `Gate events: ${formatNumber(nonnegativeMetric(candidate.event_count))}`,
+      `Context-pack reuse rate: ${formatPercent(reuseRate)}`,
+      `Auto context-pack rate: ${formatPercent(autoRate)}`,
+      `Average gate input bytes: ${formatNumber(nonnegativeMetric(candidate.input_bytes_avg))}`,
+      `Max gate input bytes: ${formatNumber(nonnegativeMetric(candidate.input_bytes_max))}`,
+    ],
+  });
+}
+
 function multimodalPriority(summary, multimodalCoverage) {
   if (summary.multimodal.event_count < 5 || multimodalCoverage.min === null || multimodalCoverage.min < 0.75) {
     return null;
@@ -413,6 +443,7 @@ function buildPriorities({ summary, economics }) {
     deliveryPriority(summary),
     instrumentationPriority(summary, economics, multimodal, multimodalAggregate),
     economicsPriority(economics),
+    contextPackReusePriority(economics),
     workflowPriority(economics),
     multimodalPriority(summary, multimodal),
   ].filter(Boolean);

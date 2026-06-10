@@ -500,6 +500,78 @@ test("runTelemetryPriorities keeps workflow priority stable without gate input b
   }
 });
 
+test("runTelemetryPriorities recommends context pack reuse for heavy low-reuse gates", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(60, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          total_tokens: 1_100_000,
+          codex_tokens_saved_estimate: 2_000_000,
+        },
+      }),
+    });
+    for (let index = 1; index <= 5; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(60 + index, {
+          command: "plan-critique",
+          prompt: `private context loop prompt ${index}`,
+          response: `private context loop response ${index}`,
+          metadata: {
+            gate: "plan_critique",
+            input_bytes: 4096 + index,
+            input_limit_bytes: 131072,
+            context_pack_mode: "none",
+            fresh_input_mode: "file",
+            context_pack_path: "/Users/example/private/context.json",
+          },
+          economics: {
+            input_tokens: 5_000,
+            output_tokens: 500,
+            total_tokens: 5_500,
+            codex_tokens_saved_estimate: 100,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const workflow = report.priorities.find((item) => (
+      item.kind === "workflow"
+      && /context-pack reuse/i.test(item.title)
+    ));
+
+    assert.ok(workflow);
+    assert.equal(workflow.command, "plan-critique");
+    assert.match(workflow.action, /Increase context-pack reuse for plan-critique/);
+    assert.ok(workflow.evidence.some((item) => item === "Gate events: 5"));
+    assert.ok(workflow.evidence.some((item) => item === "Context-pack reuse rate: 0.0%"));
+    assert.ok(workflow.evidence.some((item) => item === "Average gate input bytes: 4,099"));
+    assert.match(text, /context-pack reuse/i);
+    assert.doesNotMatch(serialized, /private context loop prompt|private context loop response/);
+    assert.doesNotMatch(serialized, /evt_priority_000061|\/Users\/example|context\.json/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities does not recommend usage fixes when only multimodal metadata is weak", async () => {
   const cwd = await temporaryWorkspace();
   try {

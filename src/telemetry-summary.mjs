@@ -108,6 +108,18 @@ function zeroPaletteSplit() {
   };
 }
 
+function zeroContextLoop() {
+  return {
+    gate_event_count: 0,
+    context_pack_reused_event_count: 0,
+    auto_context_pack_event_count: 0,
+    explicit_context_pack_event_count: 0,
+    no_context_pack_event_count: 0,
+    unknown_context_pack_mode_event_count: 0,
+    has_fresh_input_count: 0,
+  };
+}
+
 function zeroStatusCounts() {
   return {
     event_count: 0,
@@ -202,6 +214,8 @@ const BACKFILL_MANIFEST_SOURCES = new Set([
   "artifact_sources",
   "none",
 ]);
+const CONTEXT_PACK_MODES = new Set(["auto", "explicit", "none"]);
+const FRESH_INPUT_MODES = new Set(["none", "stdin", "file", "diff", "text", "mixed"]);
 
 function safeMultimodalCommand(value) {
   const command = canonicalCommand(value);
@@ -216,6 +230,16 @@ function isBackfillCommand(value) {
 function safeBackfillManifestSource(value) {
   const source = typeof value === "string" ? value.trim() : "";
   return BACKFILL_MANIFEST_SOURCES.has(source) ? source : "unknown";
+}
+
+function safeContextPackMode(value) {
+  const mode = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return CONTEXT_PACK_MODES.has(mode) ? mode : "unknown";
+}
+
+function safeFreshInputMode(value) {
+  const mode = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return FRESH_INPUT_MODES.has(mode) ? mode : "unknown";
 }
 
 function updateCommandDimension(map, command, status) {
@@ -275,6 +299,59 @@ function topBackfillManifestSources(map, limit) {
       success_count: item.success_count,
       error_count: item.error_count,
       unknown_count: item.unknown_count,
+    }));
+}
+
+function updateSimpleCount(map, key) {
+  const count = map.get(key) ?? 0;
+  map.set(key, count + 1);
+}
+
+function topSimpleCounts(map, keyName, limit) {
+  return [...map.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([key, count]) => ({
+      [keyName]: key,
+      event_count: count,
+    }));
+}
+
+function updateContextLoopCommand(map, command, contextPackMode, hasFreshInput) {
+  const key = canonicalCommand(command);
+  const item = map.get(key) ?? {
+    key,
+    ...zeroContextLoop(),
+  };
+  item.gate_event_count += 1;
+  if (contextPackMode === "auto" || contextPackMode === "explicit") {
+    item.context_pack_reused_event_count += 1;
+  }
+  if (contextPackMode === "auto") item.auto_context_pack_event_count += 1;
+  else if (contextPackMode === "explicit") item.explicit_context_pack_event_count += 1;
+  else if (contextPackMode === "none") item.no_context_pack_event_count += 1;
+  else item.unknown_context_pack_mode_event_count += 1;
+  if (hasFreshInput) item.has_fresh_input_count += 1;
+  map.set(key, item);
+}
+
+function topContextLoopCommands(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.gate_event_count - left.gate_event_count
+      || right.context_pack_reused_event_count - left.context_pack_reused_event_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      command: item.key,
+      event_count: item.gate_event_count,
+      context_pack_reused_event_count: item.context_pack_reused_event_count,
+      auto_context_pack_event_count: item.auto_context_pack_event_count,
+      explicit_context_pack_event_count: item.explicit_context_pack_event_count,
+      no_context_pack_event_count: item.no_context_pack_event_count,
+      unknown_context_pack_mode_event_count: item.unknown_context_pack_mode_event_count,
+      has_fresh_input_count: item.has_fresh_input_count,
     }));
 }
 
@@ -739,6 +816,10 @@ function createAccumulator(invalidSampleLimit) {
       foreground_area_pct_count: 0,
     },
     paletteSplitModels: createDimensionMap(),
+    contextLoop: zeroContextLoop(),
+    contextPackModes: new Map(),
+    freshInputModes: new Map(),
+    contextLoopCommands: new Map(),
     invalidSamples: [],
   };
 }
@@ -763,6 +844,7 @@ function addEvent(accumulator, state, event) {
   updateDimension(accumulator.sources, event.source, status);
   updateDimension(accumulator.models, event.model, status);
   if (isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
+  addContextLoopEvent(accumulator, event);
 
   if (event.prompt) accumulator.rawContent.prompt_events += 1;
   if (event.response) accumulator.rawContent.response_events += 1;
@@ -806,6 +888,28 @@ function addEvent(accumulator, state, event) {
   accumulator.usage.response_tokens += safeInteger(outputTokens);
   accumulator.usage.total_tokens += safeInteger(totalTokens);
   accumulator.usage.estimated_codex_tokens_saved += safeInteger(inputTokens);
+}
+
+function addContextLoopEvent(accumulator, event) {
+  if (!event.metadata?.gate) return;
+  const contextPackMode = safeContextPackMode(event.metadata?.context_pack_mode);
+  const freshInputMode = safeFreshInputMode(event.metadata?.fresh_input_mode);
+  const hasFreshInput = event.metadata?.has_fresh_input === true
+    || !["none", "unknown"].includes(freshInputMode);
+
+  accumulator.contextLoop.gate_event_count += 1;
+  if (contextPackMode === "auto" || contextPackMode === "explicit") {
+    accumulator.contextLoop.context_pack_reused_event_count += 1;
+  }
+  if (contextPackMode === "auto") accumulator.contextLoop.auto_context_pack_event_count += 1;
+  else if (contextPackMode === "explicit") accumulator.contextLoop.explicit_context_pack_event_count += 1;
+  else if (contextPackMode === "none") accumulator.contextLoop.no_context_pack_event_count += 1;
+  else accumulator.contextLoop.unknown_context_pack_mode_event_count += 1;
+  if (hasFreshInput) accumulator.contextLoop.has_fresh_input_count += 1;
+
+  updateSimpleCount(accumulator.contextPackModes, contextPackMode);
+  updateSimpleCount(accumulator.freshInputModes, freshInputMode);
+  updateContextLoopCommand(accumulator.contextLoopCommands, event.command, contextPackMode, hasFreshInput);
 }
 
 function addPaletteSplitEvent(accumulator, event, status) {
@@ -1075,6 +1179,12 @@ export async function runTelemetrySummary({
     media_manifest_sources: topBackfillManifestSources(accumulator.backfillManifestSources, topLimit),
   };
   const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
+  const contextLoop = {
+    ...accumulator.contextLoop,
+    top_context_pack_modes: topSimpleCounts(accumulator.contextPackModes, "context_pack_mode", topLimit),
+    top_fresh_input_modes: topSimpleCounts(accumulator.freshInputModes, "fresh_input_mode", topLimit),
+    top_gate_commands: topContextLoopCommands(accumulator.contextLoopCommands, topLimit),
+  };
   const queue = {
     queue_bytes: state.queue_bytes,
     dropped_old_count: state.dropped_old_count,
@@ -1100,6 +1210,7 @@ export async function runTelemetrySummary({
     corrections,
     backfill,
     palette_split: paletteSplit,
+    context_loop: contextLoop,
     top_projects: topProjects,
     top_workspaces: topWorkspaces,
     top_user_labels: topUserLabels,
@@ -1200,6 +1311,15 @@ export function formatTelemetrySummaryText(summary) {
     `- Quality events: ${formatNumber(summary.palette_split?.quality_event_count ?? 0)}`,
     `- Average quality score: ${summary.palette_split?.avg_quality_score ?? "n/a"}`,
     `- Resized masks: ${formatNumber(summary.palette_split?.resized_mask_count ?? 0)}`,
+    "",
+    "Context loop:",
+    `- Gate events: ${formatNumber(summary.context_loop?.gate_event_count ?? 0)}`,
+    `- Context-pack reused events: ${formatNumber(summary.context_loop?.context_pack_reused_event_count ?? 0)}`,
+    `- Auto context-pack events: ${formatNumber(summary.context_loop?.auto_context_pack_event_count ?? 0)}`,
+    `- Explicit context-pack events: ${formatNumber(summary.context_loop?.explicit_context_pack_event_count ?? 0)}`,
+    `- No context-pack events: ${formatNumber(summary.context_loop?.no_context_pack_event_count ?? 0)}`,
+    `- Unknown context-pack mode events: ${formatNumber(summary.context_loop?.unknown_context_pack_mode_event_count ?? 0)}`,
+    `- Fresh input events: ${formatNumber(summary.context_loop?.has_fresh_input_count ?? 0)}`,
     "",
     "Recommendations:",
     recommendations,

@@ -503,6 +503,107 @@ test("runTelemetryEconomics aggregates gate input byte metadata safely", async (
   }
 });
 
+test("runTelemetryEconomics reports context loop reuse rates safely", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const events = [
+      telemetryEvent(90, {
+        command: "plan-critique",
+        metadata: {
+          gate: "plan_critique",
+          input_bytes: 1000,
+          input_limit_bytes: 2000,
+          context_pack_mode: "auto",
+          fresh_input_mode: "stdin",
+          has_fresh_input: true,
+        },
+      }),
+      telemetryEvent(91, {
+        command: "plan_critique",
+        metadata: {
+          gate: "plan_critique",
+          input_bytes: 2000,
+          input_limit_bytes: 3000,
+          context_pack_mode: "explicit",
+          fresh_input_mode: "none",
+          has_fresh_input: false,
+          context_pack_path: "/Users/example/private/context.json",
+        },
+      }),
+      telemetryEvent(92, {
+        command: "plan-critique",
+        metadata: {
+          gate: "plan_critique",
+          input_bytes: 3000,
+          input_limit_bytes: 4000,
+          context_pack_mode: "none",
+          fresh_input_mode: "file",
+          has_fresh_input: true,
+        },
+      }),
+      telemetryEvent(93, {
+        command: "diff-review",
+        metadata: {
+          gate: "diff_review",
+          input_bytes: 500,
+          context_pack_mode: "not-real",
+          fresh_input_mode: "/Users/example/private/diff.patch",
+        },
+      }),
+      telemetryEvent(94, {
+        command: "diff-review",
+        metadata: {
+          gate: "diff_review",
+          input_bytes: 750,
+        },
+      }),
+      telemetryEvent(95, {
+        command: "ask",
+        metadata: {
+          context_pack_mode: "auto",
+          fresh_input_mode: "stdin",
+        },
+      }),
+    ];
+    for (const event of events) {
+      await appendTelemetryEvent({ cwd, event });
+    }
+
+    const report = await runTelemetryEconomics({ cwd, scope: "local", topLimit: 10 });
+    const text = formatTelemetryEconomicsText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const rows = new Map(report.context_loop.top_gate_commands.map((item) => [item.command, item]));
+
+    assert.equal(report.context_loop.gate_event_count, 5);
+    assert.equal(report.context_loop.context_pack_reused_event_count, 2);
+    assert.equal(report.context_loop.context_pack_reuse_rate, 0.4);
+    assert.equal(report.context_loop.auto_context_pack_event_count, 1);
+    assert.equal(report.context_loop.auto_context_pack_rate, 0.2);
+    assert.equal(report.context_loop.explicit_context_pack_event_count, 1);
+    assert.equal(report.context_loop.no_context_pack_event_count, 1);
+    assert.equal(report.context_loop.unknown_context_pack_mode_event_count, 2);
+    assert.equal(report.context_loop.has_fresh_input_count, 2);
+    assert.equal(rows.get("plan-critique").event_count, 3);
+    assert.equal(rows.get("plan-critique").context_pack_reused_event_count, 2);
+    assert.equal(rows.get("plan-critique").context_pack_reuse_rate, 0.6667);
+    assert.equal(rows.get("plan-critique").auto_context_pack_rate, 0.3333);
+    assert.equal(rows.get("plan-critique").input_bytes_avg, 2000);
+    assert.equal(rows.get("diff-review").event_count, 2);
+    assert.equal(rows.get("diff-review").context_pack_reuse_rate, 0);
+    assert.equal(rows.get("diff-review").unknown_context_pack_mode_event_count, 2);
+    assert.match(text, /Context loop/);
+    assert.doesNotMatch(serialized, /\/Users\/example|context\.json|diff\.patch|not-real|NaN|Infinity/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryEconomics reports empty gate input byte aggregates without NaN", async () => {
   const cwd = await temporaryWorkspace();
   try {
