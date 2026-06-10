@@ -144,6 +144,15 @@ function updateDimension(map, key, status) {
   map.set(safeKey, item);
 }
 
+function canonicalCommand(value) {
+  const sanitized = sanitizeDimension(value);
+  return sanitized.toLowerCase().replaceAll("_", "-");
+}
+
+function updateCommandDimension(map, command, status) {
+  updateDimension(map, canonicalCommand(command), status);
+}
+
 function updateStatusCounts(counts, status) {
   counts.event_count += 1;
   if (status === "success") counts.success_count += 1;
@@ -406,7 +415,7 @@ function addEvent(accumulator, state, event) {
   const status = event.status === "success" || event.status === "error" ? event.status : "unknown";
   updateStatusCounts(accumulator.statusCounts, status);
   updateDimension(accumulator.projects, event.project_id, status);
-  updateDimension(accumulator.commands, event.command, status);
+  updateCommandDimension(accumulator.commands, event.command, status);
   updateDimension(accumulator.sources, event.source, status);
   updateDimension(accumulator.models, event.model, status);
   if (isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);

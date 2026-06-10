@@ -261,6 +261,59 @@ test("runTelemetrySummary aggregates pending sent failed quarantine dimensions a
   }]);
 });
 
+test("runTelemetrySummary canonicalizes command variants before aggregating", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(101, {
+      command: " Diff_Review ",
+      economics: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(102, {
+      command: "diff-review",
+      economics: { input_tokens: 50, output_tokens: 10, total_tokens: 60 },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(103, {
+      command: "plan_critique",
+      economics: { input_tokens: 25, output_tokens: 5, total_tokens: 30 },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(104, {
+      command: "plan-critique",
+      economics: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+    }),
+  });
+
+  const result = await runTelemetrySummary({ cwd, scope: "local" });
+  const commands = new Map(result.top_commands.map((item) => [item.command, item]));
+  const serialized = JSON.stringify(result);
+
+  assert.equal(commands.get("diff-review")?.event_count, 2);
+  assert.equal(commands.get("diff-review")?.success_count, 2);
+  assert.equal(commands.get("plan-critique")?.event_count, 2);
+  assert.equal(commands.has("Diff_Review"), false);
+  assert.equal(commands.has("diff_review"), false);
+  assert.equal(commands.has("plan_critique"), false);
+  assert.equal(result.usage.estimated_codex_tokens_saved, 185);
+  assert.doesNotMatch(serialized, /prompt 000101/);
+  assert.doesNotMatch(serialized, /response 000101/);
+});
+
 test("runTelemetrySummary aggregates multimodal metadata without exposing media file names", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({
