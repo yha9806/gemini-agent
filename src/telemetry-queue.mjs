@@ -818,6 +818,139 @@ export async function loadFailedTelemetryBatchSummaries({
   return summaries;
 }
 
+function sanitizeRetryReason(value) {
+  return safeFailureReason(value);
+}
+
+async function failedBatchEventFiles(batchDir) {
+  return (await regularFiles(batchDir))
+    .filter((file) => file.name !== "reason.json" && file.name.endsWith(".json"));
+}
+
+async function failedRetryCandidates(dirs, reason) {
+  const sanitizedReason = sanitizeRetryReason(reason);
+  const batchNames = await failedBatchDirectories(dirs.failed);
+  const candidates = [];
+  for (const batchName of batchNames) {
+    const batchDir = join(dirs.failed, batchName);
+    const batchReason = await failedBatchReason(batchDir);
+    if (batchReason !== sanitizedReason) continue;
+    const files = await failedBatchEventFiles(batchDir);
+    if (files.length === 0) continue;
+    candidates.push({
+      batchDir,
+      reason: batchReason,
+      files,
+      bytes: await sumFileSizes(files),
+    });
+  }
+  return { reason: sanitizedReason, candidates };
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function retryFailedNextCommand({ reason, write = false, batchSize = 1 }) {
+  const mode = write ? "--write" : "--dry-run";
+  return `gemini-agent telemetry retry-failed --reason ${shellQuote(reason)} ${mode} --batch-size ${batchSize}`;
+}
+
+function summarizeRetryCandidates({
+  reason,
+  candidates,
+  batchSize,
+  dryRun,
+  movedCount = 0,
+  remainingCandidates = candidates,
+}) {
+  const allFiles = candidates.flatMap((candidate) => candidate.files);
+  const selectedFiles = allFiles.slice(0, batchSize);
+  const remainingFiles = remainingCandidates.flatMap((candidate) => candidate.files);
+  return {
+    ok: true,
+    dry_run: dryRun,
+    reason,
+    matched_batch_count: candidates.length,
+    would_move_count: selectedFiles.length,
+    moved_count: movedCount,
+    remaining_failed_count_for_reason: dryRun ? allFiles.length : remainingFiles.length,
+    bytes: selectedFiles.reduce((sum, file) => sum + file.size, 0),
+    next_command: dryRun
+      ? retryFailedNextCommand({ reason, write: true, batchSize })
+      : "gemini-agent telemetry flush --dry-run --batch-size 1",
+  };
+}
+
+export async function retryFailedTelemetryEvents({
+  cwd = process.cwd(),
+  reason,
+  batchSize = 1,
+  dryRun = true,
+  lock = {},
+} = {}) {
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new Error("Telemetry failed retry reason is required.");
+  }
+  assertPositiveInteger(batchSize, "batchSize");
+  if (typeof dryRun !== "boolean") {
+    throw new TypeError("dryRun must be a boolean.");
+  }
+  if (lock == null || typeof lock !== "object" || Array.isArray(lock)) {
+    throw new TypeError("lock must be an object.");
+  }
+
+  if (dryRun) {
+    const dirs = telemetryQueueDirs(cwd);
+    const { reason: sanitizedReason, candidates } = await failedRetryCandidates(dirs, reason);
+    return summarizeRetryCandidates({
+      reason: sanitizedReason,
+      candidates,
+      batchSize,
+      dryRun: true,
+    });
+  }
+
+  return withTelemetryQueueLock({ cwd, ...lock }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const { reason: sanitizedReason, candidates } = await failedRetryCandidates(dirs, reason);
+    let remainingToMove = batchSize;
+    let movedCount = 0;
+
+    for (const candidate of candidates) {
+      if (remainingToMove <= 0) break;
+      const selected = candidate.files.slice(0, remainingToMove);
+      for (const file of selected) {
+        const destination = join(dirs.pending, file.name);
+        await rename(file.path, destination);
+        await chmod(destination, SECURE_FILE_MODE);
+        movedCount += 1;
+        remainingToMove -= 1;
+      }
+      const remainingFiles = await failedBatchEventFiles(candidate.batchDir);
+      if (remainingFiles.length === 0) {
+        await rm(candidate.batchDir, { recursive: true, force: true });
+      }
+    }
+
+    const state = await loadStateFromPath(dirs.state);
+    await saveState(cwd, {
+      ...state,
+      queue_bytes: await pendingQueueBytes(cwd),
+    });
+
+    const refreshed = await failedRetryCandidates(dirs, sanitizedReason);
+    return summarizeRetryCandidates({
+      reason: sanitizedReason,
+      candidates,
+      batchSize,
+      dryRun: false,
+      movedCount,
+      remainingCandidates: refreshed.candidates,
+    });
+  });
+}
+
 export async function peekTelemetryEvents({
   cwd = process.cwd(),
   batchSize,

@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rm,
   stat,
   utimes,
   writeFile,
@@ -26,6 +27,7 @@ import {
   peekTelemetryEvents,
   pruneSentTelemetry,
   quarantineTelemetryEvent,
+  retryFailedTelemetryEvents,
   telemetryQueueDirs,
   withTelemetryQueueLock,
 } from "../src/telemetry-queue.mjs";
@@ -108,6 +110,52 @@ async function readPendingEvents(cwd) {
   const { pending } = telemetryQueueDirs(cwd);
   const paths = await regularFilePaths(pending);
   return Promise.all(paths.map((path) => readJson(path)));
+}
+
+async function createFailedBatch(cwd, {
+  count = 1,
+  reason = "http_403",
+  malformedReason = false,
+  missingReason = false,
+} = {}) {
+  const batch = await claimTelemetryBatch({
+    cwd,
+    batchSize: count,
+    now: new Date("2026-06-10T09:00:00.000Z"),
+  });
+  assert.ok(batch.batchId);
+  await failTelemetryBatch({
+    cwd,
+    batchId: batch.batchId,
+    retryable: false,
+    reason,
+  });
+  const failedDir = join(telemetryQueueDirs(cwd).failed, batch.batchId);
+  if (malformedReason) {
+    await writeFile(join(failedDir, "reason.json"), "{not-json\n");
+  }
+  if (missingReason) {
+    await rm(join(failedDir, "reason.json"), { force: true });
+  }
+  return { batchId: batch.batchId, failedDir, events: batch.events };
+}
+
+async function appendEvents(cwd, start, count) {
+  for (let offset = 0; offset < count; offset += 1) {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(start + offset, {
+        prompt: `raw prompt ${start + offset}`,
+        response: `raw response ${start + offset}`,
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", basename: `secret-${start + offset}.png` }],
+        },
+      }),
+      maxQueueBytes: LARGE_QUEUE_LIMIT,
+    });
+  }
 }
 
 function assertQuarantinedEventPath(dirs, eventPath) {
@@ -650,6 +698,204 @@ test("loadTelemetryQueueSnapshot counts failed events without reason metadata", 
   assert.equal(snapshot.pending.count, 0);
   assert.equal(snapshot.failed.count, 1);
   assert.equal(snapshot.failed.bytes, failedEventBytes);
+});
+
+test("retryFailedTelemetryEvents dry-run reports matching failed batches without moving files", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 100, 2);
+  await createFailedBatch(cwd, { count: 2, reason: "http_403" });
+
+  const before = await loadTelemetryQueueSnapshot({ cwd });
+  const result = await retryFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 5,
+    dryRun: true,
+  });
+  const after = await loadTelemetryQueueSnapshot({ cwd });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dry_run, true);
+  assert.equal(result.reason, "http_403");
+  assert.equal(result.matched_batch_count, 1);
+  assert.equal(result.would_move_count, 2);
+  assert.equal(result.moved_count, 0);
+  assert.equal(result.remaining_failed_count_for_reason, 2);
+  assert.ok(result.bytes > 0);
+  assert.deepEqual(after, before);
+});
+
+test("retryFailedTelemetryEvents write mode moves only matching reason events to pending", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 200, 2);
+  await createFailedBatch(cwd, { count: 2, reason: "http_403" });
+  await appendEvents(cwd, 300, 1);
+  await createFailedBatch(cwd, { count: 1, reason: "unauthorized" });
+
+  const result = await retryFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 5,
+    dryRun: false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dry_run, false);
+  assert.equal(result.matched_batch_count, 1);
+  assert.equal(result.would_move_count, 2);
+  assert.equal(result.moved_count, 2);
+  assert.equal(result.remaining_failed_count_for_reason, 0);
+
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.pending.count, 2);
+  assert.equal(snapshot.failed.count, 1);
+
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.queue_bytes, snapshot.pending.bytes);
+  assert.equal(state.non_retryable_failure_count, 3);
+  assert.equal(state.sent_failure_count, 3);
+  assert.equal(state.last_failure_reason, "unauthorized");
+});
+
+test("retryFailedTelemetryEvents partial write preserves reason metadata for remaining failed events", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 400, 3);
+  const failedBatch = await createFailedBatch(cwd, { count: 3, reason: "http_403" });
+
+  const first = await retryFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 2,
+    dryRun: false,
+  });
+
+  assert.equal(first.moved_count, 2);
+  assert.equal(first.remaining_failed_count_for_reason, 1);
+  assert.equal(await pathExists(join(failedBatch.failedDir, "reason.json")), true);
+
+  const second = await retryFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 2,
+    dryRun: false,
+  });
+
+  assert.equal(second.moved_count, 1);
+  assert.equal(second.remaining_failed_count_for_reason, 0);
+  assert.equal(await pathExists(failedBatch.failedDir), false);
+});
+
+test("retryFailedTelemetryEvents ignores non-matching reasons", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 500, 1);
+  await createFailedBatch(cwd, { count: 1, reason: "unauthorized" });
+
+  const result = await retryFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 5,
+    dryRun: false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.matched_batch_count, 0);
+  assert.equal(result.would_move_count, 0);
+  assert.equal(result.moved_count, 0);
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.pending.count, 0);
+  assert.equal(snapshot.failed.count, 1);
+});
+
+test("retryFailedTelemetryEvents can recover malformed and missing reason metadata as unknown", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 600, 1);
+  await createFailedBatch(cwd, { count: 1, reason: "http_403", malformedReason: true });
+  await appendEvents(cwd, 700, 1);
+  await createFailedBatch(cwd, { count: 1, reason: "unauthorized", missingReason: true });
+
+  const result = await retryFailedTelemetryEvents({
+    cwd,
+    reason: "unknown",
+    batchSize: 10,
+    dryRun: false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, "unknown");
+  assert.equal(result.matched_batch_count, 2);
+  assert.equal(result.moved_count, 2);
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.pending.count, 2);
+  assert.equal(snapshot.failed.count, 0);
+});
+
+test("retryFailedTelemetryEvents ignores failed batches that contain no event files", async () => {
+  const cwd = await temporaryWorkspace();
+  const dirs = telemetryQueueDirs(cwd);
+  const emptyBatchDir = join(dirs.failed, "batch_20260610_empty");
+  await mkdir(emptyBatchDir, { recursive: true });
+  await writeFile(join(emptyBatchDir, "reason.json"), `${JSON.stringify({
+    batch_id: "batch_20260610_empty",
+    reason: "http_403",
+    retryable: false,
+  })}\n`);
+
+  const result = await retryFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 5,
+    dryRun: false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.matched_batch_count, 0);
+  assert.equal(result.would_move_count, 0);
+  assert.equal(result.moved_count, 0);
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.pending.count, 0);
+  assert.equal(snapshot.failed.count, 0);
+});
+
+test("retryFailedTelemetryEvents returns aggregate-only data", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 800, 1);
+  await createFailedBatch(cwd, { count: 1, reason: "http_403" });
+
+  const result = await retryFailedTelemetryEvents({
+    cwd,
+    reason: "http_403",
+    batchSize: 1,
+    dryRun: true,
+  });
+  const serialized = JSON.stringify(result);
+
+  assert.doesNotMatch(serialized, /evt_000800/);
+  assert.doesNotMatch(serialized, /batch_2026/);
+  assert.doesNotMatch(serialized, /raw prompt 800/);
+  assert.doesNotMatch(serialized, /raw response 800/);
+  assert.doesNotMatch(serialized, /secret-800\.png/);
+  assert.doesNotMatch(serialized, /\.gemini-agent/);
+  assert.doesNotMatch(serialized, /queue\/failed/);
+  assert.doesNotMatch(serialized, /event_[0-9]/);
+});
+
+test("retryFailedTelemetryEvents write mode respects queue lock contention", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 900, 1);
+  await createFailedBatch(cwd, { count: 1, reason: "http_403" });
+
+  await withTelemetryQueueLock({ cwd }, async () => {
+    await assert.rejects(
+      () => retryFailedTelemetryEvents({
+        cwd,
+        reason: "http_403",
+        batchSize: 1,
+        dryRun: false,
+        lock: { retries: 0, retryDelayMs: 0 },
+      }),
+      /Telemetry queue lock could not be acquired/,
+    );
+  });
 });
 
 test("lock prevents concurrent flush claims", async () => {
