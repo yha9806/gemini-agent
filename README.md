@@ -33,6 +33,8 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry economics --global --json
 ./bin/gemini-agent telemetry priorities --global
 ./bin/gemini-agent telemetry priorities --global --json
+./bin/gemini-agent telemetry report --global
+./bin/gemini-agent telemetry report --global --json
 ./bin/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run
 ./bin/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --write --json
 ./bin/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run
@@ -87,6 +89,7 @@ Global Gemini review gate for Codex.
 - `telemetry raw prune` applies local sent-telemetry retention with dry-run by default; it only supports `--state sent`, uses UTC day buckets, and reports aggregate counts without raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry economics` estimates Gemini cost, Codex token savings, and aggregate gate input byte metrics from usage metadata; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - `telemetry priorities` combines aggregate economics, reliability, delivery, instrumentation, and multimodal metadata signals into a development priority list; it does not print raw prompt, response text, event ids, batch ids, or media file names.
+- `telemetry report` combines aggregate health, economics, context reuse, multimodal adoption, and top development priority into a product decision snapshot; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry multimodal repair-kind` creates correction events for historical multimodal telemetry with missing media kinds; it is dry-run by default, does not rewrite existing telemetry files, and reports aggregate counts without raw prompt, response text, event ids, paths, or media file names.
 - `telemetry multimodal repair-metadata` creates safe MIME and media-kind corrections for historical multimodal telemetry; it does not fabricate missing byte sizes, is dry-run by default, does not rewrite existing telemetry files, and reports aggregate counts without raw prompt, response text, event ids, paths, or media file names.
 - The telemetry receiver `/metrics` and `/dashboard` endpoints expose aggregate correction and palette-split quality metrics without raw event ids or media file names.

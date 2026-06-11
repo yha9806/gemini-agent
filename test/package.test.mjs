@@ -54,6 +54,8 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --write --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global --json$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry report --global$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry report --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --diff$/m);
@@ -85,6 +87,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /writes confirmed raw telemetry to a local JSONL file/);
   assert.match(readme, /local sent-telemetry retention with dry-run by default/);
   assert.match(readme, /estimates Gemini cost, Codex token savings, and aggregate gate input byte metrics/);
+  assert.match(readme, /combines aggregate health, economics, context reuse, multimodal adoption, and top development priority into a product decision snapshot/);
   assert.match(readme, /safe MIME and media-kind corrections for historical multimodal telemetry/);
   assert.match(
     readme,

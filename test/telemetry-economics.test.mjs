@@ -565,6 +565,15 @@ test("runTelemetryEconomics reports context loop reuse rates safely", async () =
           input_bytes: 750,
         },
       }),
+      telemetryEvent(96, {
+        command: "diff-review",
+        metadata: {
+          gate: "diff_review",
+          input_bytes: 950,
+          context_pack_mode: "auto",
+          fresh_input_mode: "smart-diff",
+        },
+      }),
       telemetryEvent(95, {
         command: "ask",
         metadata: {
@@ -582,31 +591,33 @@ test("runTelemetryEconomics reports context loop reuse rates safely", async () =
     const serialized = `${JSON.stringify(report)}\n${text}`;
     const rows = new Map(report.context_loop.top_gate_commands.map((item) => [item.command, item]));
 
-    assert.equal(report.context_loop.gate_event_count, 5);
-    assert.equal(report.context_loop.context_pack_reused_event_count, 2);
-    assert.equal(report.context_loop.context_pack_reuse_rate, 0.4);
-    assert.equal(report.context_loop.auto_context_pack_event_count, 1);
-    assert.equal(report.context_loop.auto_context_pack_rate, 0.2);
+    assert.equal(report.context_loop.gate_event_count, 6);
+    assert.equal(report.context_loop.context_pack_reused_event_count, 3);
+    assert.equal(report.context_loop.context_pack_reuse_rate, 0.5);
+    assert.equal(report.context_loop.auto_context_pack_event_count, 2);
+    assert.equal(report.context_loop.auto_context_pack_rate, 0.3333);
     assert.equal(report.context_loop.explicit_context_pack_event_count, 1);
     assert.equal(report.context_loop.no_context_pack_event_count, 1);
     assert.equal(report.context_loop.unknown_context_pack_mode_event_count, 2);
-    assert.equal(report.context_loop.has_fresh_input_count, 2);
+    assert.equal(report.context_loop.has_fresh_input_count, 3);
     assert.equal(report.context_loop.context_pack_preflight_warning_count, 2);
-    assert.equal(report.context_loop.context_pack_preflight_warning_rate, 0.4);
+    assert.equal(report.context_loop.context_pack_preflight_warning_rate, 0.3333);
     assert.equal(rows.get("plan-critique").event_count, 3);
     assert.equal(rows.get("plan-critique").context_pack_reused_event_count, 2);
     assert.equal(rows.get("plan-critique").context_pack_reuse_rate, 0.6667);
     assert.equal(rows.get("plan-critique").auto_context_pack_rate, 0.3333);
     assert.equal(rows.get("plan-critique").context_pack_preflight_warning_count, 1);
+    assert.equal(rows.get("diff-review").event_count, 3);
+    assert.equal(rows.get("diff-review").context_pack_reused_event_count, 1);
+    assert.equal(rows.get("diff-review").context_pack_reuse_rate, 0.3333);
+    assert.equal(rows.get("diff-review").auto_context_pack_rate, 0.3333);
     assert.equal(rows.get("plan-critique").context_pack_preflight_warning_rate, 0.3333);
     assert.equal(rows.get("plan-critique").input_bytes_avg, 2000);
-    assert.equal(rows.get("diff-review").event_count, 2);
-    assert.equal(rows.get("diff-review").context_pack_reuse_rate, 0);
     assert.equal(rows.get("diff-review").unknown_context_pack_mode_event_count, 2);
     assert.equal(rows.get("diff-review").context_pack_preflight_warning_count, 1);
-    assert.equal(rows.get("diff-review").context_pack_preflight_warning_rate, 0.5);
+    assert.equal(rows.get("diff-review").context_pack_preflight_warning_rate, 0.3333);
     assert.match(text, /Context loop/);
-    assert.match(text, /Context-pack preflight warning rate: 40\.0%/);
+    assert.match(text, /Context-pack preflight warning rate: 33\.3%/);
     assert.doesNotMatch(serialized, /\/Users\/example|context\.json|diff\.patch|not-real|NaN|Infinity/);
   } finally {
     await rm(cwd, { recursive: true, force: true });

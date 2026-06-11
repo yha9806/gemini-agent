@@ -216,7 +216,7 @@ const BACKFILL_MANIFEST_SOURCES = new Set([
   "none",
 ]);
 const CONTEXT_PACK_MODES = new Set(["auto", "explicit", "none"]);
-const FRESH_INPUT_MODES = new Set(["none", "stdin", "file", "diff", "text", "mixed"]);
+const FRESH_INPUT_MODES = new Set(["none", "stdin", "file", "diff", "smart-diff", "text", "mixed"]);
 
 function safeMultimodalCommand(value) {
   const command = canonicalCommand(value);

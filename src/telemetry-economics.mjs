@@ -16,7 +16,7 @@ const USAGE_NOT_APPLICABLE_COMMANDS = new Set([
   "telemetry-validate",
 ]);
 const CONTEXT_PACK_MODES = new Set(["auto", "explicit", "none"]);
-const FRESH_INPUT_MODES = new Set(["none", "stdin", "file", "diff", "text", "mixed"]);
+const FRESH_INPUT_MODES = new Set(["none", "stdin", "file", "diff", "smart-diff", "text", "mixed"]);
 
 function zeroStatusCounts() {
   return {

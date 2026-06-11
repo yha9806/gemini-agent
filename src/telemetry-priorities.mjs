@@ -437,7 +437,7 @@ function multimodalPriority(summary, multimodalCoverage) {
   });
 }
 
-function buildPriorities({ summary, economics }) {
+export function buildPriorities({ summary, economics }) {
   const errorRate = statusErrorRate(summary);
   const multimodalAggregate = summary.multimodal_adjusted ?? summary.multimodal;
   const multimodal = mediaCoverage(multimodalAggregate);

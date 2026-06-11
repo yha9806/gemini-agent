@@ -1831,6 +1831,15 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       },
     }),
     telemetryEvent(306, {
+      command: "diff-review",
+      metadata: {
+        gate: "diff_review",
+        context_pack_mode: "auto",
+        fresh_input_mode: "smart-diff",
+        has_fresh_input: true,
+      },
+    }),
+    telemetryEvent(307, {
       command: "ask",
       metadata: {
         context_pack_mode: "auto",
@@ -1845,17 +1854,17 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
   const summary = await runTelemetrySummary({ cwd, scope: "local", topLimit: 10 });
   const serialized = JSON.stringify(summary);
 
-  assert.equal(summary.context_loop.gate_event_count, 5);
-  assert.equal(summary.context_loop.context_pack_reused_event_count, 2);
-  assert.equal(summary.context_loop.auto_context_pack_event_count, 1);
+  assert.equal(summary.context_loop.gate_event_count, 6);
+  assert.equal(summary.context_loop.context_pack_reused_event_count, 3);
+  assert.equal(summary.context_loop.auto_context_pack_event_count, 2);
   assert.equal(summary.context_loop.explicit_context_pack_event_count, 1);
   assert.equal(summary.context_loop.no_context_pack_event_count, 1);
   assert.equal(summary.context_loop.unknown_context_pack_mode_event_count, 2);
-  assert.equal(summary.context_loop.has_fresh_input_count, 3);
+  assert.equal(summary.context_loop.has_fresh_input_count, 4);
   assert.equal(summary.context_loop.context_pack_preflight_warning_count, 2);
   assert.deepEqual(summary.context_loop.top_context_pack_modes, [
+    { context_pack_mode: "auto", event_count: 2 },
     { context_pack_mode: "unknown", event_count: 2 },
-    { context_pack_mode: "auto", event_count: 1 },
     { context_pack_mode: "explicit", event_count: 1 },
     { context_pack_mode: "none", event_count: 1 },
   ]);
@@ -1863,9 +1872,21 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
     { fresh_input_mode: "unknown", event_count: 2 },
     { fresh_input_mode: "diff", event_count: 1 },
     { fresh_input_mode: "file", event_count: 1 },
+    { fresh_input_mode: "smart-diff", event_count: 1 },
     { fresh_input_mode: "stdin", event_count: 1 },
   ]);
   assert.deepEqual(summary.context_loop.top_gate_commands, [
+    {
+      command: "diff-review",
+      event_count: 2,
+      context_pack_reused_event_count: 2,
+      auto_context_pack_event_count: 1,
+      explicit_context_pack_event_count: 1,
+      no_context_pack_event_count: 0,
+      unknown_context_pack_mode_event_count: 0,
+      has_fresh_input_count: 2,
+      context_pack_preflight_warning_count: 0,
+    },
     {
       command: "plan-critique",
       event_count: 2,
@@ -1874,17 +1895,6 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       explicit_context_pack_event_count: 0,
       no_context_pack_event_count: 0,
       unknown_context_pack_mode_event_count: 1,
-      has_fresh_input_count: 1,
-      context_pack_preflight_warning_count: 0,
-    },
-    {
-      command: "diff-review",
-      event_count: 1,
-      context_pack_reused_event_count: 1,
-      auto_context_pack_event_count: 0,
-      explicit_context_pack_event_count: 1,
-      no_context_pack_event_count: 0,
-      unknown_context_pack_mode_event_count: 0,
       has_fresh_input_count: 1,
       context_pack_preflight_warning_count: 0,
     },

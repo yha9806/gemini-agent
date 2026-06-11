@@ -51,6 +51,10 @@ import {
   runTelemetryPriorities,
 } from "./telemetry-priorities.mjs";
 import {
+  formatTelemetryReportText,
+  runTelemetryReport,
+} from "./telemetry-report.mjs";
+import {
   formatTelemetryMultimodalRepairMetadataText,
   formatTelemetryMultimodalRepairText,
   runTelemetryMultimodalRepairKind,
@@ -145,6 +149,7 @@ function printUsage() {
     "  gemini-agent telemetry raw prune --state sent --keep-days <n> [--max-sent-bytes <n>] [--global] [--dry-run|--write] [--json]",
     "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry priorities [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
+    "  gemini-agent telemetry report [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry multimodal repair-kind --correction-version <id> [--global] [--dry-run|--write] [--limit <n>] [--json]",
     "  gemini-agent telemetry multimodal repair-metadata --correction-version <id> [--global] [--dry-run|--write] [--limit <n>] [--json]",
     "  gemini-agent telemetry doctor [--global] [--json]",
@@ -735,6 +740,41 @@ function parseTelemetryPrioritiesOptions(args) {
       index += 1;
     } else {
       throw new Error(`Unknown telemetry priorities argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseTelemetryReportOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--top") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--top requires a positive integer.");
+      options.topLimit = positiveIntegerOption(value, "--top");
+      index += 1;
+    } else if (arg === "--input-price-per-million") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--input-price-per-million requires a nonnegative number.");
+      options.inputPricePerMillion = nonnegativeNumberOption(value, "--input-price-per-million");
+      index += 1;
+    } else if (arg === "--output-price-per-million") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--output-price-per-million requires a nonnegative number.");
+      options.outputPricePerMillion = nonnegativeNumberOption(value, "--output-price-per-million");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry report argument: ${arg}`);
     }
   }
 
@@ -1771,6 +1811,23 @@ async function runTelemetryPrioritiesCommand(args = []) {
   output.write(formatTelemetryPrioritiesText(report));
 }
 
+async function runTelemetryReportCommand(args = []) {
+  const options = parseTelemetryReportOptions(args);
+  const report = await runTelemetryReport({
+    cwd: process.cwd(),
+    home: process.env.HOME,
+    scope: telemetryScope(options),
+    topLimit: options.topLimit,
+    inputPricePerMillion: options.inputPricePerMillion,
+    outputPricePerMillion: options.outputPricePerMillion,
+  });
+  if (options.json) {
+    output.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  output.write(formatTelemetryReportText(report));
+}
+
 async function runTelemetryMultimodal(args = []) {
   const [subcommand, ...subArgs] = args;
   if (subcommand === "repair-kind") {
@@ -1963,6 +2020,11 @@ async function runTelemetry(args) {
 
   if (subcommand === "priorities") {
     await runTelemetryPrioritiesCommand(subArgs);
+    return;
+  }
+
+  if (subcommand === "report") {
+    await runTelemetryReportCommand(subArgs);
     return;
   }
 

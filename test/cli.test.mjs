@@ -2114,6 +2114,130 @@ test("telemetry priorities rejects invalid arguments", async () => {
   }
 });
 
+test("telemetry report prints safe product output", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-report-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(104, {
+        command: "diff_review",
+        prompt: "raw report prompt should not print",
+        response: "raw report response should not print",
+        context: { cwd: "/Users/example/private/report-project" },
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "secret-report-cli.png", byte_size: 10 }],
+        },
+        metadata: {
+          gate: "diff_review",
+          input_bytes: 12_000,
+          input_limit_bytes: 4 * 1024 * 1024,
+          context_pack_mode: "none",
+          fresh_input_mode: "diff",
+        },
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          total_tokens: 1_100_000,
+          codex_tokens_saved_estimate: 2_000_000,
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin(["telemetry", "report"], { cwd });
+
+    assert.equal(stderr, "");
+    assert.match(stdout, /Telemetry Product Report/);
+    assert.match(stdout, /Estimated Codex tokens saved/);
+    assert.match(stdout, /Multimodal adoption/);
+    assert.match(stdout, /diff-review/);
+    assert.doesNotMatch(stdout, /raw report prompt should not print/);
+    assert.doesNotMatch(stdout, /raw report response should not print/);
+    assert.doesNotMatch(stdout, /evt_cli_104/);
+    assert.doesNotMatch(stdout, /secret-report-cli\.png/);
+    assert.doesNotMatch(stdout, /\/Users\/example/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry report --json supports global scope and price overrides", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gemini-agent-cli-report-home-"));
+  const project = await mkdtemp(join(tmpdir(), "gemini-agent-cli-report-project-"));
+  try {
+    await saveTelemetryConfig({
+      cwd: home,
+      scope: "local",
+      endpoint: "https://vulca-api.onrender.com/api/v1/gemini-agent/telemetry/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd: home,
+      event: telemetryEvent(105, {
+        command: "context_pack",
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+          total_tokens: 2_000_000,
+          codex_tokens_saved_estimate: 1_500_000,
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "report",
+      "--global",
+      "--json",
+      "--input-price-per-million",
+      "2",
+      "--output-price-per-million",
+      "3",
+      "--top",
+      "1",
+    ], {
+      cwd: project,
+      env: { ...process.env, HOME: home },
+    });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.scope, "global");
+    assert.equal(parsed.pricing.input_price_per_million, 2);
+    assert.equal(parsed.pricing.output_price_per_million, 3);
+    assert.equal(parsed.priorities.length, 1);
+    assert.equal(parsed.priorities[0].kind, "economics");
+    assert.equal(Object.hasOwn(parsed, "storage_cwd"), false);
+    assert.doesNotMatch(stdout, new RegExp(home.replaceAll("/", "\\/")));
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("telemetry report rejects invalid arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-report-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "report", "--unknown"], { cwd }),
+      (error) => {
+        assert.match(error.stderr, /Unknown telemetry report argument/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry multimodal repair-kind dry-runs aggregate-only historical repairs", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-multimodal-repair-"));
   try {
