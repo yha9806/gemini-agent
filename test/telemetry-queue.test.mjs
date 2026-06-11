@@ -24,6 +24,7 @@ import {
   completeTelemetryBatch,
   failTelemetryBatch,
   inspectFailedTelemetryEvents,
+  inspectQuarantinedTelemetryEvents,
   loadTelemetryQueueSnapshot,
   loadTelemetryState,
   peekTelemetryEvents,
@@ -573,6 +574,67 @@ test("quarantineTelemetryEvent does not overwrite safe-name collisions", async (
   const state = await loadTelemetryState({ cwd });
   assert.equal(state.queue_bytes, await sumFileBytes(await regularFilePaths(dirs.pending)));
   assert.equal(state.last_failure_reason, "quarantined:underscore");
+});
+
+test("inspectQuarantinedTelemetryEvents returns safe aggregate descriptors", async () => {
+  const cwd = await temporaryWorkspace();
+  const event = await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(580, {
+      event_id: "evt_private_quarantine_580",
+      project_id: "vision\nAuthorization: Bearer secret-token",
+      prompt: "raw prompt with cli-secret",
+      response: "raw response with cli-secret",
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ basename: "secret-580.png", byte_size: 123 }],
+      },
+      metadata: {
+        attribution: { project_source: "workspace" },
+      },
+    }),
+  });
+  await quarantineTelemetryEvent({
+    cwd,
+    eventId: event.event_id,
+    reason: "repeated_http_403\nAuthorization: Bearer secret-token",
+    now: new Date("2026-06-11T12:00:00.000Z"),
+  });
+
+  const result = await inspectQuarantinedTelemetryEvents({ cwd, limit: 5 });
+  const serialized = JSON.stringify(result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.quarantine_event_count, 1);
+  assert.equal(result.quarantine_directory_count, 1);
+  assert.equal(result.reason_counts.length, 1);
+  assert.equal(result.reason_counts[0].reason, "repeated_http_403 Authorization: [MASKED]");
+  assert.equal(result.reason_counts[0].event_count, 1);
+  assert.equal(result.events.length, 1);
+  assert.equal(result.events[0].reason, "repeated_http_403 Authorization: [MASKED]");
+  assert.equal(result.events[0].command, "ask");
+  assert.equal(result.events[0].model, "gemini-3.5-flash");
+  assert.equal(result.events[0].status, "success");
+  assert.equal(result.events[0].schema_version, "1");
+  assert.equal(result.events[0].created_day, "2026-05-29");
+  assert.equal(result.events[0].project_id, "vision Authorization: [MASKED]");
+  assert.equal(typeof result.events[0].event_id_hash, "string");
+  assert.equal(typeof result.events[0].prompt_bytes, "number");
+  assert.equal(typeof result.events[0].response_bytes, "number");
+  assert.equal(result.events[0].media_item_count, 1);
+  assert.deepEqual(result.events[0].payload_keys, ["prompt_truncated", "response_truncated", "multimodal"]);
+  assert.deepEqual(result.events[0].metadata_keys, ["attribution"]);
+  assert.equal(result.events[0].retryable_hint, "inspect_receiver_policy_before_retrying");
+
+  assert.doesNotMatch(serialized, /evt_private_quarantine_580/);
+  assert.doesNotMatch(serialized, /raw prompt/);
+  assert.doesNotMatch(serialized, /raw response/);
+  assert.doesNotMatch(serialized, /cli-secret/);
+  assert.doesNotMatch(serialized, /secret-token/);
+  assert.doesNotMatch(serialized, /secret-580\.png/);
+  assert.doesNotMatch(serialized, /\.gemini-agent/);
+  assert.doesNotMatch(serialized, /queue\/quarantine/);
 });
 
 test("peekTelemetryEvents respects the queue lock", async () => {

@@ -106,6 +106,7 @@ import {
   appendTelemetryEventsIfNew,
   archiveFailedTelemetryEvents,
   inspectFailedTelemetryEvents,
+  inspectQuarantinedTelemetryEvents,
   loadTelemetryState,
   purgeTelemetryData,
   quarantineTelemetryEvent,
@@ -173,6 +174,7 @@ function printUsage() {
     "  gemini-agent telemetry failed inspect [--global] [--reason <reason>] [--limit <n>] [--json]",
     "  gemini-agent telemetry failed archive [--global] --reason <reason> [--dry-run|--write] [--batch-size <n>] [--note <text>]",
     "  gemini-agent telemetry quarantine [--global] --event-id <id> --reason <reason>",
+    "  gemini-agent telemetry quarantine inspect [--global] [--reason <reason>] [--limit <n>] [--json]",
     "  gemini-agent telemetry tick [--global] [--batch-size <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry validate [--global] [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
     "  gemini-agent telemetry backfill-artifacts [--artifacts-dir <path>] --deployment-id <id> [--batch-id <id>] [--generated-at <iso>] [--max-files <n>] [--max-artifact-bytes <n>] [--correction-version <id>]",
@@ -958,6 +960,37 @@ function parseTelemetryQuarantineOptions(args) {
 
   if (!options.eventId) throw new Error("--event-id is required.");
   if (!options.reason) throw new Error("--reason is required.");
+  return options;
+}
+
+function parseTelemetryQuarantineInspectOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+    limit: 20,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--reason") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--reason requires a reason.");
+      options.reason = value;
+      index += 1;
+    } else if (arg === "--limit") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--limit requires a positive integer.");
+      options.limit = positiveIntegerOption(value, "--limit");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry quarantine inspect argument: ${arg}`);
+    }
+  }
+
   return options;
 }
 
@@ -2091,6 +2124,23 @@ async function runTelemetryMultimodal(args = []) {
 }
 
 async function runTelemetryQuarantine(args = []) {
+  const [subcommand, ...subArgs] = args;
+  if (subcommand === "inspect") {
+    const options = parseTelemetryQuarantineInspectOptions(subArgs);
+    const context = await loadTelemetryFailedContext(options);
+    const result = await inspectQuarantinedTelemetryEvents({
+      cwd: context.storageCwd,
+      reason: options.reason,
+      limit: options.limit,
+    });
+    output.write(`${JSON.stringify({
+      scope: context.scope,
+      storage_cwd: context.storageCwd,
+      ...result,
+    }, null, 2)}\n`);
+    return;
+  }
+
   const options = parseTelemetryQuarantineOptions(args);
   const context = await requireEnabledTelemetryContextForOptions(options);
   const result = await quarantineTelemetryEvent({

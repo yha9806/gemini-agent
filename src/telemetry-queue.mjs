@@ -866,6 +866,56 @@ async function allFailedCandidates(dirs) {
   return candidates;
 }
 
+async function quarantineEventDirectories(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+async function quarantineEventFile(eventDir) {
+  const path = join(eventDir, "event.json");
+  try {
+    const info = await stat(path);
+    return { name: "event.json", path, size: info.size };
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function quarantineEventReason(eventDir) {
+  const parsed = await readJsonOrNull(join(eventDir, "reason.json"));
+  return safeFailureReason(parsed?.reason);
+}
+
+async function quarantineCandidates(dirs, reason) {
+  const sanitizedReason = reason == null ? null : safeFailureReason(reason);
+  const eventDirNames = await quarantineEventDirectories(dirs.quarantine);
+  const candidates = [];
+  for (const eventDirName of eventDirNames) {
+    const eventDir = join(dirs.quarantine, eventDirName);
+    const eventFile = await quarantineEventFile(eventDir);
+    if (!eventFile) continue;
+    const eventReason = await quarantineEventReason(eventDir);
+    if (sanitizedReason != null && eventReason !== sanitizedReason) continue;
+    candidates.push({
+      eventDir,
+      reason: eventReason,
+      files: [eventFile],
+      bytes: eventFile.size,
+    });
+  }
+  return { reason: sanitizedReason, candidates };
+}
+
 function safeDiagnosticLabel(value, maxLength = 80) {
   const raw = typeof value === "string" || typeof value === "number" || typeof value === "boolean"
     ? String(value)
@@ -893,6 +943,17 @@ function mediaItemCount(event) {
   return Array.isArray(multimodal) ? multimodal.length : 0;
 }
 
+function eventIdHash(value) {
+  return typeof value === "string" && value.trim()
+    ? createHash("sha256").update(value).digest("hex").slice(0, 16)
+    : null;
+}
+
+function safeObjectKeys(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.keys(value).map((key) => safeDiagnosticLabel(key, 80));
+}
+
 async function readJsonOrNull(path) {
   try {
     return JSON.parse(await readFile(path, "utf8"));
@@ -917,6 +978,26 @@ function failedEventDescriptor(event, reason) {
   };
 }
 
+function quarantinedEventDescriptor(event, reason) {
+  const safeEvent = event && typeof event === "object" && !Array.isArray(event) ? event : {};
+  return {
+    reason,
+    event_id_hash: eventIdHash(safeEvent.event_id),
+    command: safeDiagnosticLabel(safeEvent.command),
+    model: safeDiagnosticLabel(safeEvent.model),
+    status: safeDiagnosticLabel(safeEvent.status),
+    schema_version: safeDiagnosticLabel(safeEvent.schema_version),
+    created_day: safeCreatedDay(safeEvent.created_at),
+    project_id: safeDiagnosticLabel(safeEvent.project_id, 120),
+    prompt_bytes: byteLength(safeEvent.prompt),
+    response_bytes: byteLength(safeEvent.response),
+    media_item_count: mediaItemCount(safeEvent),
+    payload_keys: safeObjectKeys(safeEvent.payload),
+    metadata_keys: safeObjectKeys(safeEvent.metadata),
+    retryable_hint: "inspect_receiver_policy_before_retrying",
+  };
+}
+
 function aggregateReasonCounts(candidates) {
   const byReason = new Map();
   for (const candidate of candidates) {
@@ -927,6 +1008,26 @@ function aggregateReasonCounts(candidates) {
       bytes: 0,
     };
     current.batch_count += 1;
+    current.event_count += candidate.files.length;
+    current.bytes += candidate.bytes;
+    byReason.set(candidate.reason, current);
+  }
+  return [...byReason.values()].sort((left, right) => (
+    right.event_count - left.event_count
+    || left.reason.localeCompare(right.reason)
+  ));
+}
+
+function aggregateQuarantineReasonCounts(candidates) {
+  const byReason = new Map();
+  for (const candidate of candidates) {
+    const current = byReason.get(candidate.reason) ?? {
+      reason: candidate.reason,
+      directory_count: 0,
+      event_count: 0,
+      bytes: 0,
+    };
+    current.directory_count += 1;
     current.event_count += candidate.files.length;
     current.bytes += candidate.bytes;
     byReason.set(candidate.reason, current);
@@ -961,6 +1062,32 @@ export async function inspectFailedTelemetryEvents({
     failed_event_count: candidates.reduce((sum, item) => sum + item.files.length, 0),
     failed_batch_count: candidates.length,
     reason_counts: aggregateReasonCounts(candidates),
+    events: descriptors,
+  };
+}
+
+export async function inspectQuarantinedTelemetryEvents({
+  cwd = process.cwd(),
+  reason,
+  limit = 20,
+} = {}) {
+  assertPositiveInteger(limit, "limit");
+  const dirs = telemetryQueueDirs(cwd);
+  const { reason: sanitizedReason, candidates } = await quarantineCandidates(dirs, reason);
+  const descriptors = [];
+  for (const candidate of candidates) {
+    for (const file of candidate.files) {
+      if (descriptors.length >= limit) break;
+      descriptors.push(quarantinedEventDescriptor(await readJsonOrNull(file.path), candidate.reason));
+    }
+    if (descriptors.length >= limit) break;
+  }
+  return {
+    ok: true,
+    reason_filter: sanitizedReason,
+    quarantine_event_count: candidates.reduce((sum, item) => sum + item.files.length, 0),
+    quarantine_directory_count: candidates.length,
+    reason_counts: aggregateQuarantineReasonCounts(candidates),
     events: descriptors,
   };
 }

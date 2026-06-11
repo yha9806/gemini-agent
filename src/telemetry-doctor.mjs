@@ -357,7 +357,7 @@ function deliveryRecommendedAction(status) {
     return "Inspect failed reasons, fix token/endpoint/config, then retry with bounded flush.";
   }
   if (status === "quarantined_events_present") {
-    return "Review quarantined telemetry events before broad flushing.";
+    return "Run telemetry quarantine inspect --json to review aggregate-only quarantined event descriptors before broad flushing.";
   }
   if (status === "flush_ready") {
     return "Run telemetry flush --dry-run, then telemetry flush --batch-size 1.";
@@ -425,7 +425,9 @@ function recommendation({
   if (!enabled) return "Enable telemetry before flushing.";
   if (!tokenPresent) return "Set the configured telemetry token environment variable.";
   if (!endpointValid) return "Fix the telemetry endpoint URL.";
-  if (quarantineCount > 0) return "Review quarantined telemetry events before broad flushing.";
+  if (quarantineCount > 0) {
+    return "Run telemetry quarantine inspect --json to review aggregate-only quarantined event descriptors before broad flushing.";
+  }
   if (pendingCount > 0) return "Run telemetry flush --dry-run, then telemetry flush --batch-size 1.";
   return "No pending telemetry events to flush.";
 }

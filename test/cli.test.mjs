@@ -14,6 +14,7 @@ import {
   failTelemetryBatch,
   loadTelemetryState,
   loadTelemetryQueueSnapshot,
+  quarantineTelemetryEvent,
   telemetryQueueDirs,
 } from "../src/telemetry-queue.mjs";
 
@@ -3572,6 +3573,53 @@ test("telemetry quarantine moves pending event out of normal flush path", async 
     assert.notEqual(receivedBatch.events[0].event_id, first.event_id);
   } finally {
     await receiver.close();
+  }
+});
+
+test("telemetry quarantine inspect prints aggregate-only JSON", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-quarantine-inspect-"));
+  try {
+    const event = await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent("quarantine_inspect", {
+        event_id: "evt_cli_quarantine_private",
+        project_id: "vision\nAuthorization: Bearer cli-secret-token",
+        prompt: "raw cli quarantine prompt",
+        response: "raw cli quarantine response",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", basename: "cli-quarantine-secret.png" }],
+        },
+      }),
+      maxQueueBytes: 10 * 1024 * 1024,
+    });
+    await quarantineTelemetryEvent({
+      cwd,
+      eventId: event.event_id,
+      reason: "repeated_http_403",
+      now: new Date("2026-06-11T12:00:00.000Z"),
+    });
+
+    const { stdout } = await execBin(["telemetry", "quarantine", "inspect", "--json"], { cwd });
+    const parsed = JSON.parse(stdout);
+    const serialized = JSON.stringify(parsed);
+
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.scope, "local");
+    assert.equal(parsed.quarantine_event_count, 1);
+    assert.equal(parsed.reason_counts[0].reason, "repeated_http_403");
+    assert.equal(parsed.events.length, 1);
+    assert.equal(parsed.events[0].project_id, "vision Authorization: [MASKED]");
+    assert.equal(parsed.events[0].retryable_hint, "inspect_receiver_policy_before_retrying");
+    assert.doesNotMatch(serialized, /evt_cli_quarantine_private/);
+    assert.doesNotMatch(serialized, /raw cli quarantine prompt/);
+    assert.doesNotMatch(serialized, /raw cli quarantine response/);
+    assert.doesNotMatch(serialized, /cli-secret-token/);
+    assert.doesNotMatch(serialized, /cli-quarantine-secret/);
+    assert.doesNotMatch(serialized, /queue\/quarantine/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 

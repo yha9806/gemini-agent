@@ -9,6 +9,7 @@ import {
   archiveFailedTelemetryEvents,
   claimTelemetryBatch,
   failTelemetryBatch,
+  quarantineTelemetryEvent,
   telemetryQueueDirs,
 } from "../src/telemetry-queue.mjs";
 import { runTelemetryDoctor } from "../src/telemetry-doctor.mjs";
@@ -213,6 +214,47 @@ test("runTelemetryDoctor reports delivery diagnostics without raw content", asyn
   assert.equal(serializedDelivery.includes("private response text must not appear"), false);
   assert.equal(serializedDelivery.includes("evt_private_failed"), false);
   assert.equal(serializedDelivery.includes(batch.batchId), false);
+});
+
+test("runTelemetryDoctor points quarantined queues at quarantine inspect", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+  const event = await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(303, {
+      event_id: "evt_private_quarantine",
+      prompt: "private quarantine prompt",
+      response: "private quarantine response",
+    }),
+  });
+  await quarantineTelemetryEvent({
+    cwd,
+    eventId: event.event_id,
+    reason: "repeated_http_403",
+  });
+
+  const result = await runTelemetryDoctor({
+    cwd,
+    scope: "local",
+    env: { [TOKEN_ENV]: "telemetry-token" },
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  });
+
+  const expected = "Run telemetry quarantine inspect --json to review aggregate-only quarantined event descriptors before broad flushing.";
+  assert.equal(result.delivery.status, "quarantined_events_present");
+  assert.equal(result.delivery.quarantine_events, 1);
+  assert.equal(result.delivery.recommended_action, expected);
+  assert.equal(result.recommended_action, expected);
+
+  const serialized = JSON.stringify(result);
+  assert.doesNotMatch(serialized, /evt_private_quarantine/);
+  assert.doesNotMatch(serialized, /private quarantine prompt/);
+  assert.doesNotMatch(serialized, /private quarantine response/);
 });
 
 test("runTelemetryDoctor does not block on archived historical non-retryable failures", async () => {
