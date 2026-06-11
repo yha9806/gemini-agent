@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { stdin as input, stderr as errorOutput, stdout as output } from "node:process";
 import { runArtifactReview } from "./artifact-review.mjs";
 import { applyCodexGlobalInstall } from "./codex-global-install.mjs";
+import {
+  formatContextPackDoctorText,
+  runContextPackDoctor,
+} from "./context-pack-doctor.mjs";
 import { runContextPack } from "./context-pack.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
@@ -140,6 +144,7 @@ function printUsage() {
     "  gemini-agent auth delete",
     "  gemini-agent ask <prompt>",
     "  gemini-agent context-pack [--bootstrap | --stdin | --file <path> ... | --diff | text] [--write-artifact]",
+    "  gemini-agent context-pack --doctor [--json] [--max-age-hours <n>]",
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1376,6 +1381,32 @@ async function parseCommonInputArgs(args) {
   return { stdinText, files, diff, bootstrap, writeArtifact };
 }
 
+function parseContextPackDoctorOptions(args) {
+  const options = {
+    json: false,
+  };
+  let sawDoctor = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--doctor") {
+      sawDoctor = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--max-age-hours") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--max-age-hours requires a positive integer.");
+      options.maxAgeHours = positiveIntegerOption(value, "--max-age-hours");
+      index += 1;
+    } else {
+      throw new Error(`Unknown context-pack doctor argument: ${arg}`);
+    }
+  }
+
+  if (!sawDoctor) throw new Error("--doctor is required.");
+  return options;
+}
+
 function parseArtifactArgs(args) {
   const files = [];
   let artifactKind = "image";
@@ -1551,6 +1582,18 @@ async function runGate(command, args) {
 }
 
 async function runContextPackCommand(args) {
+  if (args.includes("--doctor")) {
+    const options = parseContextPackDoctorOptions(args);
+    const result = await runContextPackDoctor({
+      cwd: process.cwd(),
+      maxAgeHours: options.maxAgeHours,
+    });
+    output.write(options.json
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : formatContextPackDoctorText(result));
+    return;
+  }
+
   const { stdinText, files, diff, bootstrap, writeArtifact } = await parseCommonInputArgs(args);
   const cwd = process.cwd();
   let effectiveCwd = cwd;

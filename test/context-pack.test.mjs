@@ -79,6 +79,25 @@ test("runContextPack passes explicit telemetry override to generation", async ()
   assert.equal(seenTelemetry, telemetry);
 });
 
+test("runContextPack records current git head metadata when available", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-context-"));
+
+  const pack = await runContextPack({
+    apiKey: "fake-key",
+    cwd: dir,
+    stdinText: "project notes",
+    now: new Date("2026-05-28T12:00:00.000Z"),
+    runner: async (command, args) => {
+      assert.equal(command, "git");
+      assert.deepEqual(args, ["rev-parse", "HEAD"]);
+      return { stdout: "abc123\n" };
+    },
+    generate: async () => fakePack,
+  });
+
+  assert.equal(pack.metadata.git_head, "abc123");
+});
+
 test("runContextPack rejects empty input before generate is called", async () => {
   await assert.rejects(
     () => runContextPack({

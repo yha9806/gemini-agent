@@ -1,5 +1,6 @@
 import { writeJsonArtifact } from "./artifact-store.mjs";
 import { generateContextPack, getDefaultModel } from "./gemini-client.mjs";
+import { currentGitHead, execFileAsync } from "./git-utils.mjs";
 import { collectTextInput } from "./input-collector.mjs";
 import { loadProjectPolicy } from "./policies.mjs";
 import { buildContextPackPrompt } from "./prompts.mjs";
@@ -15,6 +16,7 @@ export async function runContextPack({
   env = process.env,
   allowFakeResponse = false,
   now = new Date(),
+  runner = execFileAsync,
   writeArtifact = false,
   generate = generateContextPack,
   telemetry = { cwd, source: "cli", command: "context-pack" },
@@ -35,6 +37,7 @@ export async function runContextPack({
     telemetry,
   });
 
+  const gitHead = await currentGitHead({ cwd, runner });
   const pack = normalizeContextPack({
     ...generated,
     metadata: {
@@ -43,6 +46,7 @@ export async function runContextPack({
       generated_at: now.toISOString(),
       sources: context.sources,
       omitted_sources: context.omittedSources,
+      ...(gitHead ? { git_head: gitHead } : {}),
     },
   });
 

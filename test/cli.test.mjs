@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
@@ -1041,6 +1041,46 @@ test("context-pack accepts stdin and prints JSON", async () => {
   assert.equal(parsed.kind, "context_pack");
   assert.deepEqual(parsed.source_summary, ["project notes summary"]);
   assert.deepEqual(parsed.metadata.sources, ["stdin"]);
+});
+
+test("context-pack doctor reports missing project-root pack without auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-context-doctor-missing-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await writeFile(join(dir, "README.md"), "# Doctor Project\n");
+  const nested = join(dir, "packages", "app");
+  await mkdir(nested, { recursive: true });
+
+  const { stdout, stderr } = await execFileAsync(bin, ["context-pack", "--doctor", "--json"], {
+    cwd: nested,
+    env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(stderr, "");
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.status, "missing");
+  assert.equal(parsed.exists, false);
+  assert.equal(parsed.project_root, await realpath(dir));
+  assert.equal(parsed.context_pack_path, ".gemini-agent/context/latest.json");
+  assert.match(parsed.recommended_action, /context-pack --bootstrap --write-artifact/);
+});
+
+test("context-pack doctor accepts max-age-hours before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-context-doctor-age-"));
+
+  const { stdout, stderr } = await execFileAsync(
+    bin,
+    ["context-pack", "--doctor", "--json", "--max-age-hours", "12"],
+    {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    },
+  );
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(stderr, "");
+  assert.equal(parsed.status, "missing");
+  assert.equal(parsed.max_age_hours, 12);
 });
 
 test("context-pack bootstrap writes project-root artifact from nested git cwd", async () => {

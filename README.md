@@ -15,6 +15,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent plan-critique --context-pack .gemini-agent/context/latest.json
 ./bin/gemini-agent plan-critique --auto-context-pack --stdin
 ./bin/gemini-agent context-pack --bootstrap --write-artifact
+./bin/gemini-agent context-pack --doctor --json
 ./bin/gemini-agent context-pack --stdin
 ./bin/gemini-agent artifact-review --file design.png --kind ui
 ./bin/gemini-agent artifact-review --file before.png --file after.png --kind ui --review-mode comparison
@@ -71,6 +72,7 @@ Global Gemini review gate for Codex.
 - Gate commands accept `--auto-context-pack` to reuse project-root `.gemini-agent/context/latest.json` explicitly without hand-writing the path.
 - For current branch review, `diff-review --smart-diff` is the preferred short context-reuse path when `.gemini-agent/context/latest.json` is relevant or missing; `diff-review --auto-context-pack --diff` remains the explicit equivalent when the pack already exists.
 - `context-pack --bootstrap --write-artifact` creates the project-root context artifact used by `--auto-context-pack` from a bounded root-file allowlist and current git diff.
+- `context-pack --doctor` checks whether the project-root context pack is missing, invalid, stale, or tied to a different git HEAD without calling Gemini.
 - Oversized gate failures print concrete `context-pack --bootstrap --write-artifact` and `--auto-context-pack` retry commands so Codex can switch to compact context before raising byte limits.
 - Large raw gate calls print a non-blocking stderr preflight warning before Gemini credentials are resolved; stdout remains the structured review JSON.
 - Large raw `diff-review --diff` calls with an existing context pack suggest `diff-review --smart-diff`; the current run continues and stdout remains JSON.
