@@ -575,7 +575,7 @@ test("diff-review suppresses context-pack preflight warning when auto context pa
   assert.equal(stderr, "");
 });
 
-test("diff-review --diff with existing context pack suggests auto context reuse and queues safe metadata", async () => {
+test("diff-review --diff with existing context pack suggests smart context reuse and queues safe metadata", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-smart-preflight-"));
   await execFileAsync("git", ["init"], { cwd: dir });
   await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
@@ -603,7 +603,7 @@ test("diff-review --diff with existing context pack suggests auto context reuse 
 
   assert.equal(JSON.parse(stdout).verdict, "pass");
   assert.match(stderr, /diff-review can reuse the existing context pack/);
-  assert.match(stderr, /gemini-agent diff-review --auto-context-pack --diff/);
+  assert.match(stderr, /gemini-agent diff-review --smart-diff/);
   assert.doesNotMatch(stderr, /Run: gemini-agent context-pack --bootstrap --write-artifact/);
 
   const pending = await readdir(telemetryQueueDirs(dir).pending);

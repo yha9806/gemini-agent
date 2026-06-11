@@ -1376,7 +1376,7 @@ async function runGate(command, args) {
     context_pack_existing_hint: existingContextPackHint,
   };
   const smartPreflightMessage = existingContextPackHint
-    ? "diff-review can reuse the existing context pack; current run will continue. Prefer: gemini-agent diff-review --auto-context-pack --diff"
+    ? "diff-review can reuse the existing context pack; current run will continue. Prefer: gemini-agent diff-review --smart-diff"
     : null;
   const emittedPreflightMessage = smartPreflightMessage ?? preflightMessage;
   if (emittedPreflightMessage) errorOutput.write(`${emittedPreflightMessage}\n`);
