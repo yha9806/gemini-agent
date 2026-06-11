@@ -82,7 +82,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /Oversized gate failures print concrete `context-pack --bootstrap --write-artifact` and `--auto-context-pack` retry commands/);
   assert.match(readme, /Large raw gate calls print a non-blocking stderr preflight warning before Gemini credentials are resolved/);
   assert.match(readme, /Large raw `diff-review --diff` calls with an existing context pack suggest `diff-review --smart-diff`/);
-  assert.match(readme, /Telemetry summary and economics aggregate context-pack preflight warning counts and rates without exposing raw gate input/);
+  assert.match(readme, /Telemetry summary and economics aggregate context-pack preflight warning counts, smart-diff auto-bootstrap counts\/rates, and context reuse rates without exposing raw gate input/);
   assert.match(readme, /Global active Codex policy tells sessions to use `diff-review --smart-diff` for current branch review/);
   assert.match(readme, /manually regenerate stale or unrelated packs/);
   assert.match(readme, /palette-split quality/);

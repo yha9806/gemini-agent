@@ -594,8 +594,9 @@ test("runTelemetryPriorities recommends smart-diff for diff-review context pack 
             gate: "diff_review",
             input_bytes: 12_000 + index,
             input_limit_bytes: 4 * 1024 * 1024,
-            context_pack_mode: "none",
-            fresh_input_mode: "diff",
+            context_pack_mode: index === 1 ? "auto" : "none",
+            fresh_input_mode: index === 1 ? "smart-diff" : "diff",
+            smart_diff_context_pack_bootstrapped: index === 1,
             context_pack_path: "/Users/example/private/latest.json",
           },
           economics: {
@@ -628,7 +629,8 @@ test("runTelemetryPriorities recommends smart-diff for diff-review context pack 
     assert.doesNotMatch(workflow.action, /run gemini-agent context-pack --bootstrap --write-artifact when the pack is missing/i);
     assert.doesNotMatch(workflow.action, /diff-review --auto-context-pack/);
     assert.ok(workflow.evidence.some((item) => item === "Gate events: 5"));
-    assert.ok(workflow.evidence.some((item) => item === "Context-pack reuse rate: 0.0%"));
+    assert.ok(workflow.evidence.some((item) => item === "Context-pack reuse rate: 20.0%"));
+    assert.ok(workflow.evidence.some((item) => item === "Smart-diff auto-bootstrap rate: 100.0%"));
     assert.match(text, /diff-review --smart-diff/);
     assert.doesNotMatch(serialized, /private diff workflow prompt|private diff workflow response/);
     assert.doesNotMatch(serialized, /evt_priority_000071|\/Users\/example|latest\.json/);

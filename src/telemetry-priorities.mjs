@@ -397,6 +397,9 @@ function contextPackReusePriority(economics) {
   if (!candidate) return null;
   const reuseRate = nullableMetricRatio(candidate.context_pack_reuse_rate);
   const autoRate = nullableMetricRatio(candidate.auto_context_pack_rate);
+  const smartDiffBootstrapRate = nullableMetricRatio(
+    candidate.smart_diff_context_pack_bootstrap_rate,
+  );
   const action = candidate.command === "diff-review"
     ? "Increase context-pack reuse for diff-review: use gemini-agent diff-review --smart-diff so missing project-root packs automatically bootstrap before review; manually refresh stale or unrelated packs with gemini-agent context-pack --bootstrap --write-artifact."
     : `Increase context-pack reuse for ${candidate.command}: run gemini-agent context-pack --bootstrap --write-artifact when the pack is missing or stale, then use gemini-agent ${candidate.command} --auto-context-pack with narrow --stdin or --diff input.`;
@@ -411,6 +414,9 @@ function contextPackReusePriority(economics) {
       `Gate events: ${formatNumber(nonnegativeMetric(candidate.event_count))}`,
       `Context-pack reuse rate: ${formatPercent(reuseRate)}`,
       `Auto context-pack rate: ${formatPercent(autoRate)}`,
+      ...(smartDiffBootstrapRate === null ? [] : [
+        `Smart-diff auto-bootstrap rate: ${formatPercent(smartDiffBootstrapRate)}`,
+      ]),
       `Average gate input bytes: ${formatNumber(nonnegativeMetric(candidate.input_bytes_avg))}`,
       `Max gate input bytes: ${formatNumber(nonnegativeMetric(candidate.input_bytes_max))}`,
     ],

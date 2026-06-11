@@ -1837,6 +1837,7 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
         context_pack_mode: "auto",
         fresh_input_mode: "smart-diff",
         has_fresh_input: true,
+        smart_diff_context_pack_bootstrapped: true,
       },
     }),
     telemetryEvent(307, {
@@ -1862,6 +1863,9 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
   assert.equal(summary.context_loop.unknown_context_pack_mode_event_count, 2);
   assert.equal(summary.context_loop.has_fresh_input_count, 4);
   assert.equal(summary.context_loop.context_pack_preflight_warning_count, 2);
+  assert.equal(summary.context_loop.smart_diff_event_count, 1);
+  assert.equal(summary.context_loop.smart_diff_context_pack_bootstrapped_count, 1);
+  assert.equal(summary.context_loop.smart_diff_context_pack_bootstrap_rate, 1);
   assert.deepEqual(summary.context_loop.top_context_pack_modes, [
     { context_pack_mode: "auto", event_count: 2 },
     { context_pack_mode: "unknown", event_count: 2 },
@@ -1886,6 +1890,9 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       unknown_context_pack_mode_event_count: 0,
       has_fresh_input_count: 2,
       context_pack_preflight_warning_count: 0,
+      smart_diff_event_count: 1,
+      smart_diff_context_pack_bootstrapped_count: 1,
+      smart_diff_context_pack_bootstrap_rate: 1,
     },
     {
       command: "plan-critique",
@@ -1897,6 +1904,9 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       unknown_context_pack_mode_event_count: 1,
       has_fresh_input_count: 1,
       context_pack_preflight_warning_count: 0,
+      smart_diff_event_count: 0,
+      smart_diff_context_pack_bootstrapped_count: 0,
+      smart_diff_context_pack_bootstrap_rate: null,
     },
     {
       command: "patch-precheck",
@@ -1908,6 +1918,9 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       unknown_context_pack_mode_event_count: 0,
       has_fresh_input_count: 1,
       context_pack_preflight_warning_count: 1,
+      smart_diff_event_count: 0,
+      smart_diff_context_pack_bootstrapped_count: 0,
+      smart_diff_context_pack_bootstrap_rate: null,
     },
     {
       command: "research-brief",
@@ -1919,6 +1932,9 @@ test("runTelemetrySummary aggregates context loop modes without leaking paths", 
       unknown_context_pack_mode_event_count: 1,
       has_fresh_input_count: 0,
       context_pack_preflight_warning_count: 1,
+      smart_diff_event_count: 0,
+      smart_diff_context_pack_bootstrapped_count: 0,
+      smart_diff_context_pack_bootstrap_rate: null,
     },
   ]);
   assert.doesNotMatch(serialized, /\/Users\/example|latest\.json|file\.md|not-a-real-mode/);

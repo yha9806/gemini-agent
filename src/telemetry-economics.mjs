@@ -57,6 +57,8 @@ function zeroEconomics() {
     unknown_context_pack_mode_event_count: 0,
     has_fresh_input_count: 0,
     context_pack_preflight_warning_count: 0,
+    smart_diff_event_count: 0,
+    smart_diff_context_pack_bootstrapped_count: 0,
   };
 }
 
@@ -182,6 +184,9 @@ function addContextLoopEconomics(target, event) {
   const freshInputMode = safeFreshInputMode(event.metadata?.fresh_input_mode);
   const hasFreshInput = event.metadata?.has_fresh_input === true
     || !["none", "unknown"].includes(freshInputMode);
+  const smartDiff = freshInputMode === "smart-diff" || event.metadata?.smart_diff_shortcut === true;
+  const smartDiffContextPackBootstrapped = smartDiff
+    && event.metadata?.smart_diff_context_pack_bootstrapped === true;
 
   target.gate_event_count += 1;
   if (contextPackMode === "auto" || contextPackMode === "explicit") {
@@ -194,6 +199,10 @@ function addContextLoopEconomics(target, event) {
   if (hasFreshInput) target.has_fresh_input_count += 1;
   if (event.metadata?.context_pack_preflight_warning === true) {
     target.context_pack_preflight_warning_count += 1;
+  }
+  if (smartDiff) target.smart_diff_event_count += 1;
+  if (smartDiffContextPackBootstrapped) {
+    target.smart_diff_context_pack_bootstrapped_count += 1;
   }
 }
 
@@ -305,6 +314,11 @@ function enrichEconomics(item, pricing) {
       item.gate_event_count,
       4,
     ),
+    smart_diff_context_pack_bootstrap_rate: nullableRatio(
+      item.smart_diff_context_pack_bootstrapped_count,
+      item.smart_diff_event_count,
+      4,
+    ),
     usage_coverage_rate: nullableRatio(item.events_with_usage, item.event_count, 4),
     usage_applicable_coverage_rate: nullableRatio(
       item.usage_applicable_event_count - item.usage_applicable_missing_count,
@@ -342,6 +356,9 @@ function contextLoopGateCommands(commandRows, limit) {
       has_fresh_input_count: item.has_fresh_input_count,
       context_pack_preflight_warning_count: item.context_pack_preflight_warning_count,
       context_pack_preflight_warning_rate: item.context_pack_preflight_warning_rate,
+      smart_diff_event_count: item.smart_diff_event_count,
+      smart_diff_context_pack_bootstrapped_count: item.smart_diff_context_pack_bootstrapped_count,
+      smart_diff_context_pack_bootstrap_rate: item.smart_diff_context_pack_bootstrap_rate,
       events_with_input_bytes: item.events_with_input_bytes,
       input_bytes_total: item.input_bytes_total,
       input_bytes_avg: item.input_bytes_avg,
@@ -528,6 +545,9 @@ export async function runTelemetryEconomics({
     has_fresh_input_count: enrichedTotals.has_fresh_input_count,
     context_pack_preflight_warning_count: enrichedTotals.context_pack_preflight_warning_count,
     context_pack_preflight_warning_rate: enrichedTotals.context_pack_preflight_warning_rate,
+    smart_diff_event_count: enrichedTotals.smart_diff_event_count,
+    smart_diff_context_pack_bootstrapped_count: enrichedTotals.smart_diff_context_pack_bootstrapped_count,
+    smart_diff_context_pack_bootstrap_rate: enrichedTotals.smart_diff_context_pack_bootstrap_rate,
     top_gate_commands: contextLoopGateCommands(enrichedCommandRows, topLimit),
   };
 
@@ -594,7 +614,7 @@ function formatGateInputRows(rows) {
 function formatContextLoopRows(rows) {
   if (rows.length === 0) return "None";
   return rows.map((item, index) => (
-    `${index + 1}. ${item.command}: ${formatNumber(item.event_count)} gate events, ${formatPercent(item.context_pack_reuse_rate)} context-pack reuse, ${formatPercent(item.auto_context_pack_rate)} auto, ${formatPercent(item.context_pack_preflight_warning_rate)} preflight warning, ${formatNumber(item.input_bytes_avg ?? 0)} avg input bytes`
+    `${index + 1}. ${item.command}: ${formatNumber(item.event_count)} gate events, ${formatPercent(item.context_pack_reuse_rate)} context-pack reuse, ${formatPercent(item.auto_context_pack_rate)} auto, ${formatPercent(item.context_pack_preflight_warning_rate)} preflight warning, ${formatNumber(item.smart_diff_context_pack_bootstrapped_count ?? 0)} smart-diff bootstraps, ${formatNumber(item.input_bytes_avg ?? 0)} avg input bytes`
   )).join("\n");
 }
 
@@ -645,6 +665,7 @@ export function formatTelemetryEconomicsText(report) {
     `- Context-pack reuse rate: ${formatPercent(report.context_loop?.context_pack_reuse_rate ?? null)}`,
     `- Auto context-pack rate: ${formatPercent(report.context_loop?.auto_context_pack_rate ?? null)}`,
     `- Context-pack preflight warning rate: ${formatPercent(report.context_loop?.context_pack_preflight_warning_rate ?? null)}`,
+    `- Smart-diff auto-bootstrap rate: ${formatPercent(report.context_loop?.smart_diff_context_pack_bootstrap_rate ?? null)}`,
     "Top context-loop gate commands:",
     formatContextLoopRows(report.context_loop?.top_gate_commands ?? []),
     "",

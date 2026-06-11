@@ -118,6 +118,8 @@ function zeroContextLoop() {
     unknown_context_pack_mode_event_count: 0,
     has_fresh_input_count: 0,
     context_pack_preflight_warning_count: 0,
+    smart_diff_event_count: 0,
+    smart_diff_context_pack_bootstrapped_count: 0,
   };
 }
 
@@ -140,6 +142,11 @@ function safeFiniteNumber(value) {
 
 function roundOne(value) {
   return Number(value.toFixed(1));
+}
+
+function nullableRatio(numerator, denominator, digits = 4) {
+  if (denominator <= 0) return null;
+  return Number((numerator / denominator).toFixed(digits));
 }
 
 function sanitizeDimension(value, fallback = "unknown") {
@@ -318,7 +325,15 @@ function topSimpleCounts(map, keyName, limit) {
     }));
 }
 
-function updateContextLoopCommand(map, command, contextPackMode, hasFreshInput, contextPackPreflightWarning) {
+function updateContextLoopCommand(
+  map,
+  command,
+  contextPackMode,
+  hasFreshInput,
+  contextPackPreflightWarning,
+  smartDiff,
+  smartDiffContextPackBootstrapped,
+) {
   const key = canonicalCommand(command);
   const item = map.get(key) ?? {
     key,
@@ -334,6 +349,8 @@ function updateContextLoopCommand(map, command, contextPackMode, hasFreshInput, 
   else item.unknown_context_pack_mode_event_count += 1;
   if (hasFreshInput) item.has_fresh_input_count += 1;
   if (contextPackPreflightWarning) item.context_pack_preflight_warning_count += 1;
+  if (smartDiff) item.smart_diff_event_count += 1;
+  if (smartDiffContextPackBootstrapped) item.smart_diff_context_pack_bootstrapped_count += 1;
   map.set(key, item);
 }
 
@@ -355,6 +372,12 @@ function topContextLoopCommands(map, limit) {
       unknown_context_pack_mode_event_count: item.unknown_context_pack_mode_event_count,
       has_fresh_input_count: item.has_fresh_input_count,
       context_pack_preflight_warning_count: item.context_pack_preflight_warning_count,
+      smart_diff_event_count: item.smart_diff_event_count,
+      smart_diff_context_pack_bootstrapped_count: item.smart_diff_context_pack_bootstrapped_count,
+      smart_diff_context_pack_bootstrap_rate: nullableRatio(
+        item.smart_diff_context_pack_bootstrapped_count,
+        item.smart_diff_event_count,
+      ),
     }));
 }
 
@@ -700,6 +723,10 @@ function formatNumber(value) {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
+function formatPercent(value) {
+  return value === null ? "n/a" : `${(value * 100).toFixed(1)}%`;
+}
+
 function formatTopRows(items, keyName) {
   if (items.length === 0) return "None";
   return items.map((item, index) => (
@@ -900,6 +927,9 @@ function addContextLoopEvent(accumulator, event) {
   const hasFreshInput = event.metadata?.has_fresh_input === true
     || !["none", "unknown"].includes(freshInputMode);
   const contextPackPreflightWarning = event.metadata?.context_pack_preflight_warning === true;
+  const smartDiff = freshInputMode === "smart-diff" || event.metadata?.smart_diff_shortcut === true;
+  const smartDiffContextPackBootstrapped = smartDiff
+    && event.metadata?.smart_diff_context_pack_bootstrapped === true;
 
   accumulator.contextLoop.gate_event_count += 1;
   if (contextPackMode === "auto" || contextPackMode === "explicit") {
@@ -911,6 +941,10 @@ function addContextLoopEvent(accumulator, event) {
   else accumulator.contextLoop.unknown_context_pack_mode_event_count += 1;
   if (hasFreshInput) accumulator.contextLoop.has_fresh_input_count += 1;
   if (contextPackPreflightWarning) accumulator.contextLoop.context_pack_preflight_warning_count += 1;
+  if (smartDiff) accumulator.contextLoop.smart_diff_event_count += 1;
+  if (smartDiffContextPackBootstrapped) {
+    accumulator.contextLoop.smart_diff_context_pack_bootstrapped_count += 1;
+  }
 
   updateSimpleCount(accumulator.contextPackModes, contextPackMode);
   updateSimpleCount(accumulator.freshInputModes, freshInputMode);
@@ -920,6 +954,8 @@ function addContextLoopEvent(accumulator, event) {
     contextPackMode,
     hasFreshInput,
     contextPackPreflightWarning,
+    smartDiff,
+    smartDiffContextPackBootstrapped,
   );
 }
 
@@ -1192,6 +1228,10 @@ export async function runTelemetrySummary({
   const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
   const contextLoop = {
     ...accumulator.contextLoop,
+    smart_diff_context_pack_bootstrap_rate: nullableRatio(
+      accumulator.contextLoop.smart_diff_context_pack_bootstrapped_count,
+      accumulator.contextLoop.smart_diff_event_count,
+    ),
     top_context_pack_modes: topSimpleCounts(accumulator.contextPackModes, "context_pack_mode", topLimit),
     top_fresh_input_modes: topSimpleCounts(accumulator.freshInputModes, "fresh_input_mode", topLimit),
     top_gate_commands: topContextLoopCommands(accumulator.contextLoopCommands, topLimit),
@@ -1332,6 +1372,9 @@ export function formatTelemetrySummaryText(summary) {
     `- Unknown context-pack mode events: ${formatNumber(summary.context_loop?.unknown_context_pack_mode_event_count ?? 0)}`,
     `- Fresh input events: ${formatNumber(summary.context_loop?.has_fresh_input_count ?? 0)}`,
     `- Context-pack preflight warnings: ${formatNumber(summary.context_loop?.context_pack_preflight_warning_count ?? 0)}`,
+    `- Smart-diff events: ${formatNumber(summary.context_loop?.smart_diff_event_count ?? 0)}`,
+    `- Smart-diff auto-bootstrap events: ${formatNumber(summary.context_loop?.smart_diff_context_pack_bootstrapped_count ?? 0)}`,
+    `- Smart-diff auto-bootstrap rate: ${formatPercent(summary.context_loop?.smart_diff_context_pack_bootstrap_rate ?? null)}`,
     "",
     "Recommendations:",
     recommendations,
