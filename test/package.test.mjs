@@ -57,6 +57,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --diff$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent diff-review --smart-diff$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --auto-context-pack --diff$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent plan-critique --context-pack \.gemini-agent\/context\/latest\.json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent plan-critique --auto-context-pack --stdin$/m);
@@ -67,6 +68,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /`diff-review --diff` reads the current git diff directly/);
+  assert.match(readme, /`diff-review --smart-diff` reviews the current git diff with the project-root context pack/);
   assert.match(readme, /`diff-review --auto-context-pack --diff` is the preferred context-reuse path/);
   assert.match(readme, /Gate commands accept `--context-pack <path>`/);
   assert.match(readme, /Gate commands accept `--auto-context-pack`/);

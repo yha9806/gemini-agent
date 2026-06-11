@@ -9,6 +9,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent ask "Reply with exactly: gemini-agent-ok"
 ./bin/gemini-agent diff-review --stdin
 ./bin/gemini-agent diff-review --diff
+./bin/gemini-agent diff-review --smart-diff
 ./bin/gemini-agent diff-review --auto-context-pack --diff
 ./bin/gemini-agent plan-critique --stdin --max-input-bytes 131072
 ./bin/gemini-agent plan-critique --context-pack .gemini-agent/context/latest.json
@@ -60,6 +61,7 @@ Global Gemini review gate for Codex.
 - Fake responses require explicit `GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1`.
 - Project policy is discovered from `.gemini-agent-policy.json`.
 - `diff-review --diff` reads the current git diff directly, so Codex can run the high-ROI review gate without building a manual stdin pipe.
+- `diff-review --smart-diff` reviews the current git diff with the project-root context pack; it is the short explicit path after `context-pack --bootstrap --write-artifact` has created `.gemini-agent/context/latest.json`.
 - `plan-critique` has a conservative default input byte limit to control review cost; gate commands also accept `--max-input-bytes <n>` for intentional overrides.
 - Gate commands accept `--context-pack <path>` so Codex can ask Gemini to critique compact prior context instead of pasting large raw project slices again.
 - Gate commands accept `--auto-context-pack` to reuse project-root `.gemini-agent/context/latest.json` explicitly without hand-writing the path.
