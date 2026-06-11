@@ -88,6 +88,8 @@ function nonnegativeMetric(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
+const MIN_LATENCY_STAGE_EVENTS = 5;
+
 function latencyStageForCommand(summary, stage, command) {
   const stageRow = summary.latency_stages?.top_stages?.find((item) => item?.stage === stage);
   if (!stageRow) return null;
@@ -104,6 +106,12 @@ function latencyStageForCommand(summary, stage, command) {
 function latencyStageContext(summary, candidate, p95) {
   const preGemini = latencyStageForCommand(summary, "pre_gemini_total", candidate.command);
   if (!preGemini || p95 <= 0) {
+    return {
+      action: `Profile ${candidate.command} latency before routing more Codex work through this path.`,
+      evidence: [],
+    };
+  }
+  if (nonnegativeMetric(preGemini.command.event_count) < MIN_LATENCY_STAGE_EVENTS) {
     return {
       action: `Profile ${candidate.command} latency before routing more Codex work through this path.`,
       evidence: [],

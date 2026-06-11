@@ -89,6 +89,7 @@ Global Gemini review gate for Codex.
 - Telemetry summary reports aggregate latency p50/p95/p99 by command so slow Gemini routes can be diagnosed without exposing raw prompts, responses, event ids, paths, or media file names.
 - Telemetry summary aggregates safe artifact-review latency stage attribution without exposing raw prompts, responses, event ids, paths, or media file names.
 - Telemetry summary and economics aggregate context-pack preflight warning counts, smart-diff auto-bootstrap counts/rates, and context reuse rates without exposing raw gate input.
+- Telemetry summary, economics, and priorities normalize legacy `gemini-*` command aliases into current command names so historical MCP/raw-v1 events and current CLI events share one semantic route.
 - `telemetry raw inventory` reports local raw telemetry counts, bytes, truncation counts, multimodal counts, and credential-like aggregate signals; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry raw preflight` reports pending raw upload batch risk before flushing; it does not send, move, delete, print raw prompt/response text, event ids, batch ids, paths, or media file names.
 - `telemetry raw export` writes confirmed raw telemetry to a local JSONL file for local analysis; it requires `--confirm-raw-content`, never overwrites existing files, refuses telemetry queue paths, and does not print raw prompt/response text, event ids, batch ids, paths, or media file names to stdout.
@@ -98,6 +99,7 @@ Global Gemini review gate for Codex.
 - `telemetry economics` estimates Gemini cost, Codex token savings, and aggregate gate input byte metrics from usage metadata; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - `telemetry priorities` combines aggregate economics, reliability, delivery, latency, instrumentation, and multimodal metadata signals into a development priority list; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - Telemetry priorities use latency stage attribution to distinguish pre-Gemini artifact-review work from Gemini generation latency without exposing raw prompts, responses, event ids, paths, or media file names.
+- Latency priorities only use stage attribution when `pre_gemini_total` has at least 5 command-level samples, avoiding overconfident conclusions from smoke-test or sparse stage data.
 - Latency priorities initially require at least 5 samples and command p95 >= 10,000 ms before recommending profiling a slow Gemini route.
 - `telemetry report` combines aggregate health, economics, context reuse, attribution, multimodal adoption, and top development priority into a product decision snapshot; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry multimodal repair-kind` creates correction events for historical multimodal telemetry with missing media kinds; it is dry-run by default, does not rewrite existing telemetry files, and reports aggregate counts without raw prompt, response text, event ids, paths, or media file names.

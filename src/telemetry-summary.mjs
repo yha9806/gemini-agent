@@ -1,6 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { basename, relative, join, sep } from "node:path";
 import { createHash } from "node:crypto";
+import { normalizeTelemetryCommandAlias } from "./telemetry-command-normalization.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
 import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
 import {
@@ -225,13 +226,12 @@ function updateOptionalDimension(map, key, status) {
 
 function canonicalCommand(value) {
   const sanitized = sanitizeDimension(value);
-  return sanitized.toLowerCase().replaceAll("_", "-");
+  return normalizeTelemetryCommandAlias(sanitized.toLowerCase().replaceAll("_", "-"));
 }
 
 const SAFE_MULTIMODAL_COMMANDS = new Set([
   "artifact-review",
   "artifact-review-backfill",
-  "gemini-artifact-review",
   "palette-split",
 ]);
 

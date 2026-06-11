@@ -364,8 +364,7 @@ test("runTelemetrySummary aggregates safe latency stage attribution", async () =
         p95_ms: 13,
         max_ms: 13,
         top_commands: [
-          { command: "gemini-artifact-review", event_count: 1, p50_ms: 13, p95_ms: 13, max_ms: 13 },
-          { command: "artifact-review", event_count: 1, p50_ms: 12, p95_ms: 12, max_ms: 12 },
+          { command: "artifact-review", event_count: 2, p50_ms: 12, p95_ms: 13, max_ms: 13 },
           { command: "diff-review", event_count: 1, p50_ms: 1, p95_ms: 1, max_ms: 1 },
         ],
       },
@@ -376,8 +375,7 @@ test("runTelemetrySummary aggregates safe latency stage attribution", async () =
         p95_ms: 10,
         max_ms: 10,
         top_commands: [
-          { command: "gemini-artifact-review", event_count: 1, p50_ms: 10, p95_ms: 10, max_ms: 10 },
-          { command: "artifact-review", event_count: 1, p50_ms: 5, p95_ms: 5, max_ms: 5 },
+          { command: "artifact-review", event_count: 2, p50_ms: 5, p95_ms: 10, max_ms: 10 },
         ],
       },
       {
@@ -387,8 +385,7 @@ test("runTelemetrySummary aggregates safe latency stage attribution", async () =
         p95_ms: 7,
         max_ms: 7,
         top_commands: [
-          { command: "artifact-review", event_count: 1, p50_ms: 7, p95_ms: 7, max_ms: 7 },
-          { command: "gemini-artifact-review", event_count: 1, p50_ms: 3, p95_ms: 3, max_ms: 3 },
+          { command: "artifact-review", event_count: 2, p50_ms: 3, p95_ms: 7, max_ms: 7 },
         ],
       },
     ],
@@ -563,6 +560,34 @@ test("runTelemetrySummary canonicalizes command variants before aggregating", as
       economics: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
     }),
   });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(105, {
+      command: "gemini-artifact-review",
+      economics: { input_tokens: 40, output_tokens: 4, total_tokens: 44 },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(106, {
+      command: "artifact-review",
+      economics: { input_tokens: 60, output_tokens: 6, total_tokens: 66 },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(107, {
+      command: "gemini-context-pack",
+      economics: { input_tokens: 20, output_tokens: 2, total_tokens: 22 },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(108, {
+      command: "context_pack",
+      economics: { input_tokens: 30, output_tokens: 3, total_tokens: 33 },
+    }),
+  });
 
   const result = await runTelemetrySummary({ cwd, scope: "local" });
   const commands = new Map(result.top_commands.map((item) => [item.command, item]));
@@ -571,10 +596,14 @@ test("runTelemetrySummary canonicalizes command variants before aggregating", as
   assert.equal(commands.get("diff-review")?.event_count, 2);
   assert.equal(commands.get("diff-review")?.success_count, 2);
   assert.equal(commands.get("plan-critique")?.event_count, 2);
+  assert.equal(commands.get("artifact-review")?.event_count, 2);
+  assert.equal(commands.get("context-pack")?.event_count, 2);
   assert.equal(commands.has("Diff_Review"), false);
   assert.equal(commands.has("diff_review"), false);
   assert.equal(commands.has("plan_critique"), false);
-  assert.equal(result.usage.estimated_codex_tokens_saved, 185);
+  assert.equal(commands.has("gemini-artifact-review"), false);
+  assert.equal(commands.has("gemini-context-pack"), false);
+  assert.equal(result.usage.estimated_codex_tokens_saved, 335);
   assert.doesNotMatch(serialized, /prompt 000101/);
   assert.doesNotMatch(serialized, /response 000101/);
 });
@@ -663,7 +692,7 @@ test("runTelemetrySummary aggregates multimodal metadata without exposing media 
         media_items_with_kind: 2,
       },
       {
-        command: "gemini-artifact-review",
+        command: "artifact-review",
         event_count: 1,
         item_count: 2,
         byte_count: 3072,
@@ -853,8 +882,10 @@ test("runTelemetrySummary caps and sorts multimodal command coverage determinist
 
   assert.deepEqual(summary.multimodal.top_commands.map((item) => item.command), [
     "artifact-review",
-    "gemini-artifact-review",
+    "palette-split",
   ]);
+  assert.equal(summary.multimodal.top_commands[0].event_count, 2);
+  assert.equal(summary.multimodal.top_commands[0].item_count, 2);
   assert.equal(summary.multimodal.top_commands.length, 2);
 });
 

@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { normalizeTelemetryCommandAlias } from "./telemetry-command-normalization.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
 import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
 import { telemetryQueueDirs } from "./telemetry-queue.mjs";
@@ -107,7 +108,7 @@ function sanitizeDimension(value, fallback = "unknown") {
 }
 
 function canonicalCommand(value) {
-  return sanitizeDimension(value).toLowerCase().replaceAll("_", "-");
+  return normalizeTelemetryCommandAlias(sanitizeDimension(value).toLowerCase().replaceAll("_", "-"));
 }
 
 function safeContextPackMode(value) {

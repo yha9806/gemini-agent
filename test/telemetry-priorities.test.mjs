@@ -297,6 +297,149 @@ test("runTelemetryPriorities uses latency stage attribution for slow multimodal 
   }
 });
 
+test("runTelemetryPriorities matches legacy artifact-review latency with current stage attribution", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const legacyLatencies = [10_000, 11_000, 12_000, 13_000, 14_000];
+    for (const [index, latency] of legacyLatencies.entries()) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(120 + index, {
+          command: "gemini-artifact-review",
+          prompt: `private legacy artifact prompt ${index}`,
+          response: `private legacy artifact response ${index}`,
+          latency_ms: latency,
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 100,
+            total_tokens: 1100,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+    const currentPreGemini = [100, 120, 150, 200, 250];
+    for (const [index, preGemini] of currentPreGemini.entries()) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(130 + index, {
+          command: "artifact-review",
+          prompt: `private current artifact prompt ${index}`,
+          response: `private current artifact response ${index}`,
+          latency_ms: 5000 + (index * 100),
+          metadata: {
+            latency_stages_ms: {
+              media_prepare: preGemini - 30,
+              policy_prompt: 30,
+              pre_gemini_total: preGemini,
+            },
+          },
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 100,
+            total_tokens: 1100,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const serialized = `${JSON.stringify(report)}\n${formatTelemetryPrioritiesText(report)}`;
+
+    assert.equal(report.priorities[0].kind, "latency");
+    assert.equal(report.priorities[0].command, "artifact-review");
+    assert.equal(
+      report.priorities[0].action,
+      "Focus on Gemini generation latency for artifact-review; pre-Gemini stages are a small share of observed p95.",
+    );
+    assert.ok(report.priorities[0].evidence.some((item) => item === "p95 latency: 14,000 ms"));
+    assert.ok(report.priorities[0].evidence.some((item) => item === "pre_gemini_total p95: 250 ms"));
+    assert.ok(report.priorities[0].evidence.some((item) => item === "pre-Gemini share of p95 latency: 1.8%"));
+    assert.doesNotMatch(serialized, /gemini-artifact-review/);
+    assert.doesNotMatch(serialized, /private legacy artifact prompt|private current artifact prompt|evt_priority_000120/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities does not use low-sample stage attribution for aliased latency", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const legacyLatencies = [10_000, 11_000, 12_000, 13_000, 14_000];
+    for (const [index, latency] of legacyLatencies.entries()) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(150 + index, {
+          command: "gemini-artifact-review",
+          latency_ms: latency,
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 100,
+            total_tokens: 1100,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(160, {
+        command: "artifact-review",
+        latency_ms: 5000,
+        metadata: {
+          latency_stages_ms: {
+            media_prepare: 0,
+            policy_prompt: 1,
+            pre_gemini_total: 1,
+          },
+        },
+        economics: {
+          input_tokens: 1000,
+          output_tokens: 100,
+          total_tokens: 1100,
+          codex_tokens_saved_estimate: 1500,
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const serialized = JSON.stringify(report);
+
+    assert.equal(report.priorities[0].kind, "latency");
+    assert.equal(report.priorities[0].command, "artifact-review");
+    assert.equal(
+      report.priorities[0].action,
+      "Profile artifact-review latency before routing more Codex work through this path.",
+    );
+    assert.ok(report.priorities[0].evidence.some((item) => item === "Latency events: 6"));
+    assert.equal(report.priorities[0].evidence.some((item) => /pre_gemini_total/.test(item)), false);
+    assert.doesNotMatch(serialized, /evt_priority_000150/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities supports global scope, top limit, and pricing overrides", async () => {
   const project = await temporaryWorkspace("gemini-agent-telemetry-priorities-project-");
   const home = await temporaryWorkspace("gemini-agent-telemetry-priorities-home-");
@@ -1067,7 +1210,7 @@ test("runTelemetryPriorities breaks multimodal gap ties deterministically", asyn
       instrumentation.action,
       "Fix multimodal MIME, byte-size, and media-kind capture/backfill for artifact-review.",
     );
-    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted multimodal byte-size gap: artifact-review missing 1 item"));
+    assert.ok(instrumentation.evidence.some((item) => item === "Top adjusted multimodal byte-size gap: artifact-review missing 2 items"));
     assert.doesNotMatch(serialized, /private-artifact-review|private-gemini-artifact-review|evt_priority_000070/);
   } finally {
     await rm(cwd, { recursive: true, force: true });

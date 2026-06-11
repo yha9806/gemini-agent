@@ -194,6 +194,83 @@ test("runTelemetryEconomics supports price overrides and global scope", async ()
   }
 });
 
+test("runTelemetryEconomics aggregates legacy Gemini command aliases into current command names", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(12, {
+        command: "gemini-artifact-review",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 10,
+          total_tokens: 110,
+          codex_tokens_saved_estimate: 250,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(13, {
+        command: "artifact-review",
+        economics: {
+          input_tokens: 200,
+          output_tokens: 20,
+          total_tokens: 220,
+          codex_tokens_saved_estimate: 350,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(14, {
+        command: "gemini-context-pack",
+        economics: {
+          input_tokens: 300,
+          output_tokens: 30,
+          total_tokens: 330,
+          codex_tokens_saved_estimate: 450,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(15, {
+        command: "context_pack",
+        economics: {
+          input_tokens: 400,
+          output_tokens: 40,
+          total_tokens: 440,
+          codex_tokens_saved_estimate: 550,
+        },
+      }),
+    });
+
+    const report = await runTelemetryEconomics({ cwd, scope: "local", topLimit: 10 });
+    const text = formatTelemetryEconomicsText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const commands = new Map(report.top_commands.map((item) => [item.command, item]));
+
+    assert.equal(commands.get("artifact-review")?.event_count, 2);
+    assert.equal(commands.get("artifact-review")?.input_tokens, 300);
+    assert.equal(commands.get("artifact-review")?.codex_tokens_saved_estimate, 600);
+    assert.equal(commands.get("context-pack")?.event_count, 2);
+    assert.equal(commands.get("context-pack")?.input_tokens, 700);
+    assert.equal(commands.get("context-pack")?.codex_tokens_saved_estimate, 1000);
+    assert.equal(commands.has("gemini-artifact-review"), false);
+    assert.equal(commands.has("gemini-context-pack"), false);
+    assert.doesNotMatch(serialized, /private economics prompt|private economics response|evt_000012/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryEconomics separates usage-applicable runtime events from synthetic events", async () => {
   const cwd = await temporaryWorkspace();
   try {
