@@ -270,8 +270,9 @@ test("active policy tells Codex how to safely reuse context packs for gates", ()
   assert.doesNotMatch(ACTIVE_POLICY_BLOCK, /For current branch review, prefer `gemini-agent diff-review --auto-context-pack --diff`/);
   assert.match(ACTIVE_POLICY_BLOCK, /\.gemini-agent\/context\/latest\.json/);
   assert.match(ACTIVE_POLICY_BLOCK, /project root/i);
-  assert.match(ACTIVE_POLICY_BLOCK, /missing, stale, or unrelated/i);
-  assert.match(ACTIVE_POLICY_BLOCK, /regenerate/i);
+  assert.match(ACTIVE_POLICY_BLOCK, /automatically runs `gemini-agent context-pack --bootstrap --write-artifact` first when the project-root pack is missing/i);
+  assert.match(ACTIVE_POLICY_BLOCK, /stale or unrelated/i);
+  assert.match(ACTIVE_POLICY_BLOCK, /refresh/i);
   assert.match(ACTIVE_POLICY_BLOCK, /narrow current input/i);
   for (const gate of ["plan-critique", "patch-precheck", "diff-review", "research-brief"]) {
     assert.match(ACTIVE_POLICY_BLOCK, new RegExp(`${gate}[\\s\\S]*--context-pack|--context-pack[\\s\\S]*${gate}`));

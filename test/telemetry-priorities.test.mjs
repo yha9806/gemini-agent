@@ -623,8 +623,9 @@ test("runTelemetryPriorities recommends smart-diff for diff-review context pack 
     assert.ok(workflow);
     assert.equal(workflow.command, "diff-review");
     assert.match(workflow.action, /Increase context-pack reuse for diff-review/);
-    assert.match(workflow.action, /gemini-agent context-pack --bootstrap --write-artifact/);
     assert.match(workflow.action, /gemini-agent diff-review --smart-diff/);
+    assert.match(workflow.action, /automatically bootstrap/i);
+    assert.doesNotMatch(workflow.action, /run gemini-agent context-pack --bootstrap --write-artifact when the pack is missing/i);
     assert.doesNotMatch(workflow.action, /diff-review --auto-context-pack/);
     assert.ok(workflow.evidence.some((item) => item === "Gate events: 5"));
     assert.ok(workflow.evidence.some((item) => item === "Context-pack reuse rate: 0.0%"));

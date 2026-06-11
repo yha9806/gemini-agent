@@ -30,6 +30,28 @@ const fakeReview = JSON.stringify({
   suggested_changes: [],
   notes: ["fake ok"],
 });
+const fakeReviewAndContextPack = JSON.stringify({
+  verdict: "pass",
+  top_risks: [],
+  missing_tests: [],
+  unsafe_claims: [],
+  suggested_changes: [],
+  notes: ["fake ok"],
+  kind: "context_pack",
+  source_summary: ["fake source summary"],
+  project_facts: ["fake project fact"],
+  relevant_files: [{ path: "app.txt", why_relevant: "changed in diff" }],
+  open_questions: [],
+  risks: [],
+  recommended_codex_actions: [],
+  limitations: [],
+  metadata: {
+    model: "gemini-3.5-flash",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    sources: [],
+    omitted_sources: [],
+  },
+});
 const CLI_TEST_HOME = await mkdtemp(join(tmpdir(), "gemini-agent-cli-home-"));
 const CLI_TEST_ENV = {
   ...process.env,
@@ -677,7 +699,56 @@ test("diff-review --smart-diff uses auto context pack with current git diff and 
   assert.doesNotMatch(JSON.stringify(event.metadata), /latest\.json|\.gemini-agent|app\.txt/);
 });
 
-test("diff-review --smart-diff fails clearly when context pack is missing before credentials", async () => {
+test("diff-review --smart-diff bootstraps a missing context pack before review", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-smart-diff-bootstrap-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await writeFile(join(dir, "README.md"), "# Test project\n");
+  await writeFile(join(dir, "app.txt"), "old\n");
+  await execFileAsync("git", ["add", "README.md", "app.txt"], { cwd: dir });
+  await writeFile(join(dir, "app.txt"), "new\n");
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  const { stdout, stderr } = await execBin(["diff-review", "--smart-diff"], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReviewAndContextPack,
+    },
+  });
+
+  assert.equal(JSON.parse(stdout).verdict, "pass");
+  assert.equal(stderr, "");
+  const contextPack = JSON.parse(await readFile(join(dir, ".gemini-agent", "context", "latest.json"), "utf8"));
+  assert.equal(contextPack.kind, "context_pack");
+
+  const pending = await readdir(telemetryQueueDirs(dir).pending);
+  assert.equal(pending.length, 2);
+  const events = await Promise.all(
+    pending.map(async (name) => JSON.parse(await readFile(join(telemetryQueueDirs(dir).pending, name), "utf8"))),
+  );
+  const contextPackEvent = events.find((event) => event.command === "context-pack");
+  const diffReviewEvent = events.find((event) => event.command === "diff-review");
+  assert.ok(contextPackEvent);
+  assert.ok(diffReviewEvent);
+  assert.equal(contextPackEvent.metadata.context_pack_mode, "bootstrap");
+  assert.equal(contextPackEvent.metadata.write_artifact, true);
+  assert.equal(diffReviewEvent.metadata.context_pack_mode, "auto");
+  assert.equal(diffReviewEvent.metadata.fresh_input_mode, "smart-diff");
+  assert.equal(diffReviewEvent.metadata.smart_diff_shortcut, true);
+  assert.equal(diffReviewEvent.metadata.smart_diff_context_pack_bootstrapped, true);
+  assert.equal(diffReviewEvent.metadata.context_pack_preflight_warning, false);
+  assert.doesNotMatch(JSON.stringify(diffReviewEvent.metadata), /latest\.json|\.gemini-agent|app\.txt/);
+});
+
+test("diff-review --smart-diff reports missing credentials when auto bootstrap is needed", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-smart-diff-missing-"));
   await execFileAsync("git", ["init"], { cwd: dir });
   await writeFile(join(dir, "app.txt"), "old\n");
@@ -690,10 +761,9 @@ test("diff-review --smart-diff fails clearly when context pack is missing before
       env: { ...process.env, HOME: CLI_TEST_HOME },
     }),
     (error) => {
-      assert.match(error.stderr, /No context pack found/);
-      assert.match(error.stderr, /context-pack --bootstrap --write-artifact/);
-      assert.match(error.stderr, /--smart-diff/);
-      assert.doesNotMatch(error.stderr, /Gemini API key is not configured/);
+      assert.match(error.stderr, /Gemini API key is not configured/);
+      assert.doesNotMatch(error.stderr, /No context pack found/);
+      assert.doesNotMatch(error.stderr, /latest\.json|\.gemini-agent|app\.txt/);
       return true;
     },
   );

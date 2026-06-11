@@ -1175,11 +1175,12 @@ function gateCollectionError(error, { gate, command }) {
   }));
 }
 
-async function readGateInput(args, { gate, command } = {}) {
+async function readGateInput(args, { gate, command, ensureAutoContextPack = null } = {}) {
   let filePath = null;
   let contextPackPath = null;
   let autoContextPack = false;
   let smartDiff = false;
+  let smartDiffContextPackBootstrapped = false;
   let readFromStdin = false;
   let diff = false;
   let limitBytes = defaultGateInputLimitBytes(gate);
@@ -1242,10 +1243,21 @@ async function readGateInput(args, { gate, command } = {}) {
       });
       sections.push(contextPackInput.inputText);
     } catch (error) {
-      if (smartDiff && /^No context pack found at /.test(error?.message ?? "")) {
+      if (!(smartDiff && /^No context pack found at /.test(error?.message ?? ""))) {
+        throw error;
+      }
+      if (typeof ensureAutoContextPack !== "function") {
         throw new Error(error.message.replace("--auto-context-pack", "--smart-diff"));
       }
-      throw error;
+      await ensureAutoContextPack();
+      const contextPackInput = await readAutoContextPackFile({
+        gate,
+        command,
+        limitBytes,
+        cwd: process.cwd(),
+      });
+      sections.push(contextPackInput.inputText);
+      smartDiffContextPackBootstrapped = true;
     }
   }
 
@@ -1310,6 +1322,7 @@ async function readGateInput(args, { gate, command } = {}) {
       freshInputModes,
     }),
     smart_diff_shortcut: smartDiff,
+    smart_diff_context_pack_bootstrapped: smartDiffContextPackBootstrapped,
   };
 
   if (!sections.length) {
@@ -1447,7 +1460,47 @@ async function runAuth(args) {
 
 async function runGate(command, args) {
   const gate = GATE_COMMANDS.get(command);
-  const { inputText, inputBytes, limitBytes, metadata } = await readGateInput(args, { gate, command });
+  const fakeAllowed = allowFakeResponse(process.env);
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  let keyResult = null;
+  const resolveGateKey = async () => {
+    if (!keyResult) keyResult = await resolveApiKey();
+    if (!keyResult.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    return keyResult;
+  };
+  const ensureAutoContextPack = command === "diff-review" && args.includes("--smart-diff")
+    ? async () => {
+      const cwd = process.cwd();
+      const effectiveCwd = await resolveProjectRootForContextPack({ cwd });
+      const collected = await collectBootstrapContext({ cwd: effectiveCwd });
+      const key = await resolveGateKey();
+      await runContextPack({
+        apiKey: key.key,
+        cwd: effectiveCwd,
+        collected,
+        env: process.env,
+        allowFakeResponse: fakeAllowed,
+        writeArtifact: true,
+        telemetry: {
+          cwd: effectiveCwd,
+          source: "cli",
+          command: "context-pack",
+          metadata: contextPackTelemetryMetadata({
+            bootstrap: true,
+            writeArtifact: true,
+            collected,
+          }),
+        },
+      });
+    }
+    : null;
+  const { inputText, inputBytes, limitBytes, metadata } = await readGateInput(args, {
+    gate,
+    command,
+    ensureAutoContextPack,
+  });
   if (!inputText || !inputText.trim()) throw new Error("Gate input is empty.");
   const preflightMetadata = gateContextPackPreflightMetadata({
     inputBytes,
@@ -1474,12 +1527,7 @@ async function runGate(command, args) {
     : null;
   const emittedPreflightMessage = smartPreflightMessage ?? preflightMessage;
   if (emittedPreflightMessage) errorOutput.write(`${emittedPreflightMessage}\n`);
-  const fakeAllowed = allowFakeResponse(process.env);
-  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
-    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
-  }
-  const key = await resolveApiKey();
-  if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+  const key = await resolveGateKey();
   const policy = await loadProjectPolicy(process.cwd());
   const prompt = buildGatePrompt({ gate, input: inputText, policy });
   const review = await generateReview({

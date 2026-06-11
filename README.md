@@ -61,20 +61,20 @@ Global Gemini review gate for Codex.
 - Credentials are read from `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or macOS Keychain service `GEMINI_API_KEY`.
 - Runtime text/review Gemini calls use `gemini-3.5-flash`; `palette-split` is an explicit image-generation workflow and uses `GEMINI_IMAGE_MODEL` or `gemini-3.1-flash-image`.
 - `auth status` reports only availability and source; it never prints the key.
-- Gate commands reject empty input before resolving credentials.
+- Gate commands reject empty manual input before resolving credentials; `diff-review --smart-diff` may resolve credentials after collecting bootstrap context when it needs to create a missing context pack.
 - Fake responses require explicit `GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1`.
 - Project policy is discovered from `.gemini-agent-policy.json`.
 - `diff-review --diff` reads the current git diff directly, so Codex can run the high-ROI review gate without building a manual stdin pipe.
-- `diff-review --smart-diff` reviews the current git diff with the project-root context pack; it is the short explicit path after `context-pack --bootstrap --write-artifact` has created `.gemini-agent/context/latest.json`.
+- `diff-review --smart-diff` reviews the current git diff with the project-root context pack; if `.gemini-agent/context/latest.json` is missing, it first bootstraps one with `context-pack --bootstrap --write-artifact`.
 - `plan-critique` has a conservative default input byte limit to control review cost; gate commands also accept `--max-input-bytes <n>` for intentional overrides.
 - Gate commands accept `--context-pack <path>` so Codex can ask Gemini to critique compact prior context instead of pasting large raw project slices again.
 - Gate commands accept `--auto-context-pack` to reuse project-root `.gemini-agent/context/latest.json` explicitly without hand-writing the path.
-- For current branch review, `diff-review --smart-diff` is the preferred short context-reuse path when `.gemini-agent/context/latest.json` is relevant; `diff-review --auto-context-pack --diff` remains the explicit equivalent.
+- For current branch review, `diff-review --smart-diff` is the preferred short context-reuse path when `.gemini-agent/context/latest.json` is relevant or missing; `diff-review --auto-context-pack --diff` remains the explicit equivalent when the pack already exists.
 - `context-pack --bootstrap --write-artifact` creates the project-root context artifact used by `--auto-context-pack` from a bounded root-file allowlist and current git diff.
 - Oversized gate failures print concrete `context-pack --bootstrap --write-artifact` and `--auto-context-pack` retry commands so Codex can switch to compact context before raising byte limits.
 - Large raw gate calls print a non-blocking stderr preflight warning before Gemini credentials are resolved; stdout remains the structured review JSON.
 - Large raw `diff-review --diff` calls with an existing context pack suggest `diff-review --smart-diff`; the current run continues and stdout remains JSON.
-- Global active Codex policy tells sessions to reuse project-root `.gemini-agent/context/latest.json` with gate `--auto-context-pack` or explicit `--context-pack`; regenerate the context pack first when it is missing, stale, or unrelated.
+- Global active Codex policy tells sessions to use `diff-review --smart-diff` for current branch review, reuse project-root `.gemini-agent/context/latest.json` with gate `--auto-context-pack` or explicit `--context-pack`, and manually regenerate stale or unrelated packs.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1, including bounded multi-file comparison for visual diff work.
 - multi-file artifact-review records media metadata without printing raw image bytes in ordinary telemetry output.

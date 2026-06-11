@@ -73,8 +73,9 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /`diff-review --diff` reads the current git diff directly/);
   assert.match(readme, /`diff-review --smart-diff` reviews the current git diff with the project-root context pack/);
+  assert.match(readme, /if `\.gemini-agent\/context\/latest\.json` is missing, it first bootstraps one/);
   assert.match(readme, /`diff-review --smart-diff` is the preferred short context-reuse path/);
-  assert.match(readme, /`diff-review --auto-context-pack --diff` remains the explicit equivalent/);
+  assert.match(readme, /`diff-review --auto-context-pack --diff` remains the explicit equivalent when the pack already exists/);
   assert.match(readme, /Gate commands accept `--context-pack <path>`/);
   assert.match(readme, /Gate commands accept `--auto-context-pack`/);
   assert.match(readme, /`context-pack --bootstrap --write-artifact` creates the project-root context artifact used by `--auto-context-pack`/);
@@ -82,8 +83,8 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /Large raw gate calls print a non-blocking stderr preflight warning before Gemini credentials are resolved/);
   assert.match(readme, /Large raw `diff-review --diff` calls with an existing context pack suggest `diff-review --smart-diff`/);
   assert.match(readme, /Telemetry summary and economics aggregate context-pack preflight warning counts and rates without exposing raw gate input/);
-  assert.match(readme, /Global active Codex policy tells sessions to reuse project-root `\.gemini-agent\/context\/latest\.json` with gate `--auto-context-pack` or explicit `--context-pack`/);
-  assert.match(readme, /regenerate the context pack first when it is missing, stale, or unrelated/);
+  assert.match(readme, /Global active Codex policy tells sessions to use `diff-review --smart-diff` for current branch review/);
+  assert.match(readme, /manually regenerate stale or unrelated packs/);
   assert.match(readme, /palette-split quality/);
   assert.match(readme, /local raw telemetry counts, bytes, truncation counts, multimodal counts, and credential-like aggregate signals/);
   assert.match(readme, /pending raw upload batch risk before flushing/);
