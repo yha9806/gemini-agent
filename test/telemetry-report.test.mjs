@@ -72,7 +72,13 @@ test("runTelemetryReport builds a safe product decision snapshot", async () => {
     await appendTelemetryEvent({
       cwd,
       event: telemetryEvent(1, {
+        project_id: "vulca-platform",
         command: "diff_review",
+        context: {
+          cwd: "/Users/example/private/report-project",
+          workspace_id: "ws_vulca",
+          user_label: "vulca-operator",
+        },
         metadata: {
           gate: "diff_review",
           input_bytes: 48_000,
@@ -92,7 +98,13 @@ test("runTelemetryReport builds a safe product decision snapshot", async () => {
     await appendTelemetryEvent({
       cwd,
       event: telemetryEvent(2, {
+        project_id: "vulca-platform",
         command: "artifact-review",
+        context: {
+          cwd: "/Users/example/private/report-project",
+          workspace_id: "ws_vulca",
+          user_label: "person@example.com",
+        },
         payload: {
           prompt_truncated: false,
           response_truncated: false,
@@ -114,9 +126,15 @@ test("runTelemetryReport builds a safe product decision snapshot", async () => {
     await appendTelemetryEvent({
       cwd,
       event: telemetryEvent(3, {
+        project_id: "emoart-challenge",
         command: "plan-critique",
         status: "error",
         error_type: "provider_500",
+        context: {
+          cwd: "/Users/example/private/report-project",
+          workspace_id: "ws_emoart",
+          user_label: "emoart-operator",
+        },
       }),
     });
 
@@ -145,13 +163,27 @@ test("runTelemetryReport builds a safe product decision snapshot", async () => {
     assert.equal(report.context_loop.top_gate_command.command, "diff-review");
     assert.equal(report.multimodal.event_count, 1);
     assert.equal(report.multimodal.top_command.command, "artifact-review");
+    assert.deepEqual(report.attribution.top_projects, [
+      { project_id: "vulca-platform", event_count: 2, success_count: 2, error_count: 0, unknown_count: 0 },
+    ]);
+    assert.deepEqual(report.attribution.top_workspaces, [
+      { workspace_id: "ws_vulca", event_count: 2, success_count: 2, error_count: 0, unknown_count: 0 },
+    ]);
+    assert.deepEqual(report.attribution.top_user_labels, [
+      { user_label: "emoart-operator", event_count: 1, success_count: 0, error_count: 1, unknown_count: 0 },
+    ]);
     assert.equal(report.priorities.length, 1);
     assert.equal(report.priorities[0].kind, "reliability");
     assert.match(text, /Telemetry Product Report/);
     assert.match(text, /Estimated Codex tokens saved/);
     assert.match(text, /Multimodal adoption/);
+    assert.match(text, /Attribution/);
+    assert.match(text, /vulca-platform/);
+    assert.match(text, /ws_vulca/);
+    assert.match(text, /emoart-operator/);
     assert.doesNotMatch(serialized, /private report prompt|private report response/);
     assert.doesNotMatch(serialized, /evt_report_|trace_report_|dep_report/);
+    assert.doesNotMatch(serialized, /person@example\.com/);
     assert.doesNotMatch(serialized, /\/Users\/example|latest\.json|secret-report-screenshot\.png/);
   } finally {
     await rm(cwd, { recursive: true, force: true });

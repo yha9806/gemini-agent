@@ -2126,10 +2126,15 @@ test("telemetry report prints safe product output", async () => {
     await appendTelemetryEvent({
       cwd,
       event: telemetryEvent(104, {
+        project_id: "vulca-platform",
         command: "diff_review",
         prompt: "raw report prompt should not print",
         response: "raw report response should not print",
-        context: { cwd: "/Users/example/private/report-project" },
+        context: {
+          cwd: "/Users/example/private/report-project",
+          workspace_id: "ws_vulca",
+          user_label: "vulca-operator",
+        },
         payload: {
           prompt_truncated: false,
           response_truncated: false,
@@ -2157,6 +2162,10 @@ test("telemetry report prints safe product output", async () => {
     assert.match(stdout, /Telemetry Product Report/);
     assert.match(stdout, /Estimated Codex tokens saved/);
     assert.match(stdout, /Multimodal adoption/);
+    assert.match(stdout, /Attribution/);
+    assert.match(stdout, /vulca-platform/);
+    assert.match(stdout, /ws_vulca/);
+    assert.match(stdout, /vulca-operator/);
     assert.match(stdout, /diff-review/);
     assert.doesNotMatch(stdout, /raw report prompt should not print/);
     assert.doesNotMatch(stdout, /raw report response should not print/);

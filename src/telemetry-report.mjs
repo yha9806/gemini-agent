@@ -62,6 +62,18 @@ function compactGateCommand(row) {
   };
 }
 
+function compactDimensionRows(rows, key) {
+  return Array.isArray(rows)
+    ? rows.map((row) => ({
+      [key]: row[key],
+      event_count: row.event_count,
+      success_count: row.success_count,
+      error_count: row.error_count,
+      unknown_count: row.unknown_count,
+    }))
+    : [];
+}
+
 function metadataCoverage(multimodal) {
   if (!multimodal || multimodal.item_count <= 0) return null;
   const mime = nullableRatio(multimodal.media_items_with_mime, multimodal.item_count, 4);
@@ -178,6 +190,12 @@ export async function runTelemetryReport({
       applied_correction_event_count: multimodal.applied_correction_event_count ?? 0,
       top_command: compactMultimodalCommand(firstOrNull(multimodal.top_commands)),
     },
+    attribution: {
+      top_projects: compactDimensionRows(summary.top_projects, "project_id"),
+      top_workspaces: compactDimensionRows(summary.top_workspaces, "workspace_id"),
+      top_user_labels: compactDimensionRows(summary.top_user_labels, "user_label"),
+      note: "Top attribution dimensions are capped by --top; workspace and user labels omit unknown or unsafe values.",
+    },
     priorities,
     limitations: [
       "Product report fields are aggregate telemetry only; no raw prompt, response text, event ids, batch ids, paths, media file names, or per-event records are included.",
@@ -197,6 +215,13 @@ function formatTopPriority(priorities) {
   const item = priorities[0];
   if (!item) return "None";
   return `[${item.severity}] ${item.title} Action: ${item.action}`;
+}
+
+function formatDimensionRows(rows, key) {
+  if (!rows.length) return "None";
+  return rows.map((item) => (
+    `${item[key]} ${formatNumber(item.event_count)} event${item.event_count === 1 ? "" : "s"}`
+  )).join("; ");
 }
 
 export function formatTelemetryReportText(report) {
@@ -234,6 +259,12 @@ export function formatTelemetryReportText(report) {
     `- Media bytes: ${formatNumber(report.multimodal.byte_count)}`,
     `- Metadata minimum coverage: ${formatPercent(report.multimodal.metadata_coverage_min)}`,
     `- Top multimodal command: ${formatTopCommand(report.multimodal.top_command)}`,
+    "",
+    "Attribution:",
+    `- Top projects: ${formatDimensionRows(report.attribution.top_projects, "project_id")}`,
+    `- Top workspaces: ${formatDimensionRows(report.attribution.top_workspaces, "workspace_id")}`,
+    `- Top user labels: ${formatDimensionRows(report.attribution.top_user_labels, "user_label")}`,
+    `- Note: ${report.attribution.note}`,
     "",
     "Top priority:",
     formatTopPriority(report.priorities),
