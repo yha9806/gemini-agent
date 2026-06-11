@@ -88,6 +88,47 @@ function nonnegativeMetric(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
+function latencyStageForCommand(summary, stage, command) {
+  const stageRow = summary.latency_stages?.top_stages?.find((item) => item?.stage === stage);
+  if (!stageRow) return null;
+  const commandRow = Array.isArray(stageRow.top_commands)
+    ? stageRow.top_commands.find((item) => item?.command === command)
+    : null;
+  if (!commandRow) return null;
+  return {
+    stage: stageRow,
+    command: commandRow,
+  };
+}
+
+function latencyStageContext(summary, candidate, p95) {
+  const preGemini = latencyStageForCommand(summary, "pre_gemini_total", candidate.command);
+  if (!preGemini || p95 <= 0) {
+    return {
+      action: `Profile ${candidate.command} latency before routing more Codex work through this path.`,
+      evidence: [],
+    };
+  }
+  const preGeminiP95 = nonnegativeMetric(preGemini.command.p95_ms);
+  if (preGeminiP95 <= 0) {
+    return {
+      action: `Profile ${candidate.command} latency before routing more Codex work through this path.`,
+      evidence: [],
+    };
+  }
+  const share = nullableRatio(preGeminiP95, p95, 4);
+  const action = share !== null && share < 0.2
+    ? `Focus on Gemini generation latency for ${candidate.command}; pre-Gemini stages are a small share of observed p95.`
+    : `Profile ${candidate.command} pre-Gemini media preparation and policy/prompt stages before routing more Codex work through this path.`;
+  return {
+    action,
+    evidence: [
+      `pre_gemini_total p95: ${formatNumber(preGeminiP95)} ms`,
+      `pre-Gemini share of p95 latency: ${formatPercent(share)}`,
+    ],
+  };
+}
+
 const MULTIMODAL_FIELD_CONFIG = [
   { name: "MIME", key: "mime", missingKey: "unknown_mime_items", presentKey: "media_items_with_mime" },
   { name: "byte-size", key: "byte_size", missingKey: "unknown_byte_size_items", presentKey: "media_items_with_byte_size" },
@@ -203,12 +244,13 @@ function latencyPriority(summary) {
   ));
   if (!candidate) return null;
   const p95 = nonnegativeMetric(candidate.p95_ms);
+  const stageContext = latencyStageContext(summary, candidate, p95);
   return priority({
     kind: "latency",
     severity: p95 >= 30_000 ? "high" : "medium",
     score: p95 >= 30_000 ? 92 : 89,
     title: `Reduce slow Gemini route latency: ${candidate.command}.`,
-    action: `Profile ${candidate.command} latency before routing more Codex work through this path.`,
+    action: stageContext.action,
     command: candidate.command,
     evidence: [
       `p50 latency: ${formatNumber(nonnegativeMetric(candidate.p50_ms))} ms`,
@@ -216,6 +258,7 @@ function latencyPriority(summary) {
       `p99 latency: ${formatNumber(nonnegativeMetric(candidate.p99_ms))} ms`,
       `Max latency: ${formatNumber(nonnegativeMetric(candidate.max_ms))} ms`,
       `Latency events: ${formatNumber(nonnegativeMetric(candidate.event_count))}`,
+      ...stageContext.evidence,
     ],
   });
 }

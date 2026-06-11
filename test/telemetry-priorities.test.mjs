@@ -237,6 +237,66 @@ test("runTelemetryPriorities ranks slow Gemini routes as latency reliability wor
   }
 });
 
+test("runTelemetryPriorities uses latency stage attribution for slow multimodal routes", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const latencies = [10_000, 11_000, 12_000, 13_000, 14_000];
+    const preGemini = [100, 120, 150, 200, 250];
+    for (const [index, latency] of latencies.entries()) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(100 + index, {
+          command: "artifact-review",
+          prompt: `private staged artifact prompt ${index}`,
+          response: `private staged artifact response ${index}`,
+          latency_ms: latency,
+          metadata: {
+            latency_stages_ms: {
+              media_prepare: preGemini[index] - 30,
+              policy_prompt: 30,
+              pre_gemini_total: preGemini[index],
+            },
+          },
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 100,
+            total_tokens: 1100,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.priorities[0].kind, "latency");
+    assert.equal(report.priorities[0].command, "artifact-review");
+    assert.equal(
+      report.priorities[0].action,
+      "Focus on Gemini generation latency for artifact-review; pre-Gemini stages are a small share of observed p95.",
+    );
+    assert.ok(report.priorities[0].evidence.some((item) => item === "pre_gemini_total p95: 250 ms"));
+    assert.ok(report.priorities[0].evidence.some((item) => item === "pre-Gemini share of p95 latency: 1.8%"));
+    assert.match(text, /pre_gemini_total p95: 250 ms/);
+    assert.doesNotMatch(serialized, /private staged artifact prompt|private staged artifact response/);
+    assert.doesNotMatch(serialized, /evt_priority_000100/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities supports global scope, top limit, and pricing overrides", async () => {
   const project = await temporaryWorkspace("gemini-agent-telemetry-priorities-project-");
   const home = await temporaryWorkspace("gemini-agent-telemetry-priorities-home-");
