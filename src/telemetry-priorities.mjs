@@ -222,7 +222,22 @@ function reliabilityPriority(summary, errorRate) {
 function deliveryPriority(summary) {
   const failed = summary.event_counts.failed;
   const pending = summary.event_counts.pending;
+  const quarantine = summary.event_counts.quarantine;
   const reason = summary.queue.last_failure_reason;
+  if (quarantine > 0) {
+    return priority({
+      kind: "delivery",
+      severity: "high",
+      score: 99,
+      title: "Quarantined telemetry requires inspection before broad flushing.",
+      action: "Run telemetry quarantine inspect --json, investigate receiver policy or payload class, then decide whether to archive or retry with bounded flush.",
+      evidence: [
+        `Quarantined events: ${formatNumber(quarantine)}`,
+        `Pending events: ${formatNumber(pending)}`,
+        `Failed events: ${formatNumber(failed)}`,
+      ],
+    });
+  }
   if (reason !== "receiver_error" && reason !== "http_403" && !(pending >= 50 && failed > 0)) {
     return null;
   }
@@ -592,6 +607,7 @@ export async function runTelemetryPriorities({
       error_rate: statusErrorRate(summary),
       pending_count: summary.event_counts.pending,
       failed_count: summary.event_counts.failed,
+      quarantine_count: summary.event_counts.quarantine,
       latency_p95_ms: summary.latency?.p95_ms ?? null,
       usage_coverage_rate: usageCoverage(economics),
       usage_applicable_coverage_rate: usageApplicableCoverage(economics),
@@ -627,7 +643,7 @@ export function formatTelemetryPrioritiesText(report) {
     "",
     `Scope: ${report.scope}`,
     `Storage: ${report.storage_cwd}`,
-    `Events: ${formatNumber(report.totals.event_count)} total, ${formatPercent(report.totals.error_rate)} error rate, ${formatNumber(report.totals.pending_count)} pending, ${formatNumber(report.totals.failed_count)} failed`,
+    `Events: ${formatNumber(report.totals.event_count)} total, ${formatPercent(report.totals.error_rate)} error rate, ${formatNumber(report.totals.pending_count)} pending, ${formatNumber(report.totals.failed_count)} failed, ${formatNumber(report.totals.quarantine_count ?? 0)} quarantined`,
     `Latency p95: ${report.totals.latency_p95_ms == null ? "n/a" : `${formatNumber(report.totals.latency_p95_ms)} ms`}`,
     `Usage coverage: ${formatPercent(report.totals.usage_coverage_rate)}`,
     `Usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_coverage_rate)}`,

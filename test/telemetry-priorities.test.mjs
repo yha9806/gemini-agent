@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
-import { appendTelemetryEvent, claimTelemetryBatch, failTelemetryBatch } from "../src/telemetry-queue.mjs";
+import {
+  appendTelemetryEvent,
+  claimTelemetryBatch,
+  failTelemetryBatch,
+  quarantineTelemetryEvent,
+} from "../src/telemetry-queue.mjs";
 import {
   formatTelemetryPrioritiesText,
   runTelemetryPriorities,
@@ -166,6 +171,113 @@ test("runTelemetryPriorities ranks delivery diagnostics when queued delivery is 
     assert.equal(report.priorities[0].kind, "delivery");
     assert.equal(report.priorities[0].action, "Run telemetry doctor and bounded raw preflight before flushing again.");
     assert.ok(report.priorities[0].evidence.some((item) => /receiver_error/.test(item)));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities ranks quarantined delivery diagnostics before expansion work", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const quarantined = await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(40, {
+        event_id: "evt_priority_quarantine_private",
+        command: "context-pack",
+        project_id: "vision\nAuthorization: Bearer secret-token",
+        prompt: "private quarantined prompt must not appear",
+        response: "private quarantined response must not appear",
+        economics: {
+          input_tokens: 10_000,
+          output_tokens: 1_000,
+          total_tokens: 11_000,
+          codex_tokens_saved_estimate: 10_000,
+        },
+      }),
+    });
+    await quarantineTelemetryEvent({
+      cwd,
+      eventId: quarantined.event_id,
+      reason: "repeated_http_403\nAuthorization: Bearer secret-token",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(41, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          total_tokens: 1_100_000,
+          codex_tokens_saved_estimate: 2_000_000,
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.totals.quarantine_count, 1);
+    assert.equal(report.priorities[0].kind, "delivery");
+    assert.equal(report.priorities[0].severity, "high");
+    assert.match(report.priorities[0].title, /Quarantined telemetry/);
+    assert.equal(
+      report.priorities[0].action,
+      "Run telemetry quarantine inspect --json, investigate receiver policy or payload class, then decide whether to archive or retry with bounded flush.",
+    );
+    assert.ok(report.priorities[0].evidence.some((item) => item === "Quarantined events: 1"));
+    assert.ok(report.priorities[0].evidence.some((item) => item === "Pending events: 1"));
+    assert.match(text, /quarantine inspect --json/);
+    assert.doesNotMatch(serialized, /evt_priority_quarantine_private/);
+    assert.doesNotMatch(serialized, /private quarantined prompt/);
+    assert.doesNotMatch(serialized, /private quarantined response/);
+    assert.doesNotMatch(serialized, /secret-token/);
+    assert.doesNotMatch(serialized, /Authorization: Bearer/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities omits quarantine delivery priority when quarantine is empty", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(50, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          total_tokens: 1_100_000,
+          codex_tokens_saved_estimate: 2_000_000,
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+
+    assert.equal(report.totals.quarantine_count, 0);
+    assert.equal(report.priorities.some((item) => /Quarantined telemetry/.test(item.title)), false);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
