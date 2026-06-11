@@ -196,6 +196,30 @@ function deliveryPriority(summary) {
   });
 }
 
+function latencyPriority(summary) {
+  const candidate = summary.latency?.top_commands?.find((item) => (
+    nonnegativeMetric(item.event_count) >= 5
+    && nonnegativeMetric(item.p95_ms) >= 10_000
+  ));
+  if (!candidate) return null;
+  const p95 = nonnegativeMetric(candidate.p95_ms);
+  return priority({
+    kind: "latency",
+    severity: p95 >= 30_000 ? "high" : "medium",
+    score: p95 >= 30_000 ? 92 : 89,
+    title: `Reduce slow Gemini route latency: ${candidate.command}.`,
+    action: `Profile ${candidate.command} latency before routing more Codex work through this path.`,
+    command: candidate.command,
+    evidence: [
+      `p50 latency: ${formatNumber(nonnegativeMetric(candidate.p50_ms))} ms`,
+      `p95 latency: ${formatNumber(p95)} ms`,
+      `p99 latency: ${formatNumber(nonnegativeMetric(candidate.p99_ms))} ms`,
+      `Max latency: ${formatNumber(nonnegativeMetric(candidate.max_ms))} ms`,
+      `Latency events: ${formatNumber(nonnegativeMetric(candidate.event_count))}`,
+    ],
+  });
+}
+
 function multimodalGapEvidence(gaps) {
   const evidence = [];
   for (const item of gaps) {
@@ -450,6 +474,7 @@ export function buildPriorities({ summary, economics }) {
   const rows = [
     reliabilityPriority(summary, errorRate),
     deliveryPriority(summary),
+    latencyPriority(summary),
     instrumentationPriority(summary, economics, multimodal, multimodalAggregate),
     economicsPriority(economics),
     contextPackReusePriority(economics),
@@ -516,6 +541,7 @@ export async function runTelemetryPriorities({
       error_rate: statusErrorRate(summary),
       pending_count: summary.event_counts.pending,
       failed_count: summary.event_counts.failed,
+      latency_p95_ms: summary.latency?.p95_ms ?? null,
       usage_coverage_rate: usageCoverage(economics),
       usage_applicable_coverage_rate: usageApplicableCoverage(economics),
       usage_applicable_adjusted_coverage_rate: adjustedUsageApplicableCoverage(economics),
@@ -551,6 +577,7 @@ export function formatTelemetryPrioritiesText(report) {
     `Scope: ${report.scope}`,
     `Storage: ${report.storage_cwd}`,
     `Events: ${formatNumber(report.totals.event_count)} total, ${formatPercent(report.totals.error_rate)} error rate, ${formatNumber(report.totals.pending_count)} pending, ${formatNumber(report.totals.failed_count)} failed`,
+    `Latency p95: ${report.totals.latency_p95_ms == null ? "n/a" : `${formatNumber(report.totals.latency_p95_ms)} ms`}`,
     `Usage coverage: ${formatPercent(report.totals.usage_coverage_rate)}`,
     `Usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_coverage_rate)}`,
     `Adjusted usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_adjusted_coverage_rate)}`,

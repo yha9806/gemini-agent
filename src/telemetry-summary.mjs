@@ -123,6 +123,17 @@ function zeroContextLoop() {
   };
 }
 
+function zeroLatency() {
+  return {
+    event_count: 0,
+    p50_ms: null,
+    p95_ms: null,
+    p99_ms: null,
+    max_ms: null,
+    top_commands: [],
+  };
+}
+
 function zeroStatusCounts() {
   return {
     event_count: 0,
@@ -323,6 +334,73 @@ function topSimpleCounts(map, keyName, limit) {
       [keyName]: key,
       event_count: count,
     }));
+}
+
+function createLatencyAggregate() {
+  return {
+    values: [],
+    commands: new Map(),
+  };
+}
+
+function nearestRank(values, percentile) {
+  if (values.length === 0) return null;
+  const index = Math.min(
+    values.length - 1,
+    Math.max(0, Math.ceil(values.length * percentile) - 1),
+  );
+  return values[index];
+}
+
+function publicLatency(values) {
+  if (values.length === 0) {
+    return {
+      event_count: 0,
+      p50_ms: null,
+      p95_ms: null,
+      p99_ms: null,
+      max_ms: null,
+    };
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  return {
+    event_count: sorted.length,
+    p50_ms: nearestRank(sorted, 0.5),
+    p95_ms: nearestRank(sorted, 0.95),
+    p99_ms: nearestRank(sorted, 0.99),
+    max_ms: sorted.at(-1),
+  };
+}
+
+function addLatency(aggregate, command, latencyMs) {
+  if (!Number.isInteger(latencyMs) || latencyMs < 0) return;
+  aggregate.values.push(latencyMs);
+  const key = canonicalCommand(command);
+  const item = aggregate.commands.get(key) ?? { key, values: [] };
+  item.values.push(latencyMs);
+  aggregate.commands.set(key, item);
+}
+
+function topLatencyCommands(map, limit) {
+  return [...map.values()]
+    .map((item) => ({
+      command: item.key,
+      ...publicLatency(item.values),
+    }))
+    .sort((left, right) => (
+      right.p95_ms - left.p95_ms
+      || right.event_count - left.event_count
+      || left.command.localeCompare(right.command)
+    ))
+    .slice(0, limit);
+}
+
+function buildLatencySummary(aggregate, topLimit) {
+  if (aggregate.values.length === 0) return zeroLatency();
+  return {
+    ...publicLatency(aggregate.values),
+    top_commands: topLatencyCommands(aggregate.commands, topLimit),
+  };
 }
 
 function updateContextLoopCommand(
@@ -741,6 +819,13 @@ function formatMediaCommandRows(items) {
   )).join("\n");
 }
 
+function formatLatencyCommandRows(items) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item.command}: ${formatNumber(item.event_count)} events, p50 ${formatNumber(item.p50_ms)} ms, p95 ${formatNumber(item.p95_ms)} ms, p99 ${formatNumber(item.p99_ms)} ms, max ${formatNumber(item.max_ms)} ms`
+  )).join("\n");
+}
+
 function formatBackfillManifestSourceRows(items) {
   if (items.length === 0) return "None";
   return items.map((item, index) => (
@@ -850,6 +935,7 @@ function createAccumulator(invalidSampleLimit) {
     contextPackModes: new Map(),
     freshInputModes: new Map(),
     contextLoopCommands: new Map(),
+    latency: createLatencyAggregate(),
     invalidSamples: [],
   };
 }
@@ -875,6 +961,7 @@ function addEvent(accumulator, state, event) {
   updateDimension(accumulator.models, event.model, status);
   if (isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
   addContextLoopEvent(accumulator, event);
+  addLatency(accumulator.latency, event.command, event.latency_ms);
 
   if (event.prompt) accumulator.rawContent.prompt_events += 1;
   if (event.response) accumulator.rawContent.response_events += 1;
@@ -1226,6 +1313,7 @@ export async function runTelemetrySummary({
     media_manifest_sources: topBackfillManifestSources(accumulator.backfillManifestSources, topLimit),
   };
   const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
+  const latency = buildLatencySummary(accumulator.latency, topLimit);
   const contextLoop = {
     ...accumulator.contextLoop,
     smart_diff_context_pack_bootstrap_rate: nullableRatio(
@@ -1261,6 +1349,7 @@ export async function runTelemetrySummary({
     corrections,
     backfill,
     palette_split: paletteSplit,
+    latency,
     context_loop: contextLoop,
     top_projects: topProjects,
     top_workspaces: topWorkspaces,
@@ -1322,6 +1411,15 @@ export function formatTelemetrySummaryText(summary) {
     "Reliability:",
     `- Success rate: ${successRateText}`,
     `- Last failure: ${summary.queue.last_failure_reason ?? "none"}`,
+    "",
+    "Latency:",
+    `- Events: ${formatNumber(summary.latency?.event_count ?? 0)}`,
+    `- p50: ${summary.latency?.p50_ms == null ? "n/a" : `${formatNumber(summary.latency.p50_ms)} ms`}`,
+    `- p95: ${summary.latency?.p95_ms == null ? "n/a" : `${formatNumber(summary.latency.p95_ms)} ms`}`,
+    `- p99: ${summary.latency?.p99_ms == null ? "n/a" : `${formatNumber(summary.latency.p99_ms)} ms`}`,
+    `- Max: ${summary.latency?.max_ms == null ? "n/a" : `${formatNumber(summary.latency.max_ms)} ms`}`,
+    "Top latency commands:",
+    formatLatencyCommandRows(summary.latency?.top_commands ?? []),
     "",
     "Usage:",
     `- Prompt tokens: ${formatNumber(summary.usage.prompt_tokens)}`,

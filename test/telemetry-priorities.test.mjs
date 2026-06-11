@@ -171,6 +171,72 @@ test("runTelemetryPriorities ranks delivery diagnostics when queued delivery is 
   }
 });
 
+test("runTelemetryPriorities ranks slow Gemini routes as latency reliability work", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const latencies = [6000, 8000, 10000, 11000, 12000];
+    for (const [index, latency] of latencies.entries()) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(80 + index, {
+          command: "artifact-review",
+          prompt: `private slow artifact prompt ${index}`,
+          response: `private slow artifact response ${index}`,
+          latency_ms: latency,
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 100,
+            total_tokens: 1100,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(90, {
+        command: "diff-review",
+        latency_ms: 900,
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          total_tokens: 1_100_000,
+          codex_tokens_saved_estimate: 2_000_000,
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.totals.latency_p95_ms, 12000);
+    assert.equal(report.priorities[0].kind, "latency");
+    assert.equal(report.priorities[0].command, "artifact-review");
+    assert.match(report.priorities[0].action, /Profile artifact-review latency/);
+    assert.ok(report.priorities[0].evidence.some((item) => item === "p50 latency: 10,000 ms"));
+    assert.ok(report.priorities[0].evidence.some((item) => item === "p95 latency: 12,000 ms"));
+    assert.ok(report.priorities[0].evidence.some((item) => item === "p99 latency: 12,000 ms"));
+    assert.ok(report.priorities[0].evidence.some((item) => item === "Max latency: 12,000 ms"));
+    assert.ok(report.priorities[0].evidence.some((item) => item === "Latency events: 5"));
+    assert.match(text, /Latency p95: 12,000 ms/);
+    assert.doesNotMatch(serialized, /private slow artifact prompt|private slow artifact response/);
+    assert.doesNotMatch(serialized, /evt_priority_000080/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities supports global scope, top limit, and pricing overrides", async () => {
   const project = await temporaryWorkspace("gemini-agent-telemetry-priorities-project-");
   const home = await temporaryWorkspace("gemini-agent-telemetry-priorities-home-");

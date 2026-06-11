@@ -115,6 +115,14 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     quarantine: 0,
     invalid: 0,
   });
+  assert.deepEqual(result.latency, {
+    event_count: 0,
+    p50_ms: null,
+    p95_ms: null,
+    p99_ms: null,
+    max_ms: null,
+    top_commands: [],
+  });
   assert.equal(result.usage.total_tokens, 0);
   assert.equal(result.raw_content.prompt_events, 0);
   assert.deepEqual(result.palette_split, {
@@ -189,6 +197,95 @@ test("runTelemetrySummary reports workspace and user label dimensions safely", a
   ]);
   assert.doesNotMatch(JSON.stringify(summary), /person@example.com|\[PATH\]/);
   assert.doesNotMatch(text, /person@example.com|\[PATH\]/);
+});
+
+test("runTelemetrySummary aggregates latency percentiles by command", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(71, {
+      command: "diff-review",
+      prompt: "private fast diff prompt",
+      response: "private fast diff response",
+      latency_ms: 1200,
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(72, {
+      command: "diff_review",
+      latency_ms: 1800,
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(73, {
+      command: "artifact-review",
+      latency_ms: 4000,
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(74, {
+      command: "artifact-review",
+      latency_ms: 8000,
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(75, {
+      command: "artifact-review",
+      status: "error",
+      error_type: "TimeoutError",
+      latency_ms: 12000,
+    }),
+  });
+
+  const summary = await runTelemetrySummary({
+    cwd,
+    scope: "local",
+    topLimit: 5,
+  });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = `${JSON.stringify(summary)}\n${text}`;
+
+  assert.deepEqual(summary.latency, {
+    event_count: 5,
+    p50_ms: 4000,
+    p95_ms: 12000,
+    p99_ms: 12000,
+    max_ms: 12000,
+    top_commands: [
+      {
+        command: "artifact-review",
+        event_count: 3,
+        p50_ms: 8000,
+        p95_ms: 12000,
+        p99_ms: 12000,
+        max_ms: 12000,
+      },
+      {
+        command: "diff-review",
+        event_count: 2,
+        p50_ms: 1200,
+        p95_ms: 1800,
+        p99_ms: 1800,
+        max_ms: 1800,
+      },
+    ],
+  });
+  assert.match(text, /Latency:/);
+  assert.match(text, /artifact-review: 3 events, p50 8,000 ms, p95 12,000 ms, p99 12,000 ms, max 12,000 ms/);
+  assert.doesNotMatch(serialized, /private fast diff prompt/);
+  assert.doesNotMatch(serialized, /private fast diff response/);
+  assert.doesNotMatch(serialized, /evt_000071/);
 });
 
 test("runTelemetrySummary aggregates pending sent failed quarantine dimensions and usage", async () => {
