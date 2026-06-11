@@ -1690,6 +1690,95 @@ test("telemetry raw export writes local JSONL with confirmation without exposing
   }
 });
 
+test("telemetry raw reveal prints bounded raw events only after confirmation", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-reveal-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(99, {
+        command: "artifact-review",
+        prompt: "Authorization: Bearer cli-reveal-secret",
+        response: "raw reveal response should print only after confirmation",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "private-cli-reveal.png", mime_type: "image/png", byte_size: 10 }],
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "raw",
+      "reveal",
+      "--state",
+      "pending",
+      "--limit",
+      "1",
+      "--confirm-raw-content",
+      "--json",
+    ], { cwd });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.ok, true);
+    assert.match(parsed.warning, /raw prompt\/response telemetry/i);
+    assert.equal(parsed.revealed_count, 1);
+    assert.equal(parsed.events.length, 1);
+    assert.match(parsed.events[0].prompt, /Authorization: \[MASKED\]/);
+    assert.match(parsed.events[0].response, /raw reveal response should print only after confirmation/);
+    assert.equal(parsed.events[0].payload.multimodal[0].basename, "private-cli-reveal.png");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry raw reveal rejects missing confirmation and unsafe arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-reveal-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "reveal", "--state", "pending", "--limit", "1"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--confirm-raw-content is required/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "reveal", "--state", "pending", "--limit", "0", "--confirm-raw-content"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--limit requires a positive integer/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "reveal", "--state", "failed", "--limit", "1", "--confirm-raw-content"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--state must be pending or sent/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "reveal", "--unknown"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Unknown telemetry raw reveal argument/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry raw export rejects missing confirmation and unsafe arguments", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-export-args-"));
   try {

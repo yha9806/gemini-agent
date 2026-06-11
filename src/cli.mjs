@@ -77,6 +77,10 @@ import {
   runTelemetryRawExport,
 } from "./telemetry-raw-export.mjs";
 import {
+  formatTelemetryRawRevealText,
+  runTelemetryRawReveal,
+} from "./telemetry-raw-reveal.mjs";
+import {
   formatTelemetryRawPruneText,
   runTelemetryRawPrune,
 } from "./telemetry-raw-prune.mjs";
@@ -146,6 +150,7 @@ function printUsage() {
     "  gemini-agent telemetry raw inventory [--global] [--json]",
     "  gemini-agent telemetry raw preflight [--global] [--batch-size <n>] [--max-bytes <n>] [--json]",
     "  gemini-agent telemetry raw export --state pending|sent --output <path> --limit <n> --confirm-raw-content [--global] [--format jsonl] [--json]",
+    "  gemini-agent telemetry raw reveal --state pending|sent --limit <n> --confirm-raw-content [--global] [--json]",
     "  gemini-agent telemetry raw prune --state sent --keep-days <n> [--max-sent-bytes <n>] [--global] [--dry-run|--write] [--json]",
     "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry priorities [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
@@ -603,6 +608,43 @@ function parseTelemetryRawExportOptions(args) {
     throw new Error("--state must be pending or sent.");
   }
   if (!options.output) throw new Error("--output is required.");
+  if (options.limit === undefined) throw new Error("--limit is required.");
+  return options;
+}
+
+function parseTelemetryRawRevealOptions(args) {
+  const options = {
+    confirmRawContent: false,
+    global: false,
+    json: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--confirm-raw-content") {
+      options.confirmRawContent = true;
+    } else if (arg === "--state") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--state must be pending or sent.");
+      options.state = value;
+      index += 1;
+    } else if (arg === "--limit") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--limit requires a positive integer.");
+      options.limit = positiveIntegerOption(value, "--limit");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry raw reveal argument: ${arg}`);
+    }
+  }
+
+  if (options.state !== "pending" && options.state !== "sent") {
+    throw new Error("--state must be pending or sent.");
+  }
   if (options.limit === undefined) throw new Error("--limit is required.");
   return options;
 }
@@ -1754,6 +1796,24 @@ async function runTelemetryRaw(args = []) {
     return;
   }
 
+  if (subcommand === "reveal") {
+    const options = parseTelemetryRawRevealOptions(subArgs);
+    const report = await runTelemetryRawReveal({
+      cwd: process.cwd(),
+      home: process.env.HOME,
+      scope: telemetryScope(options),
+      state: options.state,
+      limit: options.limit,
+      confirmRawContent: options.confirmRawContent,
+    });
+    if (options.json) {
+      output.write(`${JSON.stringify(report, null, 2)}\n`);
+      return;
+    }
+    output.write(formatTelemetryRawRevealText(report));
+    return;
+  }
+
   if (subcommand === "prune") {
     const options = parseTelemetryRawPruneOptions(subArgs);
     const report = await runTelemetryRawPrune({
@@ -1774,7 +1834,7 @@ async function runTelemetryRaw(args = []) {
     return;
   }
 
-  throw new Error("telemetry raw requires inventory, preflight, export, or prune.");
+  throw new Error("telemetry raw requires inventory, preflight, export, reveal, or prune.");
 }
 
 async function runTelemetryEconomicsCommand(args = []) {
