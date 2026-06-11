@@ -3623,6 +3623,114 @@ test("telemetry quarantine inspect prints aggregate-only JSON", async () => {
   }
 });
 
+test("telemetry quarantine archive dry-run and write are local-only", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-quarantine-archive-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      scope: "local",
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    const event = await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent("quarantine_archive_cli", {
+        event_id: "evt_cli_quarantine_archive_private",
+        prompt: "raw cli quarantine archive prompt",
+        response: "raw cli quarantine archive response",
+      }),
+      maxQueueBytes: 10 * 1024 * 1024,
+    });
+    await quarantineTelemetryEvent({
+      cwd,
+      eventId: event.event_id,
+      reason: "repeated_http_403_context_pack_payload",
+    });
+
+    const dry = await execBin([
+      "telemetry",
+      "quarantine",
+      "archive",
+      "--reason",
+      "repeated_http_403_context_pack_payload",
+      "--dry-run",
+      "--batch-size",
+      "1",
+    ], {
+      cwd,
+      env: { ...process.env, [TELEMETRY_TOKEN_ENV]: "" },
+    });
+    const dryParsed = JSON.parse(dry.stdout);
+    assert.equal(dryParsed.dry_run, true);
+    assert.equal(dryParsed.would_archive_count, 1);
+
+    const written = await execBin([
+      "telemetry",
+      "quarantine",
+      "archive",
+      "--reason",
+      "repeated_http_403_context_pack_payload",
+      "--write",
+      "--batch-size",
+      "1",
+      "--note",
+      "../receiver policy confirmed",
+    ], {
+      cwd,
+      env: { ...process.env, [TELEMETRY_TOKEN_ENV]: "" },
+    });
+    const parsed = JSON.parse(written.stdout);
+    const serialized = JSON.stringify(parsed);
+
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.scope, "local");
+    assert.equal(parsed.archived_count, 1);
+    assert.match(parsed.resolution_bucket, /^resolved_/);
+    assert.doesNotMatch(serialized, /evt_cli_quarantine_archive_private/);
+    assert.doesNotMatch(serialized, /raw cli quarantine archive/);
+    assert.doesNotMatch(serialized, /queue\/quarantine/);
+
+    const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+    assert.equal(snapshot.quarantine.count, 0);
+    assert.equal(snapshot.pending.count, 0);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry quarantine archive rejects invalid arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-quarantine-archive-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "quarantine", "archive"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--reason is required/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "quarantine", "archive", "--reason", "http_403", "--dry-run", "--write"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--dry-run and --write cannot be used together/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "quarantine", "archive", "--reason", "http_403", "--batch-size", "0"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--batch-size requires a positive integer/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry install-scheduler dry-runs cron artifact", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
 

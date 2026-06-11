@@ -125,6 +125,7 @@ export function telemetryQueueDirs(cwd = process.cwd()) {
     failed: join(queue, "failed"),
     resolvedFailed: join(queue, "resolved-failed"),
     quarantine: join(queue, "quarantine"),
+    resolvedQuarantine: join(queue, "resolved-quarantine"),
     tmp: join(queue, "tmp"),
     lock: join(queue, LOCK_FILE),
     state: join(queue, STATE_FILE),
@@ -148,6 +149,7 @@ async function ensureQueueDirs(cwd) {
     dirs.failed,
     dirs.resolvedFailed,
     dirs.quarantine,
+    dirs.resolvedQuarantine,
     dirs.tmp,
   ]) {
     await secureMkdir(dir);
@@ -359,7 +361,15 @@ async function collectQueueEventIdsFromDir(root, eventIds) {
 
 async function queueEventIds(dirs) {
   const eventIds = new Set();
-  for (const dir of [dirs.pending, dirs.inflight, dirs.sent, dirs.failed, dirs.resolvedFailed, dirs.quarantine]) {
+  for (const dir of [
+    dirs.pending,
+    dirs.inflight,
+    dirs.sent,
+    dirs.failed,
+    dirs.resolvedFailed,
+    dirs.quarantine,
+    dirs.resolvedQuarantine,
+  ]) {
     await collectQueueEventIdsFromDir(dir, eventIds);
   }
   return eventIds;
@@ -907,6 +917,7 @@ async function quarantineCandidates(dirs, reason) {
     const eventReason = await quarantineEventReason(eventDir);
     if (sanitizedReason != null && eventReason !== sanitizedReason) continue;
     candidates.push({
+      name: eventDirName,
       eventDir,
       reason: eventReason,
       files: [eventFile],
@@ -1096,6 +1107,10 @@ function resolvedFailedBucketName(now = new Date()) {
   return `resolved_${utcDay(now).replaceAll("-", "")}_${Date.now()}_${randomUUID()}`;
 }
 
+function resolvedQuarantineBucketName(now = new Date()) {
+  return `resolved_${utcDay(now).replaceAll("-", "")}_${Date.now()}_${randomUUID()}`;
+}
+
 function safeResolutionNote(value) {
   if (value == null) return null;
   const text = safeDiagnosticLabel(value, 160);
@@ -1105,6 +1120,11 @@ function safeResolutionNote(value) {
 function archiveNextCommand({ reason, write = false, batchSize = 1 }) {
   const mode = write ? "--write" : "--dry-run";
   return `gemini-agent telemetry failed archive --reason ${shellQuote(reason)} ${mode} --batch-size ${batchSize}`;
+}
+
+function quarantineArchiveNextCommand({ reason, write = false, batchSize = 1 }) {
+  const mode = write ? "--write" : "--dry-run";
+  return `gemini-agent telemetry quarantine archive --reason ${shellQuote(reason)} ${mode} --batch-size ${batchSize}`;
 }
 
 function summarizeArchiveCandidates({
@@ -1133,6 +1153,119 @@ function summarizeArchiveCandidates({
       ? archiveNextCommand({ reason, write: true, batchSize })
       : "gemini-agent telemetry doctor --json",
   };
+}
+
+function summarizeQuarantineArchiveCandidates({
+  reason,
+  candidates,
+  batchSize,
+  dryRun,
+  archivedCount = 0,
+  remainingCandidates = candidates,
+  resolutionBucket = null,
+}) {
+  const selectedCandidates = candidates.slice(0, batchSize);
+  const remainingFiles = remainingCandidates.flatMap((candidate) => candidate.files);
+  return {
+    ok: true,
+    dry_run: dryRun,
+    reason,
+    matched_directory_count: candidates.length,
+    would_archive_count: selectedCandidates.reduce((sum, candidate) => sum + candidate.files.length, 0),
+    archived_count: archivedCount,
+    remaining_quarantine_count_for_reason: dryRun
+      ? candidates.reduce((sum, candidate) => sum + candidate.files.length, 0)
+      : remainingFiles.length,
+    bytes: selectedCandidates.reduce((sum, candidate) => sum + candidate.bytes, 0),
+    resolution_bucket: resolutionBucket,
+    next_command: dryRun
+      ? quarantineArchiveNextCommand({ reason, write: true, batchSize })
+      : "gemini-agent telemetry doctor --json",
+  };
+}
+
+export async function archiveQuarantinedTelemetryEvents({
+  cwd = process.cwd(),
+  reason,
+  batchSize = 1,
+  dryRun = true,
+  note = null,
+  lock = {},
+} = {}) {
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new Error("Telemetry quarantine archive reason is required.");
+  }
+  assertPositiveInteger(batchSize, "batchSize");
+  if (typeof dryRun !== "boolean") {
+    throw new TypeError("dryRun must be a boolean.");
+  }
+  if (lock == null || typeof lock !== "object" || Array.isArray(lock)) {
+    throw new TypeError("lock must be an object.");
+  }
+
+  if (dryRun) {
+    const dirs = telemetryQueueDirs(cwd);
+    const { reason: sanitizedReason, candidates } = await quarantineCandidates(dirs, reason);
+    return summarizeQuarantineArchiveCandidates({
+      reason: sanitizedReason,
+      candidates,
+      batchSize,
+      dryRun: true,
+    });
+  }
+
+  return withTelemetryQueueLock({ cwd, ...lock }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const { reason: sanitizedReason, candidates } = await quarantineCandidates(dirs, reason);
+    const selectedCandidates = candidates.slice(0, batchSize);
+    const selectedCount = selectedCandidates.reduce((sum, candidate) => sum + candidate.files.length, 0);
+    const bucketName = selectedCount > 0 ? resolvedQuarantineBucketName() : null;
+    const bucketDir = bucketName ? join(dirs.resolvedQuarantine, bucketName) : null;
+    let archivedCount = 0;
+
+    if (bucketDir) {
+      await secureMkdir(bucketDir);
+      await writeSecureJsonFile(cwd, join(bucketDir, "resolution.json"), {
+        reason: sanitizedReason,
+        note: safeResolutionNote(note),
+        resolved_at: new Date().toISOString(),
+        archived_count: 0,
+      });
+    }
+
+    for (const candidate of selectedCandidates) {
+      const destination = join(bucketDir, candidate.name);
+      await rename(candidate.eventDir, destination);
+      await chmod(destination, SECURE_DIR_MODE);
+      archivedCount += candidate.files.length;
+    }
+
+    if (bucketDir) {
+      await writeSecureJsonFile(cwd, join(bucketDir, "resolution.json"), {
+        reason: sanitizedReason,
+        note: safeResolutionNote(note),
+        resolved_at: new Date().toISOString(),
+        archived_count: archivedCount,
+      });
+    }
+
+    const state = await loadStateFromPath(dirs.state);
+    await saveState(cwd, {
+      ...state,
+      queue_bytes: await pendingQueueBytes(cwd),
+    });
+
+    const refreshed = await quarantineCandidates(dirs, sanitizedReason);
+    return summarizeQuarantineArchiveCandidates({
+      reason: sanitizedReason,
+      candidates,
+      batchSize,
+      dryRun: false,
+      archivedCount,
+      remainingCandidates: refreshed.candidates,
+      resolutionBucket: bucketName,
+    });
+  });
 }
 
 export async function archiveFailedTelemetryEvents({

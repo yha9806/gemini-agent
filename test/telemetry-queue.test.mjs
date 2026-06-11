@@ -20,6 +20,7 @@ import {
   appendTelemetryEventsIfNew,
   appendTelemetryEventIfNew,
   archiveFailedTelemetryEvents,
+  archiveQuarantinedTelemetryEvents,
   claimTelemetryBatch,
   completeTelemetryBatch,
   failTelemetryBatch,
@@ -635,6 +636,113 @@ test("inspectQuarantinedTelemetryEvents returns safe aggregate descriptors", asy
   assert.doesNotMatch(serialized, /secret-580\.png/);
   assert.doesNotMatch(serialized, /\.gemini-agent/);
   assert.doesNotMatch(serialized, /queue\/quarantine/);
+});
+
+test("archiveQuarantinedTelemetryEvents dry-run reports matching events without moving files", async () => {
+  const cwd = await temporaryWorkspace();
+  const first = await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(6411, {
+      event_id: "evt_quarantine_archive_private_1",
+      prompt: "private quarantined prompt 1",
+      response: "private quarantined response 1",
+    }),
+  });
+  const second = await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(6412, {
+      event_id: "evt_quarantine_archive_private_2",
+      prompt: "private quarantined prompt 2",
+      response: "private quarantined response 2",
+    }),
+  });
+  await quarantineTelemetryEvent({ cwd, eventId: first.event_id, reason: "http_403\nAuthorization: Bearer secret-token" });
+  await quarantineTelemetryEvent({ cwd, eventId: second.event_id, reason: "different_reason" });
+
+  const before = await loadTelemetryQueueSnapshot({ cwd });
+  const result = await archiveQuarantinedTelemetryEvents({
+    cwd,
+    reason: "http_403 Authorization: Bearer secret-token",
+    batchSize: 1,
+    dryRun: true,
+    note: "../unsafe note with token abc123",
+  });
+  const after = await loadTelemetryQueueSnapshot({ cwd });
+  const serialized = JSON.stringify(result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dry_run, true);
+  assert.equal(result.reason, "http_403 Authorization: [MASKED]");
+  assert.equal(result.matched_directory_count, 1);
+  assert.equal(result.would_archive_count, 1);
+  assert.equal(result.archived_count, 0);
+  assert.equal(result.remaining_quarantine_count_for_reason, 1);
+  assert.equal(result.resolution_bucket, null);
+  assert.deepEqual(after, before);
+  assert.doesNotMatch(serialized, /evt_quarantine_archive_private/);
+  assert.doesNotMatch(serialized, /private quarantined prompt/);
+  assert.doesNotMatch(serialized, /private quarantined response/);
+  assert.doesNotMatch(serialized, /secret-token/);
+  assert.doesNotMatch(serialized, /queue\/quarantine/);
+});
+
+test("archiveQuarantinedTelemetryEvents write mode moves bounded events to resolved quarantine", async () => {
+  const cwd = await temporaryWorkspace();
+  const first = await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(6891, {
+      event_id: "evt_quarantine_archive_write_private_1",
+      prompt: "private archive write prompt 1",
+    }),
+  });
+  const second = await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(6892, {
+      event_id: "evt_quarantine_archive_write_private_2",
+      prompt: "private archive write prompt 2",
+    }),
+  });
+  await quarantineTelemetryEvent({ cwd, eventId: first.event_id, reason: "repeated_http_403_context_pack_payload" });
+  await quarantineTelemetryEvent({ cwd, eventId: second.event_id, reason: "repeated_http_403_context_pack_payload" });
+
+  const result = await archiveQuarantinedTelemetryEvents({
+    cwd,
+    reason: "repeated_http_403_context_pack_payload",
+    batchSize: 1,
+    dryRun: false,
+    note: "../receiver policy confirmed",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dry_run, false);
+  assert.equal(result.would_archive_count, 1);
+  assert.equal(result.archived_count, 1);
+  assert.equal(result.remaining_quarantine_count_for_reason, 1);
+  assert.match(result.resolution_bucket, /^resolved_\d{8}_\d+_[a-f0-9-]+$/);
+
+  const dirs = telemetryQueueDirs(cwd);
+  const resolvedDir = join(dirs.resolvedQuarantine, result.resolution_bucket);
+  const resolvedEntries = await readdir(resolvedDir, { withFileTypes: true });
+  const resolvedFiles = resolvedEntries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+  const resolvedDirs = resolvedEntries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  assert.equal(resolvedFiles.includes("resolution.json"), true);
+  assert.equal(resolvedDirs.filter((name) => name.startsWith("event_")).length, 1);
+
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.quarantine.count, 1);
+  assert.equal(snapshot.pending.count, 0);
+
+  const secondResult = await archiveQuarantinedTelemetryEvents({
+    cwd,
+    reason: "repeated_http_403_context_pack_payload",
+    batchSize: 5,
+    dryRun: false,
+  });
+  assert.equal(secondResult.archived_count, 1);
+  assert.equal(secondResult.remaining_quarantine_count_for_reason, 0);
+
+  const finalSnapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(finalSnapshot.quarantine.count, 0);
 });
 
 test("peekTelemetryEvents respects the queue lock", async () => {

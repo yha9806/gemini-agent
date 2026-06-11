@@ -245,7 +245,7 @@ test("runTelemetryDoctor points quarantined queues at quarantine inspect", async
     fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
   });
 
-  const expected = "Run telemetry quarantine inspect --json to review aggregate-only quarantined event descriptors before broad flushing.";
+  const expected = "Run telemetry quarantine inspect --json, then telemetry quarantine archive --reason <reason> --dry-run before --write for resolved receiver-policy cases.";
   assert.equal(result.delivery.status, "quarantined_events_present");
   assert.equal(result.delivery.quarantine_events, 1);
   assert.equal(result.delivery.recommended_action, expected);

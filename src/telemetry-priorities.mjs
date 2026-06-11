@@ -230,7 +230,7 @@ function deliveryPriority(summary) {
       severity: "high",
       score: 99,
       title: "Quarantined telemetry requires inspection before broad flushing.",
-      action: "Run telemetry quarantine inspect --json, investigate receiver policy or payload class, then decide whether to archive or retry with bounded flush.",
+      action: "Run telemetry quarantine inspect --json, investigate receiver policy or payload class, then archive resolved events with telemetry quarantine archive --reason <reason> --dry-run before --write or retry with bounded flush.",
       evidence: [
         `Quarantined events: ${formatNumber(quarantine)}`,
         `Pending events: ${formatNumber(pending)}`,

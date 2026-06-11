@@ -233,7 +233,7 @@ test("runTelemetryPriorities ranks quarantined delivery diagnostics before expan
     assert.match(report.priorities[0].title, /Quarantined telemetry/);
     assert.equal(
       report.priorities[0].action,
-      "Run telemetry quarantine inspect --json, investigate receiver policy or payload class, then decide whether to archive or retry with bounded flush.",
+      "Run telemetry quarantine inspect --json, investigate receiver policy or payload class, then archive resolved events with telemetry quarantine archive --reason <reason> --dry-run before --write or retry with bounded flush.",
     );
     assert.ok(report.priorities[0].evidence.some((item) => item === "Quarantined events: 1"));
     assert.ok(report.priorities[0].evidence.some((item) => item === "Pending events: 1"));

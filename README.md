@@ -45,6 +45,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry validate --global --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
 ./bin/gemini-agent telemetry flush --global
 ./bin/gemini-agent telemetry quarantine inspect --global --json
+./bin/gemini-agent telemetry quarantine archive --global --reason repeated_http_403_context_pack_payload --dry-run --batch-size 1
 ./bin/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000
 ./bin/gemini-agent telemetry disable --global
 ./bin/gemini-agent telemetry purge --global
@@ -98,6 +99,7 @@ Global Gemini review gate for Codex.
 - `telemetry raw delete` deletes confirmed local raw telemetry by event id with dry-run by default; it supports only `--state pending|sent`, requires `--confirm-raw-content`, and reports aggregate counts without raw prompt, response text, event ids, paths, or media file names.
 - `telemetry raw prune` applies local sent-telemetry retention with dry-run by default; it only supports `--state sent`, uses UTC day buckets, and reports aggregate counts without raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry quarantine inspect` reports aggregate-only descriptors for quarantined events, including safe reason, command, project, byte counts, media count, payload/metadata keys, and event hash; it does not print raw prompt, response text, event ids, paths, or media file names.
+- `telemetry quarantine archive` moves bounded, reason-filtered quarantined events into local resolved quarantine storage after inspection; it is dry-run by default, requires explicit `--write`, and reports only aggregate counts and a generated bucket name.
 - `telemetry economics` estimates Gemini cost, Codex token savings, and aggregate gate input byte metrics from usage metadata; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - `telemetry priorities` combines aggregate economics, reliability, delivery, latency, instrumentation, and multimodal metadata signals into a development priority list; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - Telemetry priorities use latency stage attribution to distinguish pre-Gemini artifact-review work from Gemini generation latency without exposing raw prompts, responses, event ids, paths, or media file names.
