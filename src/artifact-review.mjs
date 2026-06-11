@@ -79,6 +79,29 @@ function artifactMediaManifest(mediaRefs, { cwd } = {}) {
   });
 }
 
+function elapsedMs(start, end) {
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+  return Math.max(0, Math.round(end - start));
+}
+
+function mediaByteCount(mediaRefs) {
+  return mediaRefs.reduce((total, mediaRef) => (
+    total + (Number.isInteger(mediaRef.byte_size) && mediaRef.byte_size >= 0 ? mediaRef.byte_size : 0)
+  ), 0);
+}
+
+function artifactLatencyMetadata({ mediaPrepareMs, policyPromptMs, telemetryContents }) {
+  return {
+    latency_stages_ms: {
+      media_prepare: mediaPrepareMs,
+      policy_prompt: policyPromptMs,
+      pre_gemini_total: mediaPrepareMs + policyPromptMs,
+    },
+    media_file_count: telemetryContents.length,
+    media_byte_count: mediaByteCount(telemetryContents),
+  };
+}
+
 export async function runArtifactReview({
   apiKey,
   cwd = process.cwd(),
@@ -89,6 +112,7 @@ export async function runArtifactReview({
   env = process.env,
   allowFakeResponse = false,
   now = new Date(),
+  nowMs = Date.now,
   writeArtifact = false,
   generate = generateArtifactReview,
   telemetry = { cwd, source: "cli", command: "artifact-review" },
@@ -107,6 +131,7 @@ export async function runArtifactReview({
 
   const imageParts = [];
   const telemetryMediaRefs = [];
+  const mediaPrepareStartMs = nowMs();
   for (let index = 0; index < resolvedFiles.length; index += 1) {
     const { part, metadata } = await imagePartWithMetadataFromFile(resolvedFiles[index]);
     imageParts.push(part);
@@ -115,6 +140,7 @@ export async function runArtifactReview({
       ...metadata,
     });
   }
+  const mediaPrepareEndMs = nowMs();
   const policy = await loadProjectPolicy(cwd);
   const prompt = buildArtifactReviewPrompt({
     artifactKind,
@@ -122,8 +148,14 @@ export async function runArtifactReview({
     sources,
     policy,
   });
+  const policyPromptEndMs = nowMs();
   const contents = [...imageParts, createPartFromText(prompt)];
   const telemetryContents = withArtifactMediaKinds(telemetryMediaRefs, { artifactKind });
+  const latencyMetadata = artifactLatencyMetadata({
+    mediaPrepareMs: elapsedMs(mediaPrepareStartMs, mediaPrepareEndMs),
+    policyPromptMs: elapsedMs(mediaPrepareEndMs, policyPromptEndMs),
+    telemetryContents,
+  });
 
   const generated = await generate({
     apiKey,
@@ -131,7 +163,14 @@ export async function runArtifactReview({
     contents,
     env,
     allowFakeResponse,
-    telemetry: telemetry ? { ...telemetry, contents: telemetryContents } : telemetry,
+    telemetry: telemetry ? {
+      ...telemetry,
+      contents: telemetryContents,
+      metadata: {
+        ...(telemetry.metadata && typeof telemetry.metadata === "object" ? telemetry.metadata : {}),
+        ...latencyMetadata,
+      },
+    } : telemetry,
   });
 
   const review = normalizeArtifactReview({

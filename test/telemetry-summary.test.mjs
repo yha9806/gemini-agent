@@ -123,6 +123,10 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     max_ms: null,
     top_commands: [],
   });
+  assert.deepEqual(result.latency_stages, {
+    stage_count: 0,
+    top_stages: [],
+  });
   assert.equal(result.usage.total_tokens, 0);
   assert.equal(result.raw_content.prompt_events, 0);
   assert.deepEqual(result.palette_split, {
@@ -286,6 +290,113 @@ test("runTelemetrySummary aggregates latency percentiles by command", async () =
   assert.doesNotMatch(serialized, /private fast diff prompt/);
   assert.doesNotMatch(serialized, /private fast diff response/);
   assert.doesNotMatch(serialized, /evt_000071/);
+});
+
+test("runTelemetrySummary aggregates safe latency stage attribution", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(76, {
+      command: "artifact-review",
+      prompt: "private latency stage prompt",
+      response: "private latency stage response",
+      metadata: {
+        latency_stages_ms: {
+          media_prepare: 5,
+          policy_prompt: 7,
+          pre_gemini_total: 12,
+          "/Users/example/private": 999,
+          badStage: 100,
+          negative_value: -1,
+          float_value: 1.5,
+          string_value: "100",
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(77, {
+      command: "gemini-artifact-review",
+      metadata: {
+        latency_stages_ms: {
+          media_prepare: 10,
+          policy_prompt: 3,
+          pre_gemini_total: 13,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(78, {
+      command: "diff-review",
+      metadata: {
+        latency_stages_ms: {
+          pre_gemini_total: 1,
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({
+    cwd,
+    scope: "local",
+    topLimit: 5,
+  });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = `${JSON.stringify(summary)}\n${text}`;
+
+  assert.deepEqual(summary.latency_stages, {
+    stage_count: 7,
+    top_stages: [
+      {
+        stage: "pre_gemini_total",
+        event_count: 3,
+        p50_ms: 12,
+        p95_ms: 13,
+        max_ms: 13,
+        top_commands: [
+          { command: "gemini-artifact-review", event_count: 1, p50_ms: 13, p95_ms: 13, max_ms: 13 },
+          { command: "artifact-review", event_count: 1, p50_ms: 12, p95_ms: 12, max_ms: 12 },
+          { command: "diff-review", event_count: 1, p50_ms: 1, p95_ms: 1, max_ms: 1 },
+        ],
+      },
+      {
+        stage: "media_prepare",
+        event_count: 2,
+        p50_ms: 5,
+        p95_ms: 10,
+        max_ms: 10,
+        top_commands: [
+          { command: "gemini-artifact-review", event_count: 1, p50_ms: 10, p95_ms: 10, max_ms: 10 },
+          { command: "artifact-review", event_count: 1, p50_ms: 5, p95_ms: 5, max_ms: 5 },
+        ],
+      },
+      {
+        stage: "policy_prompt",
+        event_count: 2,
+        p50_ms: 3,
+        p95_ms: 7,
+        max_ms: 7,
+        top_commands: [
+          { command: "artifact-review", event_count: 1, p50_ms: 7, p95_ms: 7, max_ms: 7 },
+          { command: "gemini-artifact-review", event_count: 1, p50_ms: 3, p95_ms: 3, max_ms: 3 },
+        ],
+      },
+    ],
+  });
+  assert.match(text, /Latency stages:/);
+  assert.match(text, /pre_gemini_total: 3 events, p50 12 ms, p95 13 ms, max 13 ms/);
+  assert.doesNotMatch(serialized, /private latency stage prompt|private latency stage response/);
+  assert.doesNotMatch(serialized, /evt_000076|\/Users\/example|badStage|negative_value|float_value|string_value/);
 });
 
 test("runTelemetrySummary aggregates pending sent failed quarantine dimensions and usage", async () => {

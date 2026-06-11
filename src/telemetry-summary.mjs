@@ -134,6 +134,13 @@ function zeroLatency() {
   };
 }
 
+function zeroLatencyStages() {
+  return {
+    stage_count: 0,
+    top_stages: [],
+  };
+}
+
 function zeroStatusCounts() {
   return {
     event_count: 0,
@@ -400,6 +407,89 @@ function buildLatencySummary(aggregate, topLimit) {
   return {
     ...publicLatency(aggregate.values),
     top_commands: topLatencyCommands(aggregate.commands, topLimit),
+  };
+}
+
+const SAFE_LATENCY_STAGE_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+
+function publicStageLatency(values) {
+  const latency = publicLatency(values);
+  return {
+    event_count: latency.event_count,
+    p50_ms: latency.p50_ms,
+    p95_ms: latency.p95_ms,
+    max_ms: latency.max_ms,
+  };
+}
+
+function createLatencyStagesAggregate() {
+  return {
+    stageCount: 0,
+    stages: new Map(),
+  };
+}
+
+function safeLatencyStageValue(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function safeLatencyStageName(value) {
+  return typeof value === "string" && SAFE_LATENCY_STAGE_NAME.test(value) ? value : null;
+}
+
+function addLatencyStage(aggregate, stage, command, latencyMs) {
+  const item = aggregate.stages.get(stage) ?? createLatencyAggregate();
+  item.values.push(latencyMs);
+  const commandKey = canonicalCommand(command);
+  const commandItem = item.commands.get(commandKey) ?? { key: commandKey, values: [] };
+  commandItem.values.push(latencyMs);
+  item.commands.set(commandKey, commandItem);
+  aggregate.stages.set(stage, item);
+  aggregate.stageCount += 1;
+}
+
+function addLatencyStages(aggregate, command, metadata) {
+  const stages = metadata?.latency_stages_ms;
+  if (!stages || typeof stages !== "object" || Array.isArray(stages)) return;
+  for (const [rawStage, rawLatencyMs] of Object.entries(stages)) {
+    const stage = safeLatencyStageName(rawStage);
+    const latencyMs = safeLatencyStageValue(rawLatencyMs);
+    if (!stage || latencyMs === null) continue;
+    addLatencyStage(aggregate, stage, command, latencyMs);
+  }
+}
+
+function topLatencyStageCommands(map, limit) {
+  return [...map.values()]
+    .map((item) => ({
+      command: item.key,
+      ...publicStageLatency(item.values),
+    }))
+    .sort((left, right) => (
+      right.p95_ms - left.p95_ms
+      || right.event_count - left.event_count
+      || left.command.localeCompare(right.command)
+    ))
+    .slice(0, limit);
+}
+
+function buildLatencyStagesSummary(aggregate, topLimit) {
+  if (aggregate.stageCount === 0) return zeroLatencyStages();
+  const topStages = [...aggregate.stages.entries()]
+    .map(([stage, item]) => ({
+      stage,
+      ...publicStageLatency(item.values),
+      top_commands: topLatencyStageCommands(item.commands, topLimit),
+    }))
+    .sort((left, right) => (
+      right.p95_ms - left.p95_ms
+      || right.event_count - left.event_count
+      || left.stage.localeCompare(right.stage)
+    ))
+    .slice(0, topLimit);
+  return {
+    stage_count: aggregate.stageCount,
+    top_stages: topStages,
   };
 }
 
@@ -826,6 +916,13 @@ function formatLatencyCommandRows(items) {
   )).join("\n");
 }
 
+function formatLatencyStageRows(items) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item.stage}: ${formatNumber(item.event_count)} events, p50 ${formatNumber(item.p50_ms)} ms, p95 ${formatNumber(item.p95_ms)} ms, max ${formatNumber(item.max_ms)} ms`
+  )).join("\n");
+}
+
 function formatBackfillManifestSourceRows(items) {
   if (items.length === 0) return "None";
   return items.map((item, index) => (
@@ -936,6 +1033,7 @@ function createAccumulator(invalidSampleLimit) {
     freshInputModes: new Map(),
     contextLoopCommands: new Map(),
     latency: createLatencyAggregate(),
+    latencyStages: createLatencyStagesAggregate(),
     invalidSamples: [],
   };
 }
@@ -962,6 +1060,7 @@ function addEvent(accumulator, state, event) {
   if (isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
   addContextLoopEvent(accumulator, event);
   addLatency(accumulator.latency, event.command, event.latency_ms);
+  addLatencyStages(accumulator.latencyStages, event.command, event.metadata);
 
   if (event.prompt) accumulator.rawContent.prompt_events += 1;
   if (event.response) accumulator.rawContent.response_events += 1;
@@ -1314,6 +1413,7 @@ export async function runTelemetrySummary({
   };
   const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
   const latency = buildLatencySummary(accumulator.latency, topLimit);
+  const latencyStages = buildLatencyStagesSummary(accumulator.latencyStages, topLimit);
   const contextLoop = {
     ...accumulator.contextLoop,
     smart_diff_context_pack_bootstrap_rate: nullableRatio(
@@ -1350,6 +1450,7 @@ export async function runTelemetrySummary({
     backfill,
     palette_split: paletteSplit,
     latency,
+    latency_stages: latencyStages,
     context_loop: contextLoop,
     top_projects: topProjects,
     top_workspaces: topWorkspaces,
@@ -1420,6 +1521,11 @@ export function formatTelemetrySummaryText(summary) {
     `- Max: ${summary.latency?.max_ms == null ? "n/a" : `${formatNumber(summary.latency.max_ms)} ms`}`,
     "Top latency commands:",
     formatLatencyCommandRows(summary.latency?.top_commands ?? []),
+    "",
+    "Latency stages:",
+    `- Stage samples: ${formatNumber(summary.latency_stages?.stage_count ?? 0)}`,
+    "Top latency stages:",
+    formatLatencyStageRows(summary.latency_stages?.top_stages ?? []),
     "",
     "Usage:",
     `- Prompt tokens: ${formatNumber(summary.usage.prompt_tokens)}`,

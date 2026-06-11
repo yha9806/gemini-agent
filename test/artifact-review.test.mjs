@@ -41,6 +41,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
     cwd: dir,
     file: "design.png",
     now: new Date("2026-05-28T12:00:00.000Z"),
+    nowMs: deterministicClock([1000, 1005, 1012]),
     generate: async ({ apiKey, prompt, contents, allowFakeResponse, telemetry }) => {
       seenApiKey = apiKey;
       seenPrompt = prompt;
@@ -59,6 +60,15 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
     source: "cli",
     command: "artifact-review",
     contents: [{ source: "design.png", mime_type: "image/png", byte_size: pngBytes.length }],
+    metadata: {
+      latency_stages_ms: {
+        media_prepare: 5,
+        policy_prompt: 7,
+        pre_gemini_total: 12,
+      },
+      media_file_count: 1,
+      media_byte_count: pngBytes.length,
+    },
   });
   assert.match(seenPrompt, /artifact review/i);
   assert.match(seenPrompt, /design\.png/);
@@ -102,6 +112,7 @@ test("runArtifactReview preserves explicit telemetry override and adds safe medi
     cwd: dir,
     file: "design.png",
     telemetry,
+    nowMs: deterministicClock([2000, 2003, 2011]),
     generate: async ({ telemetry: generatedTelemetry }) => {
       seenTelemetry = generatedTelemetry;
       return fakeReview;
@@ -111,6 +122,15 @@ test("runArtifactReview preserves explicit telemetry override and adds safe medi
   assert.deepEqual(seenTelemetry, {
     ...telemetry,
     contents: [{ source: "design.png", mime_type: "image/png", byte_size: pngBytes.length }],
+    metadata: {
+      latency_stages_ms: {
+        media_prepare: 3,
+        policy_prompt: 8,
+        pre_gemini_total: 11,
+      },
+      media_file_count: 1,
+      media_byte_count: pngBytes.length,
+    },
   });
   assert.deepEqual(telemetry, { cwd: "/override", source: "mcp", command: "gemini_artifact_review", awaitCapture: true });
 });
@@ -139,6 +159,40 @@ test("runArtifactReview passes safe media references for telemetry", async () =>
     { source: "after.png", mime_type: "image/png", byte_size: pngBytes.length, media_kind: "design" },
   ]);
   assert.doesNotMatch(JSON.stringify(seenTelemetry.contents), /inlineData|YWJjZA/);
+});
+
+function deterministicClock(values) {
+  const queue = [...values];
+  return () => queue.shift();
+}
+
+test("runArtifactReview records safe pre-Gemini latency attribution metadata", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
+  await writeFile(join(dir, "design.png"), pngBytes);
+  const clock = [1000, 1005, 1012];
+  let seenTelemetry = null;
+
+  await runArtifactReview({
+    apiKey: "fake-key",
+    cwd: dir,
+    file: "design.png",
+    nowMs: () => clock.shift(),
+    generate: async ({ telemetry: generatedTelemetry }) => {
+      seenTelemetry = generatedTelemetry;
+      return fakeReview;
+    },
+  });
+
+  assert.deepEqual(seenTelemetry.metadata, {
+    latency_stages_ms: {
+      media_prepare: 5,
+      policy_prompt: 7,
+      pre_gemini_total: 12,
+    },
+    media_file_count: 1,
+    media_byte_count: pngBytes.length,
+  });
+  assert.doesNotMatch(JSON.stringify(seenTelemetry.metadata), /design\.png|inlineData|iVBOR|YWJjZA/);
 });
 
 test("runArtifactReview compares multiple image files in deterministic order", async () => {
