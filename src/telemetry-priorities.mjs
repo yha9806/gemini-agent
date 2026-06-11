@@ -397,12 +397,15 @@ function contextPackReusePriority(economics) {
   if (!candidate) return null;
   const reuseRate = nullableMetricRatio(candidate.context_pack_reuse_rate);
   const autoRate = nullableMetricRatio(candidate.auto_context_pack_rate);
+  const action = candidate.command === "diff-review"
+    ? "Increase context-pack reuse for diff-review: run gemini-agent context-pack --bootstrap --write-artifact when the pack is missing or stale, then use gemini-agent diff-review --smart-diff."
+    : `Increase context-pack reuse for ${candidate.command}: run gemini-agent context-pack --bootstrap --write-artifact when the pack is missing or stale, then use gemini-agent ${candidate.command} --auto-context-pack with narrow --stdin or --diff input.`;
   return priority({
     kind: "workflow",
     severity: "medium",
     score: 70,
     title: `Increase context-pack reuse for ${candidate.command}.`,
-    action: `Increase context-pack reuse for ${candidate.command}: run gemini-agent context-pack --bootstrap --write-artifact when the pack is missing or stale, then use gemini-agent ${candidate.command} --auto-context-pack with narrow --stdin or --diff input.`,
+    action,
     command: candidate.command,
     evidence: [
       `Gate events: ${formatNumber(nonnegativeMetric(candidate.event_count))}`,

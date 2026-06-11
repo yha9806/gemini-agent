@@ -574,6 +574,68 @@ test("runTelemetryPriorities recommends context pack reuse for heavy low-reuse g
   }
 });
 
+test("runTelemetryPriorities recommends smart-diff for diff-review context pack reuse", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    for (let index = 1; index <= 5; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(70 + index, {
+          command: "diff-review",
+          prompt: `private diff workflow prompt ${index}`,
+          response: `private diff workflow response ${index}`,
+          metadata: {
+            gate: "diff_review",
+            input_bytes: 12_000 + index,
+            input_limit_bytes: 4 * 1024 * 1024,
+            context_pack_mode: "none",
+            fresh_input_mode: "diff",
+            context_pack_path: "/Users/example/private/latest.json",
+          },
+          economics: {
+            input_tokens: 100_000,
+            output_tokens: 10_000,
+            total_tokens: 110_000,
+            codex_tokens_saved_estimate: 200_000,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const workflow = report.priorities.find((item) => (
+      item.kind === "workflow"
+      && /context-pack reuse/i.test(item.title)
+    ));
+
+    assert.ok(workflow);
+    assert.equal(workflow.command, "diff-review");
+    assert.match(workflow.action, /Increase context-pack reuse for diff-review/);
+    assert.match(workflow.action, /gemini-agent context-pack --bootstrap --write-artifact/);
+    assert.match(workflow.action, /gemini-agent diff-review --smart-diff/);
+    assert.doesNotMatch(workflow.action, /diff-review --auto-context-pack/);
+    assert.ok(workflow.evidence.some((item) => item === "Gate events: 5"));
+    assert.ok(workflow.evidence.some((item) => item === "Context-pack reuse rate: 0.0%"));
+    assert.match(text, /diff-review --smart-diff/);
+    assert.doesNotMatch(serialized, /private diff workflow prompt|private diff workflow response/);
+    assert.doesNotMatch(serialized, /evt_priority_000071|\/Users\/example|latest\.json/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities does not recommend usage fixes when only multimodal metadata is weak", async () => {
   const cwd = await temporaryWorkspace();
   try {
