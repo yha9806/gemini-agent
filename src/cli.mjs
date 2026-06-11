@@ -132,7 +132,7 @@ function printUsage() {
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
-    "  gemini-agent diff-review (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
+    "  gemini-agent diff-review (--file <path> | --stdin | --diff | --smart-diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent research-brief (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
     "  gemini-agent telemetry enable [--global] --level raw --endpoint <url> --token-env <env> --confirm-raw-content [--deployment-id <id>] [--user-label <label>|--clear-user-label] [--schedule <schedule>]",
@@ -1045,6 +1045,7 @@ async function readGateInput(args, { gate, command } = {}) {
   let filePath = null;
   let contextPackPath = null;
   let autoContextPack = false;
+  let smartDiff = false;
   let readFromStdin = false;
   let diff = false;
   let limitBytes = defaultGateInputLimitBytes(gate);
@@ -1064,6 +1065,8 @@ async function readGateInput(args, { gate, command } = {}) {
       index += 1;
     } else if (arg === "--auto-context-pack") {
       autoContextPack = true;
+    } else if (arg === "--smart-diff") {
+      smartDiff = true;
     } else if (arg === "--stdin") {
       readFromStdin = true;
     } else if (arg === "--diff") {
@@ -1080,16 +1083,36 @@ async function readGateInput(args, { gate, command } = {}) {
     throw new Error("--context-pack and --auto-context-pack are mutually exclusive.");
   }
 
+  if (smartDiff && command !== "diff-review") {
+    throw new Error("--smart-diff is only supported for diff-review.");
+  }
+
+  if (
+    smartDiff
+    && (contextPackPath || autoContextPack || readFromStdin || diff || filePath || textArgs.join(" ").trim())
+  ) {
+    throw new Error("--smart-diff cannot be combined with --diff, --stdin, --file, --context-pack, --auto-context-pack, or text input.");
+  }
+
+  const shouldReadAutoContextPack = autoContextPack || smartDiff;
+  const shouldReadDiff = diff || smartDiff;
   const sections = [];
   const freshInputModes = [];
-  if (autoContextPack) {
-    const contextPackInput = await readAutoContextPackFile({
-      gate,
-      command,
-      limitBytes,
-      cwd: process.cwd(),
-    });
-    sections.push(contextPackInput.inputText);
+  if (shouldReadAutoContextPack) {
+    try {
+      const contextPackInput = await readAutoContextPackFile({
+        gate,
+        command,
+        limitBytes,
+        cwd: process.cwd(),
+      });
+      sections.push(contextPackInput.inputText);
+    } catch (error) {
+      if (smartDiff && /^No context pack found at /.test(error?.message ?? "")) {
+        throw new Error(error.message.replace("--auto-context-pack", "--smart-diff"));
+      }
+      throw error;
+    }
   }
 
   if (contextPackPath) {
@@ -1097,7 +1120,7 @@ async function readGateInput(args, { gate, command } = {}) {
     sections.push(contextPackInput.inputText);
   }
 
-  if (diff) {
+  if (shouldReadDiff) {
     let collected;
     const stdinText = readFromStdin ? await readStdin() : "";
     const text = textArgs.join(" ");
@@ -1108,7 +1131,7 @@ async function readGateInput(args, { gate, command } = {}) {
           text,
         ].filter(Boolean).join("\n"),
         files: filePath ? [filePath] : [],
-        diff,
+        diff: shouldReadDiff,
         cwd: process.cwd(),
       });
     } catch (error) {
@@ -1120,12 +1143,13 @@ async function readGateInput(args, { gate, command } = {}) {
     }
     if (collected?.input?.trim()) {
       sections.push(collected.input.trim());
-      freshInputModes.push(...gateFreshInputModes({
+      const modes = gateFreshInputModes({
         stdinText,
         text,
         filePath,
         sources: collected.sources,
-      }));
+      }).map((mode) => (smartDiff && mode === "diff" ? "smart-diff" : mode));
+      freshInputModes.push(...modes);
     }
   } else {
     if (filePath) {
@@ -1145,11 +1169,14 @@ async function readGateInput(args, { gate, command } = {}) {
     }
   }
 
-  const metadata = gateTelemetryMetadata({
-    autoContextPack,
-    contextPackPath,
-    freshInputModes,
-  });
+  const metadata = {
+    ...gateTelemetryMetadata({
+      autoContextPack: shouldReadAutoContextPack,
+      contextPackPath,
+      freshInputModes,
+    }),
+    smart_diff_shortcut: smartDiff,
+  };
 
   if (!sections.length) {
     return { inputText: "", inputBytes: 0, limitBytes, metadata };

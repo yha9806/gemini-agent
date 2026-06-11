@@ -637,6 +637,95 @@ test("diff-review --auto-context-pack --diff suppresses existing context pack hi
   assert.equal(stderr, "");
 });
 
+test("diff-review --smart-diff uses auto context pack with current git diff and safe telemetry", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-smart-diff-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await mkdir(join(dir, ".gemini-agent", "context"), { recursive: true });
+  await writeFile(join(dir, ".gemini-agent", "context", "latest.json"), fakeContextPack);
+  await writeFile(join(dir, "app.txt"), "old\n");
+  await execFileAsync("git", ["add", "app.txt"], { cwd: dir });
+  await writeFile(join(dir, "app.txt"), "new\n");
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  const { stdout, stderr } = await execBin(["diff-review", "--smart-diff"], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeReview,
+    },
+  });
+
+  assert.equal(JSON.parse(stdout).verdict, "pass");
+  assert.equal(stderr, "");
+
+  const pending = await readdir(telemetryQueueDirs(dir).pending);
+  assert.equal(pending.length, 1);
+  const event = JSON.parse(await readFile(join(telemetryQueueDirs(dir).pending, pending[0]), "utf8"));
+  assert.equal(event.metadata.context_pack_mode, "auto");
+  assert.equal(event.metadata.fresh_input_mode, "smart-diff");
+  assert.equal(event.metadata.smart_diff_shortcut, true);
+  assert.equal(event.metadata.context_pack_preflight_warning, false);
+  assert.doesNotMatch(JSON.stringify(event.metadata), /latest\.json|\.gemini-agent|app\.txt/);
+});
+
+test("diff-review --smart-diff fails clearly when context pack is missing before credentials", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-smart-diff-missing-"));
+  await execFileAsync("git", ["init"], { cwd: dir });
+  await writeFile(join(dir, "app.txt"), "old\n");
+  await execFileAsync("git", ["add", "app.txt"], { cwd: dir });
+  await writeFile(join(dir, "app.txt"), "new\n");
+
+  await assert.rejects(
+    execBin(["diff-review", "--smart-diff"], {
+      cwd: dir,
+      env: { ...process.env, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.match(error.stderr, /No context pack found/);
+      assert.match(error.stderr, /context-pack --bootstrap --write-artifact/);
+      assert.match(error.stderr, /--smart-diff/);
+      assert.doesNotMatch(error.stderr, /Gemini API key is not configured/);
+      return true;
+    },
+  );
+});
+
+test("diff-review --smart-diff rejects conflicting input flags", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-smart-diff-conflict-"));
+  await assert.rejects(
+    execBin(["diff-review", "--smart-diff", "--diff"], {
+      cwd: dir,
+      env: { ...process.env, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.match(error.stderr, /--smart-diff cannot be combined with --diff, --stdin, --file, --context-pack, --auto-context-pack, or text input/);
+      return true;
+    },
+  );
+});
+
+test("non diff-review gates reject --smart-diff", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-smart-diff-scope-"));
+  await assert.rejects(
+    execBin(["plan-critique", "--smart-diff"], {
+      cwd: dir,
+      env: { ...process.env, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.match(error.stderr, /--smart-diff is only supported for diff-review/);
+      return true;
+    },
+  );
+});
+
 test("gate commands accept context-pack input and print JSON", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const contextPath = join(dir, "context.json");

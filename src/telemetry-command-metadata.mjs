@@ -1,6 +1,6 @@
 const CONTEXT_PACK_COMMAND_MODES = new Set(["bootstrap", "manual"]);
 const GATE_CONTEXT_PACK_MODES = new Set(["auto", "explicit", "none"]);
-const FRESH_INPUT_MODES = new Set(["stdin", "file", "diff", "text"]);
+const FRESH_INPUT_MODES = new Set(["stdin", "file", "diff", "smart-diff", "text"]);
 
 function safeMode(value, allowed, fallback) {
   return allowed.has(value) ? value : fallback;
