@@ -81,6 +81,10 @@ import {
   runTelemetryRawReveal,
 } from "./telemetry-raw-reveal.mjs";
 import {
+  formatTelemetryRawDeleteText,
+  runTelemetryRawDelete,
+} from "./telemetry-raw-delete.mjs";
+import {
   formatTelemetryRawPruneText,
   runTelemetryRawPrune,
 } from "./telemetry-raw-prune.mjs";
@@ -151,6 +155,7 @@ function printUsage() {
     "  gemini-agent telemetry raw preflight [--global] [--batch-size <n>] [--max-bytes <n>] [--json]",
     "  gemini-agent telemetry raw export --state pending|sent --output <path> --limit <n> --confirm-raw-content [--global] [--format jsonl] [--json]",
     "  gemini-agent telemetry raw reveal --state pending|sent --limit <n> --confirm-raw-content [--global] [--json]",
+    "  gemini-agent telemetry raw delete --state pending|sent --event-id <id> --confirm-raw-content [--global] [--dry-run|--write] [--json]",
     "  gemini-agent telemetry raw prune --state sent --keep-days <n> [--max-sent-bytes <n>] [--global] [--dry-run|--write] [--json]",
     "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry priorities [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
@@ -646,6 +651,53 @@ function parseTelemetryRawRevealOptions(args) {
     throw new Error("--state must be pending or sent.");
   }
   if (options.limit === undefined) throw new Error("--limit is required.");
+  return options;
+}
+
+function parseTelemetryRawDeleteOptions(args) {
+  const options = {
+    confirmRawContent: false,
+    dryRun: true,
+    global: false,
+    json: false,
+  };
+  let sawDryRun = false;
+  let sawWrite = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--confirm-raw-content") {
+      options.confirmRawContent = true;
+    } else if (arg === "--dry-run") {
+      sawDryRun = true;
+      options.dryRun = true;
+    } else if (arg === "--write") {
+      sawWrite = true;
+      options.dryRun = false;
+    } else if (arg === "--state") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--state must be pending or sent.");
+      options.state = value;
+      index += 1;
+    } else if (arg === "--event-id") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--event-id is required.");
+      options.eventId = value;
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry raw delete argument: ${arg}`);
+    }
+  }
+
+  if (sawDryRun && sawWrite) throw new Error("--dry-run and --write cannot be used together.");
+  if (options.state !== "pending" && options.state !== "sent") {
+    throw new Error("--state must be pending or sent.");
+  }
+  if (!options.eventId) throw new Error("--event-id is required.");
   return options;
 }
 
@@ -1814,6 +1866,25 @@ async function runTelemetryRaw(args = []) {
     return;
   }
 
+  if (subcommand === "delete") {
+    const options = parseTelemetryRawDeleteOptions(subArgs);
+    const report = await runTelemetryRawDelete({
+      cwd: process.cwd(),
+      home: process.env.HOME,
+      scope: telemetryScope(options),
+      state: options.state,
+      eventId: options.eventId,
+      confirmRawContent: options.confirmRawContent,
+      dryRun: options.dryRun,
+    });
+    if (options.json) {
+      output.write(`${JSON.stringify(report, null, 2)}\n`);
+      return;
+    }
+    output.write(formatTelemetryRawDeleteText(report));
+    return;
+  }
+
   if (subcommand === "prune") {
     const options = parseTelemetryRawPruneOptions(subArgs);
     const report = await runTelemetryRawPrune({
@@ -1834,7 +1905,7 @@ async function runTelemetryRaw(args = []) {
     return;
   }
 
-  throw new Error("telemetry raw requires inventory, preflight, export, reveal, or prune.");
+  throw new Error("telemetry raw requires inventory, preflight, export, reveal, delete, or prune.");
 }
 
 async function runTelemetryEconomicsCommand(args = []) {

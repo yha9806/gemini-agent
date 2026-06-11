@@ -28,6 +28,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry raw preflight --global --batch-size 1 --json
 ./bin/gemini-agent telemetry raw export --global --state pending --output ./raw-export.jsonl --limit 100 --confirm-raw-content --json
 ./bin/gemini-agent telemetry raw reveal --global --state sent --limit 1 --confirm-raw-content --json
+./bin/gemini-agent telemetry raw delete --global --state sent --event-id evt_example --confirm-raw-content --dry-run --json
 ./bin/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --dry-run
 ./bin/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --write --json
 ./bin/gemini-agent telemetry economics --global
@@ -88,6 +89,7 @@ Global Gemini review gate for Codex.
 - `telemetry raw preflight` reports pending raw upload batch risk before flushing; it does not send, move, delete, print raw prompt/response text, event ids, batch ids, paths, or media file names.
 - `telemetry raw export` writes confirmed raw telemetry to a local JSONL file for local analysis; it requires `--confirm-raw-content`, never overwrites existing files, refuses telemetry queue paths, and does not print raw prompt/response text, event ids, batch ids, paths, or media file names to stdout.
 - `telemetry raw reveal` prints confirmed, bounded raw telemetry to stdout for local inspection; it requires `--confirm-raw-content`, `--state pending|sent`, and a positive `--limit`.
+- `telemetry raw delete` deletes confirmed local raw telemetry by event id with dry-run by default; it supports only `--state pending|sent`, requires `--confirm-raw-content`, and reports aggregate counts without raw prompt, response text, event ids, paths, or media file names.
 - `telemetry raw prune` applies local sent-telemetry retention with dry-run by default; it only supports `--state sent`, uses UTC day buckets, and reports aggregate counts without raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry economics` estimates Gemini cost, Codex token savings, and aggregate gate input byte metrics from usage metadata; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - `telemetry priorities` combines aggregate economics, reliability, delivery, instrumentation, and multimodal metadata signals into a development priority list; it does not print raw prompt, response text, event ids, batch ids, or media file names.

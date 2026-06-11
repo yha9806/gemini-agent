@@ -51,6 +51,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw preflight --global --batch-size 1 --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw export --global --state pending --output \.\/raw-export\.jsonl --limit 100 --confirm-raw-content --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw reveal --global --state sent --limit 1 --confirm-raw-content --json$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw delete --global --state sent --event-id evt_example --confirm-raw-content --dry-run --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --write --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global$/m);
@@ -88,6 +89,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /pending raw upload batch risk before flushing/);
   assert.match(readme, /writes confirmed raw telemetry to a local JSONL file/);
   assert.match(readme, /prints confirmed, bounded raw telemetry to stdout/);
+  assert.match(readme, /deletes confirmed local raw telemetry by event id with dry-run by default/);
   assert.match(readme, /local sent-telemetry retention with dry-run by default/);
   assert.match(readme, /estimates Gemini cost, Codex token savings, and aggregate gate input byte metrics/);
   assert.match(readme, /combines aggregate health, economics, context reuse, attribution, multimodal adoption, and top development priority into a product decision snapshot/);

@@ -12,6 +12,7 @@ import {
   claimTelemetryBatch,
   completeTelemetryBatch,
   failTelemetryBatch,
+  loadTelemetryState,
   loadTelemetryQueueSnapshot,
   telemetryQueueDirs,
 } from "../src/telemetry-queue.mjs";
@@ -1771,6 +1772,162 @@ test("telemetry raw reveal rejects missing confirmation and unsafe arguments", a
       (error) => {
         assert.equal(error.code, 1);
         assert.match(error.stderr, /Unknown telemetry raw reveal argument/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry raw delete dry-runs and writes pending deletion without exposing raw content", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-delete-pending-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent("delete_pending", {
+        prompt: "Authorization: Bearer cli-delete-secret",
+        response: "raw delete response should not print",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ basename: "private-cli-delete.png", mime_type: "image/png", byte_size: 10 }],
+        },
+      }),
+    });
+    await writeFile(telemetryQueueDirs(cwd).state, `${JSON.stringify({ queue_bytes: 999 })}\n`);
+    assert.equal((await loadTelemetryState({ cwd })).queue_bytes > 0, true);
+
+    const dryRun = await execBin([
+      "telemetry",
+      "raw",
+      "delete",
+      "--state",
+      "pending",
+      "--event-id",
+      "evt_cli_delete_pending",
+      "--confirm-raw-content",
+      "--dry-run",
+      "--json",
+    ], { cwd });
+    const dryRunParsed = JSON.parse(dryRun.stdout);
+    assert.equal(dryRun.stderr, "");
+    assert.equal(dryRunParsed.ok, true);
+    assert.equal(dryRunParsed.dry_run, true);
+    assert.equal(dryRunParsed.matched_count, 1);
+    assert.equal(dryRunParsed.deleted_count, 0);
+    assert.equal(dryRunParsed.would_delete_count, 1);
+    assert.equal((await readdir(telemetryQueueDirs(cwd).pending)).length, 1);
+
+    const write = await execBin([
+      "telemetry",
+      "raw",
+      "delete",
+      "--state",
+      "pending",
+      "--event-id",
+      "evt_cli_delete_pending",
+      "--confirm-raw-content",
+      "--write",
+      "--json",
+    ], { cwd });
+    const writeParsed = JSON.parse(write.stdout);
+
+    assert.equal(write.stderr, "");
+    assert.equal(writeParsed.ok, true);
+    assert.equal(writeParsed.dry_run, false);
+    assert.equal(writeParsed.matched_count, 1);
+    assert.equal(writeParsed.deleted_count, 1);
+    assert.equal((await readdir(telemetryQueueDirs(cwd).pending)).length, 0);
+    assert.equal((await loadTelemetryState({ cwd })).queue_bytes, 0);
+    assert.doesNotMatch(write.stdout, /evt_cli_delete_pending|cli-delete-secret|raw delete response should not print|private-cli-delete|queue\/pending/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry raw delete writes sent deletion by event id", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-delete-sent-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "dep_cli",
+    });
+    await completeSentCliEvent(cwd, "delete_sent", new Date("2026-06-11T10:00:00.000Z"));
+    assert.equal((await loadTelemetryQueueSnapshot({ cwd })).sent.count, 1);
+
+    const { stdout, stderr } = await execBin([
+      "telemetry",
+      "raw",
+      "delete",
+      "--state",
+      "sent",
+      "--event-id",
+      "evt_cli_sent_delete_sent",
+      "--confirm-raw-content",
+      "--write",
+      "--json",
+    ], { cwd });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.deleted_count, 1);
+    assert.equal((await loadTelemetryQueueSnapshot({ cwd })).sent.count, 0);
+    assert.doesNotMatch(stdout, /evt_cli_sent_delete_sent|raw sent prompt|raw sent response|queue\/sent/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry raw delete rejects missing confirmation and unsafe arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-raw-delete-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "delete", "--state", "pending", "--event-id", "evt_cli_1"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--confirm-raw-content is required/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "delete", "--state", "pending", "--event-id", "evt_cli_1", "--confirm-raw-content", "--dry-run", "--write"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--dry-run and --write cannot be used together/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "delete", "--state", "failed", "--event-id", "evt_cli_1", "--confirm-raw-content"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--state must be pending or sent/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "delete", "--state", "pending", "--event-id", "../evt_cli_1", "--confirm-raw-content"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--event-id must be a safe telemetry event id/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "raw", "delete", "--unknown"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Unknown telemetry raw delete argument/);
         return true;
       },
     );
