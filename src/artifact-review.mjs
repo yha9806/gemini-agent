@@ -11,6 +11,7 @@ const MAX_ARTIFACT_REVIEW_FILES = 4;
 const ARTIFACT_REVIEW_MODES = new Set(["single", "comparison"]);
 const ARTIFACT_REVIEW_DEPTHS = new Set(["quick", "standard"]);
 export const QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS = 2048;
+export const QUICK_COMPARISON_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS = 4096;
 const SAFE_MEDIA_KINDS = new Set(["screenshot", "design", "document", "image", "unknown"]);
 
 function artifactTypeFor({ artifactKind = "image", mimeType }) {
@@ -47,8 +48,11 @@ function normalizeReviewDepth(depth) {
   return value;
 }
 
-function maxOutputTokensForReviewDepth(depth) {
-  return depth === "quick" ? QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS : undefined;
+function maxOutputTokensForReview({ depth, mode }) {
+  if (depth !== "quick") return undefined;
+  return mode === "comparison"
+    ? QUICK_COMPARISON_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS
+    : QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS;
 }
 
 function artifactTelemetryMediaKind(artifactKind) {
@@ -107,6 +111,7 @@ function artifactLatencyMetadata({
   mediaPrepareMs,
   policyPromptMs,
   telemetryContents,
+  reviewMode,
   reviewDepth,
   maxOutputTokens,
 }) {
@@ -118,6 +123,7 @@ function artifactLatencyMetadata({
     },
     media_file_count: telemetryContents.length,
     media_byte_count: mediaByteCount(telemetryContents),
+    artifact_review_mode: reviewMode,
     artifact_review_depth: reviewDepth,
     artifact_review_prompt_budget: reviewDepth,
   };
@@ -146,7 +152,7 @@ export async function runArtifactReview({
   const sources = normalizeArtifactFiles({ file, files });
   const mode = normalizeReviewMode(reviewMode, sources.length);
   const depth = normalizeReviewDepth(reviewDepth);
-  const maxOutputTokens = maxOutputTokensForReviewDepth(depth);
+  const maxOutputTokens = maxOutputTokensForReview({ depth, mode });
 
   const resolvedFiles = sources.map((source) => resolveCwdFilePath(source, { cwd }));
   const mimeTypes = sources.map((source) => detectArtifactMime(source));
@@ -184,6 +190,7 @@ export async function runArtifactReview({
     mediaPrepareMs: elapsedMs(mediaPrepareStartMs, mediaPrepareEndMs),
     policyPromptMs: elapsedMs(mediaPrepareEndMs, policyPromptEndMs),
     telemetryContents,
+    reviewMode: mode,
     reviewDepth: depth,
     maxOutputTokens,
   });

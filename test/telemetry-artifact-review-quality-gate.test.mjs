@@ -346,6 +346,86 @@ test("quality gate treats non-active quick budget cohort failures as historical 
   assert.ok(gate.next_actions.some((item) => /historical 768 quick budget cohort/i.test(item)));
 });
 
+test("quality gate treats quick single and quick comparison budgets as active cohorts", () => {
+  const gate = buildArtifactReviewQualityGate(summary({
+    event_counts: { total: 35 },
+    artifact_review_quality: {
+      event_count: 20,
+      scorecard_event_count: 18,
+      avg_overall_score: 82,
+      avg_implementation_readiness_score: 79,
+      scorecard_field_coverage: [
+        { field: "overall_score", events: 20, scored_events: 18, coverage: 0.9 },
+        { field: "accessibility_score", events: 20, scored_events: 17, coverage: 0.85 },
+      ],
+      top_commands: [],
+    },
+    artifact_review_depths: {
+      event_count: 15,
+      known_depth_event_count: 15,
+      top_depths: [
+        {
+          review_depth: "quick",
+          event_count: 15,
+          success_count: 13,
+          error_count: 2,
+          p95_latency_ms: 12217,
+          total_tokens: 36000,
+          scorecard_event_count: 13,
+        },
+      ],
+      top_budget_cohorts: [
+        {
+          review_depth: "quick",
+          budget_cohort: "2048",
+          max_output_tokens: 2048,
+          event_count: 10,
+          success_count: 10,
+          error_count: 0,
+          p95_latency_ms: 9000,
+          total_tokens: 22000,
+          scorecard_event_count: 10,
+        },
+        {
+          review_depth: "quick",
+          budget_cohort: "4096",
+          max_output_tokens: 4096,
+          event_count: 3,
+          success_count: 3,
+          error_count: 0,
+          p95_latency_ms: 12000,
+          total_tokens: 9000,
+          scorecard_event_count: 3,
+        },
+        {
+          review_depth: "quick",
+          budget_cohort: "768",
+          max_output_tokens: 768,
+          event_count: 2,
+          success_count: 0,
+          error_count: 2,
+          p95_latency_ms: 12217,
+          total_tokens: 5000,
+          scorecard_event_count: 0,
+        },
+      ],
+    },
+  }));
+
+  assert.equal(gate.readiness.status, "caution");
+  assert.ok(gate.readiness.reasons.includes("quick_budget_cohort_low_confidence"));
+  assert.equal(gate.quick_depth.active_event_count, 13);
+  assert.equal(gate.quick_depth.active_error_rate, 0);
+  assert.deepEqual(
+    gate.quick_depth.active_budget_cohorts.map((cohort) => cohort.budget_cohort),
+    ["2048", "4096"],
+  );
+  assert.equal(gate.quick_depth.historical_risky_budget_cohorts.length, 1);
+  assert.equal(gate.quick_depth.historical_risky_budget_cohorts[0].budget_cohort, "768");
+  assert.ok(gate.next_actions.some((item) => /current 2048\/4096 quick budget cohorts/i.test(item)));
+  assert.ok(gate.next_actions.some((item) => /historical 768 quick budget cohort/i.test(item)));
+});
+
 test("quality gate returns ready when quick depth and scorecard evidence are healthy", () => {
   const gate = buildArtifactReviewQualityGate(summary({
     event_counts: { total: 40 },

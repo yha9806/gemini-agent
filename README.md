@@ -86,7 +86,8 @@ Global Gemini review gate for Codex.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1, including bounded multi-file comparison for visual diff work.
 - `artifact-review` returns a structured design scorecard with 0-100 visual hierarchy, clarity, accessibility, consistency, and implementation-readiness scores when the artifact supports design judgment.
-- `artifact-review --review-depth quick` keeps the same JSON shape while asking Gemini for concise arrays, setting a lower output-token budget, and recording safe telemetry depth metadata for latency comparison.
+- `artifact-review --review-depth quick` keeps the same JSON shape while asking Gemini for concise arrays, setting a lower output-token budget, and recording safe telemetry depth/mode metadata for latency comparison.
+- quick single reviews use the 2048 output-token cohort while quick comparison reviews use the 4096 output-token cohort, so visual-diff style reviews have more room to return complete JSON without changing standard-mode fallback.
 - `artifact-review --telemetry-purpose validation` marks canary or manual validation runs so delivery and latency health still count, while product multimodal, scorecard, depth, and economics usage-applicable metrics exclude that run.
 - multi-file artifact-review records media metadata without printing raw image bytes in ordinary telemetry output.
 - `palette-split` writes palette masks, decoded layers, a manifest, a quality scorecard, and a contact sheet to the explicit output directory selected by the caller.

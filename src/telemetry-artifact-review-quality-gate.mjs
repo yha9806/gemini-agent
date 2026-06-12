@@ -1,4 +1,7 @@
-import { QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS } from "./artifact-review.mjs";
+import {
+  QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS,
+  QUICK_COMPARISON_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS,
+} from "./artifact-review.mjs";
 import { runTelemetrySummary } from "./telemetry-summary.mjs";
 
 const QUICK_MIN_READY_EVENTS = 10;
@@ -8,7 +11,12 @@ const COHORT_MIN_CONFIDENCE_EVENTS = 10;
 const SCORECARD_READY_COVERAGE = 0.8;
 const GENERATION_LATENCY_MIN_EVENTS = 5;
 const GENERATION_LATENCY_BUDGET_MS = 15_000;
-const ACTIVE_QUICK_BUDGET_COHORT = String(QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS);
+const ACTIVE_QUICK_BUDGET_COHORTS = [
+  String(QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS),
+  String(QUICK_COMPARISON_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS),
+];
+const ACTIVE_QUICK_BUDGET_COHORT_SET = new Set(ACTIVE_QUICK_BUDGET_COHORTS);
+const ACTIVE_QUICK_BUDGET_LABEL = ACTIVE_QUICK_BUDGET_COHORTS.join("/");
 
 const LIMITATIONS = [
   "Quality gate uses aggregate local telemetry only; no raw prompts, responses, event ids, paths, or media file names are included.",
@@ -144,13 +152,27 @@ function isRiskyBudgetCohort(cohort) {
   return cohort.error_count >= 2 && cohort.error_rate !== null && cohort.error_rate >= 0.5;
 }
 
-function activeQuickBudgetCohort(cohorts) {
-  return cohorts.find((cohort) => cohort.budget_cohort === ACTIVE_QUICK_BUDGET_COHORT) ?? null;
+function activeQuickBudgetCohorts(cohorts) {
+  return cohorts.filter((cohort) => ACTIVE_QUICK_BUDGET_COHORT_SET.has(cohort.budget_cohort));
 }
 
-function historicalRiskyBudgetCohorts(cohorts, active) {
+function aggregateBudgetCohorts(cohorts) {
+  if (!cohorts.length) return null;
+  const eventCount = cohorts.reduce((total, cohort) => total + cohort.event_count, 0);
+  const successCount = cohorts.reduce((total, cohort) => total + cohort.success_count, 0);
+  const errorCount = cohorts.reduce((total, cohort) => total + cohort.error_count, 0);
+  return {
+    event_count: eventCount,
+    success_count: successCount,
+    error_count: errorCount,
+    error_rate: ratio(errorCount, successCount + errorCount),
+    low_confidence: cohorts.some((cohort) => cohort.low_confidence),
+  };
+}
+
+function historicalRiskyBudgetCohorts(cohorts) {
   return cohorts.filter((cohort) => (
-    cohort.budget_cohort !== active?.budget_cohort
+    !ACTIVE_QUICK_BUDGET_COHORT_SET.has(cohort.budget_cohort)
     && isRiskyBudgetCohort(cohort)
   ));
 }
@@ -161,11 +183,12 @@ function quickDepthSection(summary) {
   const successCount = nonnegativeInteger(quick?.success_count);
   const errorCount = nonnegativeInteger(quick?.error_count);
   const cohorts = quickBudgetCohorts(summary);
-  const active = activeQuickBudgetCohort(cohorts);
-  const activeEventCount = active?.event_count ?? eventCount;
-  const activeErrorRate = active?.error_rate ?? ratio(errorCount, successCount + errorCount);
-  const lowConfidence = active
-    ? active.low_confidence
+  const activeCohorts = activeQuickBudgetCohorts(cohorts);
+  const activeAggregate = aggregateBudgetCohorts(activeCohorts);
+  const activeEventCount = activeAggregate?.event_count ?? eventCount;
+  const activeErrorRate = activeAggregate?.error_rate ?? ratio(errorCount, successCount + errorCount);
+  const lowConfidence = activeAggregate
+    ? activeAggregate.low_confidence
     : eventCount < QUICK_MIN_READY_EVENTS || cohorts.some((cohort) => cohort.low_confidence);
 
   return {
@@ -178,9 +201,10 @@ function quickDepthSection(summary) {
     p95_latency_ms: nullableNumber(quick?.p95_latency_ms),
     total_tokens: nonnegativeInteger(quick?.total_tokens),
     budget_cohorts: cohorts,
-    active_budget_cohort: active,
+    active_budget_cohort: activeCohorts[0] ?? null,
+    active_budget_cohorts: activeCohorts,
     worst_budget_cohort: worstBudgetCohort(cohorts),
-    historical_risky_budget_cohorts: historicalRiskyBudgetCohorts(cohorts, active),
+    historical_risky_budget_cohorts: historicalRiskyBudgetCohorts(cohorts),
     low_confidence: lowConfidence,
   };
 }
@@ -223,11 +247,14 @@ function hasEnoughArtifactReviewData(summary, quick, scorecard) {
 
 function nextActionsFor({ status, reasons, quick, scorecard, generationLatency }) {
   const actions = [];
-  const activeCohort = quick.active_budget_cohort;
+  const activeCohorts = Array.isArray(quick.active_budget_cohorts) ? quick.active_budget_cohorts : [];
+  const activeLabel = activeCohorts.length
+    ? activeCohorts.map((cohort) => cohort.budget_cohort).join("/")
+    : ACTIVE_QUICK_BUDGET_LABEL;
+  const activeCohortWord = activeCohorts.length > 1 ? "cohorts" : "cohort";
   const historicalRisk = quick.historical_risky_budget_cohorts?.[0] ?? null;
   if (status === "ready") {
-    const currentCohort = activeCohort?.budget_cohort ?? ACTIVE_QUICK_BUDGET_COHORT;
-    actions.push(`Expand quick depth gradually for the current ${currentCohort} quick budget cohort while keeping standard artifact-review fallback available.`);
+    actions.push(`Expand quick depth gradually for the current ${activeLabel} quick budget ${activeCohortWord} while keeping standard artifact-review fallback available.`);
     if (historicalRisk) {
       actions.push(`Treat the historical ${historicalRisk.budget_cohort} quick budget cohort as non-active risk; do not route back to it without fresh validation.`);
     }
@@ -239,10 +266,10 @@ function nextActionsFor({ status, reasons, quick, scorecard, generationLatency }
     actions.push(`Avoid expanding quick depth for the ${cohort} budget cohort until it has clean outcomes.`);
   }
   if (historicalRisk) {
-    actions.push(`Keep historical ${historicalRisk.budget_cohort} quick budget cohort failures visible, but judge current routing from the active ${activeCohort?.budget_cohort ?? ACTIVE_QUICK_BUDGET_COHORT} cohort.`);
+    actions.push(`Keep historical ${historicalRisk.budget_cohort} quick budget cohort failures visible, but judge current routing from the active ${activeLabel} quick budget ${activeCohortWord}.`);
   }
   if (reasons.includes("quick_depth_low_sample") || reasons.includes("quick_budget_cohort_low_confidence")) {
-    actions.push(`Collect at least ${formatNumber(QUICK_MIN_READY_EVENTS)} quick-depth events and ${formatNumber(COHORT_MIN_CONFIDENCE_EVENTS)} outcomes per active quick budget cohort before wider routing.`);
+    actions.push(`Collect at least ${formatNumber(QUICK_MIN_READY_EVENTS)} quick-depth events and ${formatNumber(COHORT_MIN_CONFIDENCE_EVENTS)} outcomes per current ${activeLabel} quick budget ${activeCohortWord} before wider routing.`);
   }
   if (reasons.includes("scorecard_coverage_low") || reasons.includes("scorecard_field_coverage_low")) {
     actions.push("Capture numeric design scorecards for artifact-review runs before using visual quality metrics for product decisions.");
@@ -285,10 +312,14 @@ export function buildArtifactReviewQualityGate(summary = {}) {
   ) {
     reasons.push("quick_depth_error_rate_high");
   }
-  if (quick.active_budget_cohort ? quick.active_budget_cohort.low_confidence : quick.budget_cohorts.some((cohort) => cohort.low_confidence)) {
+  const activeCohorts = Array.isArray(quick.active_budget_cohorts) ? quick.active_budget_cohorts : [];
+  if (activeCohorts.length
+    ? activeCohorts.some((cohort) => cohort.low_confidence)
+    : quick.budget_cohorts.some((cohort) => cohort.low_confidence)) {
     reasons.push("quick_budget_cohort_low_confidence");
   }
-  const worst = quick.active_budget_cohort ?? quick.worst_budget_cohort;
+  const activeWorst = worstBudgetCohort(Array.isArray(quick.active_budget_cohorts) ? quick.active_budget_cohorts : []);
+  const worst = activeWorst ?? quick.worst_budget_cohort;
   if (worst && isRiskyBudgetCohort(worst)) {
     reasons.push("quick_budget_cohort_error_rate_high");
   }
@@ -365,14 +396,17 @@ export async function runArtifactReviewQualityGate({
 export function artifactReviewQualityGateToText(gate) {
   const quick = gate.quick_depth;
   const scorecard = gate.scorecard;
-  const active = quick.active_budget_cohort;
+  const activeCohorts = Array.isArray(quick.active_budget_cohorts) ? quick.active_budget_cohorts : [];
+  const activeLabel = activeCohorts.map((cohort) => cohort.budget_cohort).join("/");
+  const activeEventCount = activeCohorts.reduce((total, cohort) => total + cohort.event_count, 0);
+  const activeErrorCount = activeCohorts.reduce((total, cohort) => total + cohort.error_count, 0);
   const worst = quick.worst_budget_cohort;
   const historicalRisk = quick.historical_risky_budget_cohorts?.[0] ?? null;
   const lines = [
     `Artifact-review quality gate: ${gate.readiness.status}`,
     `- Quick depth: ${formatNumber(quick.event_count)} events, ${formatPercent(quick.error_rate)} error, p95 ${quick.p95_latency_ms == null ? "n/a" : `${formatNumber(quick.p95_latency_ms)} ms`}, total tokens ${formatNumber(quick.total_tokens)}`,
-    active
-      ? `- Active quick budget cohort: ${active.budget_cohort} at ${formatPercent(active.error_rate)} error rate (${formatNumber(active.event_count)} events, ${formatNumber(active.error_count)} error)`
+    activeCohorts.length
+      ? `- Active quick budget cohort: ${activeLabel} at ${formatPercent(quick.active_error_rate)} error rate (${formatNumber(activeEventCount)} events, ${formatNumber(activeErrorCount)} error)`
       : "- Active quick budget cohort: n/a",
   ];
   const generationLatency = gate.generation_latency;

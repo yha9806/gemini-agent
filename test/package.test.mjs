@@ -76,6 +76,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
   assert.match(readme, /`artifact-review` returns a structured design scorecard/);
   assert.match(readme, /`artifact-review --review-depth quick` keeps the same JSON shape/);
+  assert.match(readme, /quick single reviews use the 2048 output-token cohort while quick comparison reviews use the 4096 output-token cohort/);
   assert.match(readme, /`artifact-review --telemetry-purpose validation` marks canary or manual validation runs/);
   assert.match(readme, /Telemetry summary and report aggregate artifact-review design scorecard metrics and per-field score coverage/);
   assert.match(readme, /Telemetry summary, economics, priorities, and report expose product-adjusted analytics/);

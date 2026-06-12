@@ -68,6 +68,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
       },
       media_file_count: 1,
       media_byte_count: pngBytes.length,
+      artifact_review_mode: "single",
       artifact_review_depth: "standard",
       artifact_review_prompt_budget: "standard",
     },
@@ -130,6 +131,7 @@ test("runArtifactReview quick depth sets concise prompt, schema-safe output budg
   assert.equal(seenMaxOutputTokens, 2048);
   assert.match(seenPrompt, /Review depth: quick/);
   assert.match(seenPrompt, /Quick review budget/);
+  assert.equal(seenTelemetry.metadata.artifact_review_mode, "single");
   assert.equal(seenTelemetry.metadata.artifact_review_depth, "quick");
   assert.equal(seenTelemetry.metadata.artifact_review_prompt_budget, "quick");
   assert.equal(seenTelemetry.metadata.artifact_review_max_output_tokens, 2048);
@@ -138,6 +140,36 @@ test("runArtifactReview quick depth sets concise prompt, schema-safe output budg
     policy_prompt: 1,
     pre_gemini_total: 3,
   });
+  assert.equal(review.metadata.review_depth, "quick");
+});
+
+test("runArtifactReview quick comparison uses a larger schema-safe output budget", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
+  await writeFile(join(dir, "before.png"), pngBytes);
+  await writeFile(join(dir, "after.png"), pngBytes);
+  let seenMaxOutputTokens = null;
+  let seenTelemetry = null;
+
+  const review = await runArtifactReview({
+    apiKey: "fake-key",
+    cwd: dir,
+    files: ["before.png", "after.png"],
+    artifactKind: "ui",
+    reviewMode: "comparison",
+    reviewDepth: "quick",
+    nowMs: deterministicClock([4000, 4004, 4007]),
+    generate: async ({ maxOutputTokens, telemetry }) => {
+      seenMaxOutputTokens = maxOutputTokens;
+      seenTelemetry = telemetry;
+      return fakeReview;
+    },
+  });
+
+  assert.equal(seenMaxOutputTokens, 4096);
+  assert.equal(seenTelemetry.metadata.artifact_review_mode, "comparison");
+  assert.equal(seenTelemetry.metadata.artifact_review_depth, "quick");
+  assert.equal(seenTelemetry.metadata.artifact_review_max_output_tokens, 4096);
+  assert.equal(review.metadata.review_mode, "comparison");
   assert.equal(review.metadata.review_depth, "quick");
 });
 
@@ -170,6 +202,7 @@ test("runArtifactReview preserves explicit telemetry override and adds safe medi
       },
       media_file_count: 1,
       media_byte_count: pngBytes.length,
+      artifact_review_mode: "single",
       artifact_review_depth: "standard",
       artifact_review_prompt_budget: "standard",
     },
@@ -233,6 +266,7 @@ test("runArtifactReview records safe pre-Gemini latency attribution metadata", a
     },
     media_file_count: 1,
     media_byte_count: pngBytes.length,
+    artifact_review_mode: "single",
     artifact_review_depth: "standard",
     artifact_review_prompt_budget: "standard",
   });
