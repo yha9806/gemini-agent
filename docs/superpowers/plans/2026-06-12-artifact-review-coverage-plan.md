@@ -337,7 +337,7 @@ import {
   buildArtifactReviewCoveragePlan,
 } from "../src/telemetry-artifact-review-coverage-plan.mjs";
 
-const PRIVATE_TEXT = "raw prompt /Users/example Authorization: Bearer secret-token evt_private private.png";
+const PRIVATE_TEXT = "raw prompt /private/example Authorization: Bearer secret-token evt_private private.png";
 
 function scorecard({
   eventCount = 0,
