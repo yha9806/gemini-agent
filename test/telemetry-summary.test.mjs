@@ -154,6 +154,11 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     avg_implementation_readiness_score: null,
     top_commands: [],
   });
+  assert.deepEqual(result.artifact_review_depths, {
+    event_count: 0,
+    known_depth_event_count: 0,
+    top_depths: [],
+  });
   assert.deepEqual(result.multimodal_adjusted, {
     event_count: 0,
     item_count: 0,
@@ -1090,6 +1095,150 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
   assert.match(text, /Artifact review quality:/);
   assert.match(text, /Average overall score: 80/);
   assert.doesNotMatch(serialized, /private strength|private backfill action/);
+});
+
+test("runTelemetrySummary compares artifact-review depth latency, reliability, usage, and scorecards safely", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(44, {
+      command: "artifact-review",
+      latency_ms: 10_000,
+      economics: { input_tokens: 2000, output_tokens: 300, total_tokens: 2300 },
+      metadata: {
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+        design_scorecard: {
+          overall_score: 80,
+          implementation_readiness_score: 74,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(45, {
+      command: "artifact-review",
+      status: "error",
+      error_type: "APIError",
+      latency_ms: 14_000,
+      metadata: {
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(46, {
+      command: "gemini-artifact-review",
+      latency_ms: 20_000,
+      economics: { input_tokens: 3000, output_tokens: 900, total_tokens: 3900 },
+      metadata: {
+        artifact_review_depth: "standard",
+        design_scorecard: {
+          overall_score: 70,
+          implementation_readiness_score: 68,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(47, {
+      command: "artifact-review",
+      latency_ms: 16_000,
+      metadata: {
+        artifact_review_depth: "quick /Users/example/private.png Authorization: Bearer secret-token",
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(48, {
+      command: "ask",
+      latency_ms: 100,
+      metadata: {
+        artifact_review_depth: "quick",
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = `${JSON.stringify(summary)}\n${text}`;
+
+  assert.deepEqual(summary.artifact_review_depths, {
+    event_count: 4,
+    known_depth_event_count: 3,
+    top_depths: [
+      {
+        review_depth: "quick",
+        event_count: 2,
+        success_count: 1,
+        error_count: 1,
+        unknown_count: 0,
+        scorecard_event_count: 1,
+        avg_overall_score: 80,
+        avg_implementation_readiness_score: 74,
+        p50_latency_ms: 10000,
+        p95_latency_ms: 14000,
+        max_latency_ms: 14000,
+        prompt_tokens: 2000,
+        response_tokens: 300,
+        total_tokens: 2300,
+        events_missing_usage: 1,
+        avg_max_output_tokens: 2048,
+      },
+      {
+        review_depth: "standard",
+        event_count: 1,
+        success_count: 1,
+        error_count: 0,
+        unknown_count: 0,
+        scorecard_event_count: 1,
+        avg_overall_score: 70,
+        avg_implementation_readiness_score: 68,
+        p50_latency_ms: 20000,
+        p95_latency_ms: 20000,
+        max_latency_ms: 20000,
+        prompt_tokens: 3000,
+        response_tokens: 900,
+        total_tokens: 3900,
+        events_missing_usage: 0,
+        avg_max_output_tokens: null,
+      },
+      {
+        review_depth: "unknown",
+        event_count: 1,
+        success_count: 1,
+        error_count: 0,
+        unknown_count: 0,
+        scorecard_event_count: 0,
+        avg_overall_score: null,
+        avg_implementation_readiness_score: null,
+        p50_latency_ms: 16000,
+        p95_latency_ms: 16000,
+        max_latency_ms: 16000,
+        prompt_tokens: 0,
+        response_tokens: 0,
+        total_tokens: 0,
+        events_missing_usage: 1,
+        avg_max_output_tokens: null,
+      },
+    ],
+  });
+  assert.match(text, /Artifact review depths:/);
+  assert.match(text, /quick: 2 events, 1 success, 1 error, p95 14,000 ms/);
+  assert.match(text, /standard: 1 events, 1 success, 0 error, p95 20,000 ms/);
+  assert.doesNotMatch(serialized, /\/Users\/example|secret-token|Authorization: Bearer|private\.png/);
 });
 
 test("runTelemetrySummary reports correction overlays without polluting original multimodal totals", async () => {

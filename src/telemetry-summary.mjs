@@ -134,6 +134,14 @@ function zeroArtifactReviewQuality() {
   };
 }
 
+function zeroArtifactReviewDepths() {
+  return {
+    event_count: 0,
+    known_depth_event_count: 0,
+    top_depths: [],
+  };
+}
+
 function createDesignScoreSums() {
   return Object.fromEntries(DESIGN_SCORE_FIELDS.map(([key]) => [key, { sum: 0, count: 0 }]));
 }
@@ -271,6 +279,7 @@ const BACKFILL_MANIFEST_SOURCES = new Set([
 ]);
 const CONTEXT_PACK_MODES = new Set(["auto", "explicit", "none"]);
 const FRESH_INPUT_MODES = new Set(["none", "stdin", "file", "diff", "smart-diff", "text", "mixed"]);
+const ARTIFACT_REVIEW_DEPTHS = new Set(["quick", "standard"]);
 
 function safeMultimodalCommand(value) {
   const command = canonicalCommand(value);
@@ -295,6 +304,11 @@ function safeContextPackMode(value) {
 function safeFreshInputMode(value) {
   const mode = typeof value === "string" ? value.trim().toLowerCase() : "";
   return FRESH_INPUT_MODES.has(mode) ? mode : "unknown";
+}
+
+function safeArtifactReviewDepth(value) {
+  const depth = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return ARTIFACT_REVIEW_DEPTHS.has(depth) ? depth : "unknown";
 }
 
 function updateCommandDimension(map, command, status) {
@@ -957,6 +971,13 @@ function formatLatencyStageRows(items) {
   )).join("\n");
 }
 
+function formatArtifactReviewDepthRows(items) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item.review_depth}: ${formatNumber(item.event_count)} events, ${formatNumber(item.success_count)} success, ${formatNumber(item.error_count)} error, p95 ${item.p95_latency_ms == null ? "n/a" : `${formatNumber(item.p95_latency_ms)} ms`}, total tokens ${formatNumber(item.total_tokens)}`
+  )).join("\n");
+}
+
 function formatBackfillManifestSourceRows(items) {
   if (items.length === 0) return "None";
   return items.map((item, index) => (
@@ -1070,6 +1091,7 @@ function createAccumulator(invalidSampleLimit) {
       scores: createDesignScoreSums(),
     },
     artifactReviewQualityCommands: new Map(),
+    artifactReviewDepths: new Map(),
     contextLoop: zeroContextLoop(),
     contextPackModes: new Map(),
     freshInputModes: new Map(),
@@ -1101,6 +1123,7 @@ function addEvent(accumulator, state, event) {
   updateDimension(accumulator.models, event.model, status);
   if (isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
   addArtifactReviewQualityEvent(accumulator, event, status);
+  addArtifactReviewDepthEvent(accumulator, event, status);
   addContextLoopEvent(accumulator, event);
   addLatency(accumulator.latency, event.command, event.latency_ms);
   addLatencyStages(accumulator.latencyStages, event.command, event.metadata);
@@ -1195,6 +1218,67 @@ function updateArtifactReviewQualityCommand(map, command, status, scores) {
     addDesignScores(item.scores, scores);
   }
   map.set(command, item);
+}
+
+function safeMaxOutputTokens(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function createArtifactReviewDepthItem(depth) {
+  return {
+    key: depth,
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    unknown_count: 0,
+    scorecard_event_count: 0,
+    scores: createDesignScoreSums(),
+    latencyValues: [],
+    usage: zeroUsage(),
+    maxOutputTokenSum: 0,
+    maxOutputTokenCount: 0,
+  };
+}
+
+function addUsageToAggregate(usage, economics) {
+  const inputTokens = economics?.input_tokens;
+  const outputTokens = economics?.output_tokens;
+  const totalTokens = economics?.total_tokens;
+  if (inputTokens == null && outputTokens == null && totalTokens == null) {
+    usage.events_missing_usage += 1;
+    return;
+  }
+  usage.prompt_tokens += safeInteger(inputTokens);
+  usage.response_tokens += safeInteger(outputTokens);
+  usage.total_tokens += safeInteger(totalTokens);
+}
+
+function addArtifactReviewDepthEvent(accumulator, event, status) {
+  const command = artifactReviewQualityCommand(event.command);
+  if (!command) return;
+  const depth = safeArtifactReviewDepth(event.metadata?.artifact_review_depth);
+  const item = accumulator.artifactReviewDepths.get(depth) ?? createArtifactReviewDepthItem(depth);
+  item.event_count += 1;
+  if (status === "success") item.success_count += 1;
+  else if (status === "error") item.error_count += 1;
+  else item.unknown_count += 1;
+
+  const scores = designScorecardFromMetadata(event.metadata);
+  if (scores) {
+    item.scorecard_event_count += 1;
+    addDesignScores(item.scores, scores);
+  }
+  if (Number.isInteger(event.latency_ms) && event.latency_ms >= 0) {
+    item.latencyValues.push(event.latency_ms);
+  }
+  addUsageToAggregate(item.usage, event.economics);
+
+  const maxOutputTokens = safeMaxOutputTokens(event.metadata?.artifact_review_max_output_tokens);
+  if (maxOutputTokens !== null) {
+    item.maxOutputTokenSum += maxOutputTokens;
+    item.maxOutputTokenCount += 1;
+  }
+  accumulator.artifactReviewDepths.set(depth, item);
 }
 
 function addArtifactReviewQualityEvent(accumulator, event, status) {
@@ -1503,6 +1587,50 @@ function buildArtifactReviewQualitySummary(accumulator, topLimit) {
   };
 }
 
+function artifactReviewDepthRows(map, topLimit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.event_count - left.event_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, topLimit)
+    .map((item) => {
+      const latency = publicLatency(item.latencyValues);
+      return {
+        review_depth: item.key,
+        event_count: item.event_count,
+        success_count: item.success_count,
+        error_count: item.error_count,
+        unknown_count: item.unknown_count,
+        scorecard_event_count: item.scorecard_event_count,
+        avg_overall_score: averageDesignScore(item.scores, "overall_score"),
+        avg_implementation_readiness_score: averageDesignScore(item.scores, "implementation_readiness_score"),
+        p50_latency_ms: latency.p50_ms,
+        p95_latency_ms: latency.p95_ms,
+        max_latency_ms: latency.max_ms,
+        prompt_tokens: item.usage.prompt_tokens,
+        response_tokens: item.usage.response_tokens,
+        total_tokens: item.usage.total_tokens,
+        events_missing_usage: item.usage.events_missing_usage,
+        avg_max_output_tokens: item.maxOutputTokenCount > 0
+          ? roundOne(item.maxOutputTokenSum / item.maxOutputTokenCount)
+          : null,
+      };
+    });
+}
+
+function buildArtifactReviewDepthSummary(accumulator, topLimit) {
+  if (accumulator.artifactReviewDepths.size === 0) return zeroArtifactReviewDepths();
+  const rows = [...accumulator.artifactReviewDepths.values()];
+  return {
+    event_count: rows.reduce((total, item) => total + item.event_count, 0),
+    known_depth_event_count: rows
+      .filter((item) => item.key !== "unknown")
+      .reduce((total, item) => total + item.event_count, 0),
+    top_depths: artifactReviewDepthRows(accumulator.artifactReviewDepths, topLimit),
+  };
+}
+
 export async function runTelemetrySummary({
   cwd = process.cwd(),
   home,
@@ -1563,6 +1691,7 @@ export async function runTelemetrySummary({
   };
   const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
   const artifactReviewQuality = buildArtifactReviewQualitySummary(accumulator, topLimit);
+  const artifactReviewDepths = buildArtifactReviewDepthSummary(accumulator, topLimit);
   const latency = buildLatencySummary(accumulator.latency, topLimit);
   const latencyStages = buildLatencyStagesSummary(accumulator.latencyStages, topLimit);
   const contextLoop = {
@@ -1601,6 +1730,7 @@ export async function runTelemetrySummary({
     backfill,
     palette_split: paletteSplit,
     artifact_review_quality: artifactReviewQuality,
+    artifact_review_depths: artifactReviewDepths,
     latency,
     latency_stages: latencyStages,
     context_loop: contextLoop,
@@ -1724,6 +1854,12 @@ export function formatTelemetrySummaryText(summary) {
     `- Scorecard events: ${formatNumber(summary.artifact_review_quality?.scorecard_event_count ?? 0)}`,
     `- Average overall score: ${summary.artifact_review_quality?.avg_overall_score ?? "n/a"}`,
     `- Average implementation readiness score: ${summary.artifact_review_quality?.avg_implementation_readiness_score ?? "n/a"}`,
+    "",
+    "Artifact review depths:",
+    `- Events: ${formatNumber(summary.artifact_review_depths?.event_count ?? 0)}`,
+    `- Known depth events: ${formatNumber(summary.artifact_review_depths?.known_depth_event_count ?? 0)}`,
+    "Top review depths:",
+    formatArtifactReviewDepthRows(summary.artifact_review_depths?.top_depths ?? []),
     "",
     "Context loop:",
     `- Gate events: ${formatNumber(summary.context_loop?.gate_event_count ?? 0)}`,

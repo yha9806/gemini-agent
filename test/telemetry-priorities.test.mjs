@@ -552,6 +552,95 @@ test("runTelemetryPriorities does not use low-sample stage attribution for alias
   }
 });
 
+test("runTelemetryPriorities flags quick artifact-review depth when reliability is not ready", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const quickLatencies = [5000, 6000, 7000, 8000, 9000];
+    for (const [index, latency] of quickLatencies.entries()) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(170 + index, {
+          command: "artifact-review",
+          status: index === 4 ? "error" : "success",
+          error_type: index === 4 ? "ParseError" : null,
+          latency_ms: latency,
+          prompt: `private quick depth prompt ${index}`,
+          response: `private quick depth response ${index}`,
+          metadata: {
+            artifact_review_depth: "quick",
+            artifact_review_max_output_tokens: 2048,
+            design_scorecard: index === 4 ? undefined : {
+              overall_score: 78,
+              implementation_readiness_score: 72,
+            },
+          },
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            total_tokens: 1200,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+    for (let index = 0; index < 3; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(180 + index, {
+          command: "artifact-review",
+          latency_ms: 7000 + index,
+          metadata: {
+            artifact_review_depth: "standard",
+            design_scorecard: {
+              overall_score: 76,
+              implementation_readiness_score: 73,
+            },
+          },
+          economics: {
+            input_tokens: 1800,
+            output_tokens: 500,
+            total_tokens: 2300,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const depthPriority = report.priorities.find((item) => (
+      item.kind === "multimodal"
+      && /quick depth/i.test(item.title)
+    ));
+
+    assert.equal(report.totals.artifact_review_depth_event_count, 8);
+    assert.equal(report.totals.artifact_review_known_depth_event_count, 8);
+    assert.ok(depthPriority);
+    assert.equal(depthPriority.command, "artifact-review");
+    assert.match(depthPriority.action, /Keep standard fallback/);
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick depth events: 5"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick depth error rate: 20.0%"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick depth p95 latency: 9,000 ms"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Standard depth p95 latency: 7,002 ms"));
+    assert.match(text, /quick depth/i);
+    assert.doesNotMatch(serialized, /private quick depth prompt|private quick depth response/);
+    assert.doesNotMatch(serialized, /evt_priority_000170/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities supports global scope, top limit, and pricing overrides", async () => {
   const project = await temporaryWorkspace("gemini-agent-telemetry-priorities-project-");
   const home = await temporaryWorkspace("gemini-agent-telemetry-priorities-home-");

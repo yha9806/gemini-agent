@@ -591,6 +591,53 @@ function multimodalPriority(summary, multimodalCoverage) {
   });
 }
 
+const QUICK_DEPTH_MIN_EVENTS = 5;
+const QUICK_DEPTH_MAX_ERROR_RATE = 0.2;
+
+function artifactReviewDepthRow(summary, depth) {
+  const rows = Array.isArray(summary.artifact_review_depths?.top_depths)
+    ? summary.artifact_review_depths.top_depths
+    : [];
+  return rows.find((item) => item?.review_depth === depth) ?? null;
+}
+
+function knownErrorRate(row) {
+  if (!row) return null;
+  return nullableRatio(nonnegativeMetric(row.error_count), (
+    nonnegativeMetric(row.success_count) + nonnegativeMetric(row.error_count)
+  ), 4);
+}
+
+function artifactReviewDepthPriority(summary) {
+  const quick = artifactReviewDepthRow(summary, "quick");
+  if (!quick || nonnegativeMetric(quick.event_count) < QUICK_DEPTH_MIN_EVENTS) return null;
+  const quickErrorRate = knownErrorRate(quick);
+  if (quickErrorRate === null || quickErrorRate < QUICK_DEPTH_MAX_ERROR_RATE) return null;
+  const standard = artifactReviewDepthRow(summary, "standard");
+  const evidence = [
+    `Quick depth events: ${formatNumber(nonnegativeMetric(quick.event_count))}`,
+    `Quick depth error rate: ${formatPercent(quickErrorRate)}`,
+  ];
+  if (quick.p95_latency_ms !== null) {
+    evidence.push(`Quick depth p95 latency: ${formatNumber(nonnegativeMetric(quick.p95_latency_ms))} ms`);
+  }
+  if (standard?.p95_latency_ms !== null && standard?.p95_latency_ms !== undefined) {
+    evidence.push(`Standard depth p95 latency: ${formatNumber(nonnegativeMetric(standard.p95_latency_ms))} ms`);
+  }
+  if (nonnegativeMetric(quick.total_tokens) > 0) {
+    evidence.push(`Quick depth total tokens: ${formatNumber(nonnegativeMetric(quick.total_tokens))}`);
+  }
+  return priority({
+    kind: "multimodal",
+    severity: "medium",
+    score: 87,
+    title: "Validate artifact-review quick depth before wider routing.",
+    action: "Compare quick vs standard on success rate, p95 latency, token usage, and scorecards. Keep standard fallback until quick depth error rate is clearly lower.",
+    command: "artifact-review",
+    evidence,
+  });
+}
+
 export function buildPriorities({ summary, economics }) {
   const errorRate = statusErrorRate(summary);
   const multimodalAggregate = summary.multimodal_adjusted ?? summary.multimodal;
@@ -603,6 +650,7 @@ export function buildPriorities({ summary, economics }) {
     economicsPriority(economics),
     contextPackReusePriority(economics),
     workflowPriority(economics),
+    artifactReviewDepthPriority(summary),
     multimodalPriority(summary, multimodal),
   ].filter(Boolean);
 
@@ -678,6 +726,8 @@ export async function runTelemetryPriorities({
       artifact_review_scorecard_event_count: summary.artifact_review_quality?.scorecard_event_count ?? 0,
       artifact_review_scorecard_coverage_rate: artifactReviewScorecardCoverage(summary),
       artifact_review_avg_overall_score: summary.artifact_review_quality?.avg_overall_score ?? null,
+      artifact_review_depth_event_count: summary.artifact_review_depths?.event_count ?? 0,
+      artifact_review_known_depth_event_count: summary.artifact_review_depths?.known_depth_event_count ?? 0,
       gemini_estimated_cost_usd: economics.totals.gemini_estimated_cost_usd,
       codex_tokens_saved_estimate: economics.totals.codex_tokens_saved_estimate,
     },
