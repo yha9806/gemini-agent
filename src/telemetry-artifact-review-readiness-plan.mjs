@@ -244,6 +244,17 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
   };
 }
 
+function hasEndpointDiagnostics(doctor) {
+  return doctor !== null
+    && typeof doctor === "object"
+    && doctor.endpoint_check !== null
+    && typeof doctor.endpoint_check === "object";
+}
+
+function endpointDiagnosticsHealthy(doctor) {
+  return !hasEndpointDiagnostics(doctor) || doctor.endpoint_check.ok === true;
+}
+
 function buildReadinessReasons({
   production,
   validation,
@@ -268,6 +279,9 @@ function buildReadinessReasons({
   if (doctor && doctor.ok === false) blocked.push("telemetry_delivery_unhealthy");
 
   if (doctor === null) collect.push("telemetry_doctor_unavailable");
+  if (hasEndpointDiagnostics(doctor) && doctor.endpoint_check.ok !== true) {
+    collect.push("telemetry_endpoint_unhealthy");
+  }
   if (!raw.preflight_available) collect.push("raw_preflight_unavailable");
   if (quick.low_confidence || quick.additional_events_needed > 0) {
     collect.push("active_quick_low_sample");
@@ -316,7 +330,7 @@ function statusFor({ blocked, production, quick, latency, structured, raw, docto
     && raw.quarantine_count === 0
     && raw.preflight_available
     && (raw.pending_count === 0 || raw.sensitive_signal_count === 0);
-  const deliveryReady = doctor !== null && doctor.ok !== false;
+  const deliveryReady = doctor !== null && doctor.ok !== false && endpointDiagnosticsHealthy(doctor);
   if (scorecardReady && quickReady && latencyReady && structuredReady && rawReady && deliveryReady) {
     return "ready_for_limited_routing";
   }
