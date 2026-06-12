@@ -270,6 +270,16 @@ const TelemetryReceiverPaletteSplitZodSchema = z.strictObject({
   top_actual_models: [],
 }));
 
+const PRODUCT_ANALYTICS_NOTE = "Product analytics exclude validation telemetry; health and delivery counts include all events.";
+
+const TelemetryReceiverProductAnalyticsZodSchema = z.strictObject({
+  product_adjusted: z.literal(true),
+  event_count: z.number().int().nonnegative(),
+  product_adjusted_event_count: z.number().int().nonnegative(),
+  validation_event_count: z.number().int().nonnegative(),
+  note: z.literal(PRODUCT_ANALYTICS_NOTE),
+});
+
 export const TelemetryReceiverAckZodSchema = z.strictObject({
   ok: z.literal(true),
   batch_id: z.string().min(1),
@@ -286,6 +296,7 @@ export const TelemetryReceiverMetricsZodSchema = z.strictObject({
   latest_event: TelemetryReceiverLatestEventZodSchema.nullable().default(null),
   status_counts: TelemetryStatusCountsZodSchema,
   clock_skew_warnings: z.number().int().nonnegative().default(0),
+  product_analytics: TelemetryReceiverProductAnalyticsZodSchema.optional(),
   corrections: TelemetryReceiverCorrectionsZodSchema,
   palette_split: TelemetryReceiverPaletteSplitZodSchema,
 });
@@ -436,5 +447,15 @@ export function normalizeTelemetryReceiverAck(value) {
 }
 
 export function normalizeTelemetryReceiverMetrics(value) {
-  return TelemetryReceiverMetricsZodSchema.parse(value);
+  const parsed = TelemetryReceiverMetricsZodSchema.parse(value);
+  return {
+    ...parsed,
+    product_analytics: parsed.product_analytics ?? {
+      product_adjusted: true,
+      event_count: parsed.received_events,
+      product_adjusted_event_count: parsed.received_events,
+      validation_event_count: 0,
+      note: PRODUCT_ANALYTICS_NOTE,
+    },
+  };
 }

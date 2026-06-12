@@ -121,7 +121,7 @@ Global Gemini review gate for Codex.
 - `telemetry report` combines aggregate health, economics, context reuse, attribution, multimodal adoption, and top development priority into a product decision snapshot; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
 - `telemetry multimodal repair-kind` creates correction events for historical multimodal telemetry with missing media kinds; it is dry-run by default, does not rewrite existing telemetry files, and reports aggregate counts without raw prompt, response text, event ids, paths, or media file names.
 - `telemetry multimodal repair-metadata` creates safe MIME and media-kind corrections for historical multimodal telemetry; it does not fabricate missing byte sizes, is dry-run by default, does not rewrite existing telemetry files, and reports aggregate counts without raw prompt, response text, event ids, paths, or media file names.
-- The telemetry receiver `/metrics` and `/dashboard` endpoints expose aggregate correction and palette-split quality metrics without raw event ids or media file names.
+- The telemetry receiver `/metrics` and `/dashboard` endpoints expose product-adjusted analytics plus aggregate correction and palette-split quality metrics without raw event ids, prompts, responses, paths, or media file names.
 - Raw telemetry stores prompts and responses after mandatory credential-pattern masking. Masking is best-effort and does not guarantee complete PII or secret removal.
 - Loopback HTTP endpoints are allowed for local telemetry validation; non-loopback telemetry endpoints require HTTPS.
 - Telemetry uses a separate ingestion token from `GEMINI_AGENT_TELEMETRY_TOKEN` or another `--token-env` value. It never uses `GEMINI_API_KEY`.

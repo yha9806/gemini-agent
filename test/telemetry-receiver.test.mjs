@@ -360,6 +360,61 @@ test("metrics and dashboard expose palette split quality without raw identifiers
   });
 });
 
+test("metrics and dashboard expose product-adjusted telemetry purpose without raw identifiers", async () => {
+  await withReceiver({ token: TOKEN }, async ({ url }) => {
+    const batch = telemetryBatch({
+      batch_id: "batch_product_adjusted",
+      events: [
+        telemetryEvent(30, {
+          event_id: "product_private_event",
+          command: "diff-review",
+        }),
+        telemetryEvent(31, {
+          event_id: "validation_private_event",
+          command: "artifact-review",
+          prompt: "private validation prompt",
+          response: "private validation response",
+          metadata: {
+            telemetry_purpose: "validation",
+          },
+        }),
+        telemetryEvent(32, {
+          event_id: "invalid_purpose_private_event",
+          command: "plan-critique",
+          metadata: {
+            telemetry_purpose: "canary /Users/example/private Authorization: Bearer secret-token",
+          },
+        }),
+      ],
+    });
+
+    const response = await postJson(url, batch, { Authorization: `Bearer ${TOKEN}` });
+    assert.equal(response.status, 200);
+
+    const metrics = normalizeTelemetryReceiverMetrics(await (await fetch(`${url}/metrics`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json());
+    assert.deepEqual(metrics.product_analytics, {
+      product_adjusted: true,
+      event_count: 3,
+      product_adjusted_event_count: 2,
+      validation_event_count: 1,
+      note: "Product analytics exclude validation telemetry; health and delivery counts include all events.",
+    });
+    assert.equal(metrics.received_events, 3);
+
+    const dashboard = await (await fetch(`${url}/dashboard`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).text();
+    assert.match(dashboard, /Product analytics/);
+    assert.match(dashboard, /Product-adjusted events: 2 of 3/);
+    assert.match(dashboard, /Validation events excluded from product metrics: 1/);
+    assert.doesNotMatch(dashboard, /product_private_event|validation_private_event|invalid_purpose_private_event/);
+    assert.doesNotMatch(dashboard, /private validation prompt|private validation response/);
+    assert.doesNotMatch(dashboard, /\/Users\/example|secret-token|Authorization: Bearer|canary/);
+  });
+});
+
 test("ingest is idempotent when the exact same batch is retried", async () => {
   await withReceiver({ token: TOKEN }, async ({ url }) => {
     const batch = telemetryBatch({

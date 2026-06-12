@@ -321,6 +321,29 @@ test("normalizes receiver metrics response", () => {
   assert.equal(metrics.clock_skew_warnings, 1);
 });
 
+test("normalizes receiver metrics product analytics with legacy defaults", () => {
+  const legacy = normalizeTelemetryReceiverMetrics(validTelemetryMetrics());
+  assert.deepEqual(legacy.product_analytics, {
+    product_adjusted: true,
+    event_count: 12,
+    product_adjusted_event_count: 12,
+    validation_event_count: 0,
+    note: "Product analytics exclude validation telemetry; health and delivery counts include all events.",
+  });
+
+  const metrics = normalizeTelemetryReceiverMetrics(validTelemetryMetrics({
+    product_analytics: {
+      product_adjusted: true,
+      event_count: 12,
+      product_adjusted_event_count: 10,
+      validation_event_count: 2,
+      note: "Product analytics exclude validation telemetry; health and delivery counts include all events.",
+    },
+  }));
+  assert.equal(metrics.product_analytics.product_adjusted_event_count, 10);
+  assert.equal(metrics.product_analytics.validation_event_count, 2);
+});
+
 test("defaults receiver metrics clock skew warnings", () => {
   const { clock_skew_warnings, ...metricsWithoutSkew } = validTelemetryMetrics();
   assert.equal(clock_skew_warnings, 1);

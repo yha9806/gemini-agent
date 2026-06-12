@@ -78,6 +78,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /`artifact-review --telemetry-purpose validation` marks canary or manual validation runs/);
   assert.match(readme, /Telemetry summary and report aggregate artifact-review design scorecard metrics and per-field score coverage/);
   assert.match(readme, /Telemetry summary, economics, priorities, and report expose product-adjusted analytics/);
+  assert.match(readme, /The telemetry receiver `\/metrics` and `\/dashboard` endpoints expose product-adjusted analytics/);
   assert.match(readme, /`telemetry backfill-artifacts` carries only allowlisted numeric\/null artifact-review design scorecard fields/);
   assert.match(readme, /Telemetry priorities use artifact-review design scorecard coverage, per-field score coverage, and average score/);
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
