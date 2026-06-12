@@ -122,6 +122,17 @@ function safeDoctorAction(value) {
   return SAFE_DOCTOR_ACTIONS.has(text) ? text : null;
 }
 
+function safePreviewError(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const text = `${value}`.trim();
+  if (text === "") return null;
+  return /^[a-z0-9_]{1,96}$/.test(text) ? text : "unknown";
+}
+
+function previewErrorComplete(value) {
+  return value === null || /^[a-z0-9_]{1,96}$/.test(`${value ?? ""}`.trim());
+}
+
 function plainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -155,6 +166,9 @@ function rawPreflightComplete(rawPreflight) {
     && nonnegativeFiniteNumber(rawPreflight.pending.total_count)
     && nonnegativeFiniteNumber(rawPreflight.batch.would_send_count)
     && nonnegativeFiniteNumber(rawPreflight.batch.excluded_by_batch_size_count)
+    && typeof rawPreflight.batch.exceeds_max_bytes === "boolean"
+    && Object.hasOwn(rawPreflight.batch, "preview_error")
+    && previewErrorComplete(rawPreflight.batch.preview_error)
     && RAW_RISK_COUNT_FIELDS.every((field) => nonnegativeFiniteNumber(rawPreflight.risk[field]));
 }
 
@@ -289,6 +303,9 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
   const risk = plainObject(rawPreflight?.risk) ? rawPreflight.risk : {};
   const preflightComplete = rawPreflightComplete(rawPreflight);
   const excludedCount = nonnegativeInteger(batch.excluded_by_batch_size_count);
+  const previewError = safePreviewError(batch.preview_error);
+  const invalidFileCount = nonnegativeInteger(risk.invalid_file_count);
+  const skippedFileCount = nonnegativeInteger(risk.skipped_file_count);
   const selectedCount = Math.max(
     nonnegativeInteger(batch.would_send_count),
     nonnegativeInteger(risk.file_count),
@@ -313,6 +330,10 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
     preflight_partial: preflightPartial,
     preflight_selected_count: selectedCount,
     sensitive_signal_count: rawSensitiveSignalCount(risk),
+    preflight_preview_error: previewError,
+    exceeds_max_bytes: batch.exceeds_max_bytes === true,
+    invalid_file_count: invalidFileCount,
+    skipped_file_count: skippedFileCount,
     recommended_action: safeDoctorAction(doctor?.recommended_action ?? delivery.recommended_action),
   };
 }
@@ -357,6 +378,10 @@ function buildReadinessReasons({
     collect.push("raw_preflight_unavailable");
   }
   if (raw.preflight_partial) collect.push("raw_preflight_partial");
+  if (raw.preflight_preview_error !== null) collect.push("raw_preflight_preview_error");
+  if (raw.exceeds_max_bytes) collect.push("raw_preflight_exceeds_max_bytes");
+  if (raw.invalid_file_count > 0) collect.push("raw_preflight_invalid_files");
+  if (raw.skipped_file_count > 0) collect.push("raw_preflight_skipped_files");
   if (quick.low_confidence || quick.additional_events_needed > 0) {
     collect.push("active_quick_low_sample");
   }
@@ -405,6 +430,10 @@ function statusFor({ blocked, production, quick, latency, structured, raw, docto
     && raw.quarantine_count === 0
     && raw.preflight_available
     && !raw.preflight_partial
+    && raw.preflight_preview_error === null
+    && raw.exceeds_max_bytes === false
+    && raw.invalid_file_count === 0
+    && raw.skipped_file_count === 0
     && (raw.pending_count === 0 || raw.sensitive_signal_count === 0);
   const deliveryReady = doctorComplete(doctor) && doctor.ok === true && endpointDiagnosticsHealthy(doctor);
   if (scorecardReady && quickReady && latencyReady && structuredReady && rawReady && deliveryReady) {
@@ -465,6 +494,14 @@ function nextActionsFor({ status, reasons, quick, structured, raw, latency, prod
   }
   if (reasons.includes("raw_preflight_partial")) {
     actions.push("Run raw preflight over the remaining pending telemetry before limited routing.");
+  }
+  if (
+    reasons.includes("raw_preflight_preview_error")
+    || reasons.includes("raw_preflight_exceeds_max_bytes")
+    || reasons.includes("raw_preflight_invalid_files")
+    || reasons.includes("raw_preflight_skipped_files")
+  ) {
+    actions.push("Resolve raw preflight preview errors, invalid or skipped files, and size limits before limited routing.");
   }
   if (reasons.includes("raw_inflight_events_present")) {
     actions.push("Wait for in-flight raw telemetry delivery to settle before limited routing.");

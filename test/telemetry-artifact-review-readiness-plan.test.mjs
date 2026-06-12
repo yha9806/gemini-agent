@@ -786,6 +786,97 @@ test("readiness plan requires raw preflight to cover all pending telemetry", () 
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
+test("readiness plan gates on raw preflight preview errors and invalid files", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight({
+      pending: { total_count: 1, total_bytes: 256 },
+      batch: {
+        batch_size: 100,
+        would_send_count: 1,
+        batch_bytes: 256,
+        exceeds_max_bytes: false,
+        excluded_by_batch_size_count: 0,
+        preview_error: "invalid_pending_event",
+      },
+      risk: rawRisk({ file_count: 1, event_count: 1, invalid_file_count: 1 }),
+    }),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.raw_governance.preflight_preview_error, "invalid_pending_event");
+  assert.equal(report.raw_governance.invalid_file_count, 1);
+  assert.ok(report.readiness.reasons.includes("raw_preflight_preview_error"));
+  assert.ok(report.readiness.reasons.includes("raw_preflight_invalid_files"));
+  assert.ok(report.next_actions.includes(
+    "Resolve raw preflight preview errors, invalid or skipped files, and size limits before limited routing.",
+  ));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
+test("readiness plan gates on raw preflight max byte limits", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight({
+      pending: { total_count: 1, total_bytes: 256 },
+      batch: {
+        batch_size: 100,
+        would_send_count: 1,
+        batch_bytes: 256,
+        exceeds_max_bytes: true,
+        excluded_by_batch_size_count: 0,
+        preview_error: null,
+      },
+      risk: rawRisk({ file_count: 1, event_count: 1 }),
+    }),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.raw_governance.exceeds_max_bytes, true);
+  assert.ok(report.readiness.reasons.includes("raw_preflight_exceeds_max_bytes"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
 test("readiness plan becomes ready only when every hard gate passes", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary({
