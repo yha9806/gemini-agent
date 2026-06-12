@@ -48,6 +48,7 @@ test("buildArtifactReviewQualityGate returns caution for empty telemetry without
   assert.deepEqual(Object.keys(gate).sort(), [
     "command",
     "generated_at",
+    "generation_latency",
     "limitations",
     "next_actions",
     "ok",
@@ -59,6 +60,149 @@ test("buildArtifactReviewQualityGate returns caution for empty telemetry without
 
   const serialized = JSON.stringify(gate);
   assert.doesNotMatch(serialized, /private prompt|Authorization|Bearer|evt_private|media\.png|\/Users\/example/);
+});
+
+test("quality gate reports high generation latency but prioritizes scorecard coverage first", () => {
+  const gate = buildArtifactReviewQualityGate(summary({
+    event_counts: { total: 26 },
+    artifact_review_quality: {
+      event_count: 20,
+      scorecard_event_count: 2,
+      avg_overall_score: 58,
+      avg_implementation_readiness_score: 38,
+      scorecard_field_coverage: [
+        { field: "overall_score", events: 20, scored_events: 2, coverage: 0.1 },
+        { field: "accessibility_score", events: 20, scored_events: 1, coverage: 0.05 },
+      ],
+      top_commands: [],
+    },
+    artifact_review_depths: {
+      event_count: 12,
+      known_depth_event_count: 12,
+      top_depths: [
+        {
+          review_depth: "quick",
+          event_count: 12,
+          success_count: 12,
+          error_count: 0,
+          p95_latency_ms: 20000,
+          total_tokens: 24000,
+          scorecard_event_count: 2,
+        },
+      ],
+      top_budget_cohorts: [
+        {
+          review_depth: "quick",
+          budget_cohort: "2048",
+          event_count: 12,
+          success_count: 12,
+          error_count: 0,
+          p95_latency_ms: 20000,
+          total_tokens: 24000,
+          scorecard_event_count: 2,
+        },
+      ],
+    },
+    latency_stages: {
+      stage_count: 12,
+      top_stages: [
+        {
+          stage: "gemini_generation",
+          event_count: 6,
+          p50_ms: 16000,
+          p95_ms: 21000,
+          max_ms: 22000,
+          top_commands: [
+            { command: "artifact-review", event_count: 6, p50_ms: 16000, p95_ms: 21000, max_ms: 22000 },
+          ],
+        },
+        {
+          stage: "pre_gemini_total",
+          event_count: 6,
+          p50_ms: 10,
+          p95_ms: 25,
+          max_ms: 25,
+          top_commands: [
+            { command: "artifact-review", event_count: 6, p50_ms: 10, p95_ms: 25, max_ms: 25 },
+          ],
+        },
+      ],
+    },
+  }));
+
+  assert.equal(gate.readiness.status, "caution");
+  assert.ok(gate.readiness.reasons.includes("generation_latency_over_budget"));
+  assert.equal(gate.generation_latency.status, "over_budget");
+  assert.equal(gate.generation_latency.event_count, 6);
+  assert.equal(gate.generation_latency.p95_ms, 21000);
+  assert.equal(gate.generation_latency.pre_gemini_p95_ms, 25);
+  assert.ok(gate.next_actions.some((item) => /Raise scorecard coverage before prompt\/schema slimming/i.test(item)));
+  assert.equal(gate.next_actions.some((item) => /Start prompt\/schema slimming/i.test(item)), false);
+});
+
+test("quality gate recommends prompt/schema latency work after scorecard coverage is healthy", () => {
+  const gate = buildArtifactReviewQualityGate(summary({
+    event_counts: { total: 30 },
+    artifact_review_quality: {
+      event_count: 20,
+      scorecard_event_count: 18,
+      avg_overall_score: 82,
+      avg_implementation_readiness_score: 81,
+      scorecard_field_coverage: [
+        { field: "overall_score", events: 20, scored_events: 18, coverage: 0.9 },
+        { field: "accessibility_score", events: 20, scored_events: 17, coverage: 0.85 },
+      ],
+      top_commands: [],
+    },
+    artifact_review_depths: {
+      event_count: 12,
+      known_depth_event_count: 12,
+      top_depths: [
+        {
+          review_depth: "quick",
+          event_count: 12,
+          success_count: 12,
+          error_count: 0,
+          p95_latency_ms: 20000,
+          total_tokens: 24000,
+          scorecard_event_count: 11,
+        },
+      ],
+      top_budget_cohorts: [
+        {
+          review_depth: "quick",
+          budget_cohort: "2048",
+          event_count: 12,
+          success_count: 12,
+          error_count: 0,
+          p95_latency_ms: 20000,
+          total_tokens: 24000,
+          scorecard_event_count: 11,
+        },
+      ],
+    },
+    latency_stages: {
+      stage_count: 6,
+      top_stages: [
+        {
+          stage: "gemini_generation",
+          event_count: 6,
+          p50_ms: 16000,
+          p95_ms: 21000,
+          max_ms: 22000,
+          top_commands: [
+            { command: "artifact-review", event_count: 6, p50_ms: 16000, p95_ms: 21000, max_ms: 22000 },
+          ],
+        },
+      ],
+    },
+  }));
+
+  assert.equal(gate.readiness.status, "caution");
+  assert.deepEqual(gate.readiness.reasons, ["generation_latency_over_budget"]);
+  assert.equal(gate.generation_latency.status, "over_budget");
+  assert.ok(gate.next_actions.some((item) => /Start prompt\/schema slimming/i.test(item)));
+  assert.equal(gate.next_actions.some((item) => /Raise scorecard coverage before prompt\/schema slimming/i.test(item)), false);
 });
 
 test("quality gate flags risky quick depth budget cohort and weak scorecard coverage", () => {

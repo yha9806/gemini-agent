@@ -2607,6 +2607,7 @@ test("telemetry artifact-review quality-gate prints safe human output", async ()
     assert.equal(stderr, "");
     assert.match(stdout, /Artifact-review quality gate:/);
     assert.match(stdout, /Quick depth:/);
+    assert.match(stdout, /Gemini generation latency:/);
     assert.doesNotMatch(stdout, /private prompt|private response|\/Users\/example|secret-token|media\.png|evt_/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -2638,6 +2639,7 @@ test("telemetry artifact-review quality-gate --json supports global scope", asyn
     assert.deepEqual(Object.keys(parsed).sort(), [
       "command",
       "generated_at",
+      "generation_latency",
       "limitations",
       "next_actions",
       "ok",
@@ -2646,6 +2648,15 @@ test("telemetry artifact-review quality-gate --json supports global scope", asyn
       "scope",
       "scorecard",
     ].sort());
+    assert.deepEqual(parsed.generation_latency, {
+      status: "unknown",
+      event_count: 0,
+      p95_ms: null,
+      max_ms: null,
+      budget_ms: 15000,
+      min_events: 5,
+      pre_gemini_p95_ms: null,
+    });
     assert.doesNotMatch(stdout, new RegExp(home.replaceAll("/", "\\/")));
   } finally {
     await rm(home, { recursive: true, force: true });

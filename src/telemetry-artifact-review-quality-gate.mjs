@@ -6,6 +6,8 @@ const QUICK_MAX_READY_ERROR_RATE = 0.05;
 const QUICK_MIN_BLOCK_EVENTS = 5;
 const COHORT_MIN_CONFIDENCE_EVENTS = 10;
 const SCORECARD_READY_COVERAGE = 0.8;
+const GENERATION_LATENCY_MIN_EVENTS = 5;
+const GENERATION_LATENCY_BUDGET_MS = 15_000;
 const ACTIVE_QUICK_BUDGET_COHORT = String(QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS);
 
 const LIMITATIONS = [
@@ -183,12 +185,43 @@ function quickDepthSection(summary) {
   };
 }
 
+function latencyStageCommand(summary, stage, command) {
+  const stages = Array.isArray(summary?.latency_stages?.top_stages)
+    ? summary.latency_stages.top_stages
+    : [];
+  const stageRow = stages.find((row) => row?.stage === stage);
+  if (!stageRow || !Array.isArray(stageRow.top_commands)) return null;
+  return stageRow.top_commands.find((row) => row?.command === command) ?? null;
+}
+
+function generationLatencySection(summary) {
+  const generation = latencyStageCommand(summary, "gemini_generation", "artifact-review");
+  const preGemini = latencyStageCommand(summary, "pre_gemini_total", "artifact-review");
+  const eventCount = nonnegativeInteger(generation?.event_count);
+  const p95Ms = nullableNumber(generation?.p95_ms);
+  let status = "unknown";
+  if (eventCount > 0 && eventCount < GENERATION_LATENCY_MIN_EVENTS) {
+    status = "low_sample";
+  } else if (eventCount >= GENERATION_LATENCY_MIN_EVENTS && p95Ms !== null) {
+    status = p95Ms >= GENERATION_LATENCY_BUDGET_MS ? "over_budget" : "within_budget";
+  }
+  return {
+    status,
+    event_count: eventCount,
+    p95_ms: p95Ms,
+    max_ms: nullableNumber(generation?.max_ms),
+    budget_ms: GENERATION_LATENCY_BUDGET_MS,
+    min_events: GENERATION_LATENCY_MIN_EVENTS,
+    pre_gemini_p95_ms: nullableNumber(preGemini?.p95_ms),
+  };
+}
+
 function hasEnoughArtifactReviewData(summary, quick, scorecard) {
   const depthEvents = nonnegativeInteger(summary?.artifact_review_depths?.event_count);
   return depthEvents > 0 || quick.event_count > 0 || scorecard.event_count > 0;
 }
 
-function nextActionsFor({ status, reasons, quick, scorecard }) {
+function nextActionsFor({ status, reasons, quick, scorecard, generationLatency }) {
   const actions = [];
   const activeCohort = quick.active_budget_cohort;
   const historicalRisk = quick.historical_risky_budget_cohorts?.[0] ?? null;
@@ -214,6 +247,16 @@ function nextActionsFor({ status, reasons, quick, scorecard }) {
   if (reasons.includes("scorecard_coverage_low") || reasons.includes("scorecard_field_coverage_low")) {
     actions.push("Capture numeric design scorecards for artifact-review runs before using visual quality metrics for product decisions.");
   }
+  if (reasons.includes("generation_latency_over_budget")) {
+    if (reasons.includes("scorecard_coverage_low") || reasons.includes("scorecard_field_coverage_low")) {
+      actions.push(`Raise scorecard coverage before prompt/schema slimming; artifact-review Gemini generation p95 is ${formatNumber(generationLatency.p95_ms)} ms against a ${formatNumber(generationLatency.budget_ms)} ms budget.`);
+    } else {
+      actions.push(`Start prompt/schema slimming for artifact-review; Gemini generation p95 is ${formatNumber(generationLatency.p95_ms)} ms against a ${formatNumber(generationLatency.budget_ms)} ms budget.`);
+    }
+  }
+  if (reasons.includes("generation_latency_low_sample")) {
+    actions.push(`Collect at least ${formatNumber(GENERATION_LATENCY_MIN_EVENTS)} artifact-review Gemini generation latency samples before treating latency as ready.`);
+  }
   if (reasons.includes("insufficient_artifact_review_data")) {
     actions.push("Run more artifact-review validations with telemetry enabled before deciding routing policy.");
   }
@@ -226,6 +269,7 @@ function nextActionsFor({ status, reasons, quick, scorecard }) {
 export function buildArtifactReviewQualityGate(summary = {}) {
   const quick = quickDepthSection(summary);
   const scorecard = qualitySection(summary);
+  const generationLatency = generationLatencySection(summary);
   const reasons = [];
 
   if (!hasEnoughArtifactReviewData(summary, quick, scorecard)) {
@@ -254,6 +298,11 @@ export function buildArtifactReviewQualityGate(summary = {}) {
   if (scorecard.field_coverage_min !== null && scorecard.field_coverage_min < SCORECARD_READY_COVERAGE) {
     reasons.push("scorecard_field_coverage_low");
   }
+  if (generationLatency.status === "over_budget") {
+    reasons.push("generation_latency_over_budget");
+  } else if (generationLatency.status === "low_sample") {
+    reasons.push("generation_latency_low_sample");
+  }
 
   const blockedReasons = new Set(["quick_depth_error_rate_high", "quick_budget_cohort_error_rate_high"]);
   const ready = quick.active_event_count >= QUICK_MIN_READY_EVENTS
@@ -263,7 +312,9 @@ export function buildArtifactReviewQualityGate(summary = {}) {
     && scorecard.coverage_rate !== null
     && scorecard.coverage_rate >= SCORECARD_READY_COVERAGE
     && scorecard.field_coverage_min !== null
-    && scorecard.field_coverage_min >= SCORECARD_READY_COVERAGE;
+    && scorecard.field_coverage_min >= SCORECARD_READY_COVERAGE
+    && generationLatency.status !== "over_budget"
+    && generationLatency.status !== "low_sample";
   const status = reasons.some((reason) => blockedReasons.has(reason))
     ? "blocked"
     : ready
@@ -281,8 +332,15 @@ export function buildArtifactReviewQualityGate(summary = {}) {
       reasons: readinessReasons,
     },
     quick_depth: quick,
+    generation_latency: generationLatency,
     scorecard,
-    next_actions: nextActionsFor({ status, reasons: readinessReasons, quick, scorecard }),
+    next_actions: nextActionsFor({
+      status,
+      reasons: readinessReasons,
+      quick,
+      scorecard,
+      generationLatency,
+    }),
     limitations: LIMITATIONS,
   };
 }
@@ -317,6 +375,10 @@ export function artifactReviewQualityGateToText(gate) {
       ? `- Active quick budget cohort: ${active.budget_cohort} at ${formatPercent(active.error_rate)} error rate (${formatNumber(active.event_count)} events, ${formatNumber(active.error_count)} error)`
       : "- Active quick budget cohort: n/a",
   ];
+  const generationLatency = gate.generation_latency;
+  lines.push(
+    `- Gemini generation latency: ${generationLatency.status}, p95 ${generationLatency.p95_ms == null ? "n/a" : `${formatNumber(generationLatency.p95_ms)} ms`}, budget ${formatNumber(generationLatency.budget_ms)} ms, pre-Gemini p95 ${generationLatency.pre_gemini_p95_ms == null ? "n/a" : `${formatNumber(generationLatency.pre_gemini_p95_ms)} ms`}`,
+  );
   if (historicalRisk) {
     lines.push(`- Historical quick budget cohort risk: ${historicalRisk.budget_cohort} at ${formatPercent(historicalRisk.error_rate)} error rate (${formatNumber(historicalRisk.event_count)} events, ${formatNumber(historicalRisk.error_count)} error)`);
   }
