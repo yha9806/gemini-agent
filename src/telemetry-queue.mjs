@@ -1160,6 +1160,11 @@ function quarantineArchiveNextCommand({ reason, write = false, batchSize = 1 }) 
   return `gemini-agent telemetry quarantine archive --reason ${shellQuote(reason)} ${mode} --batch-size ${batchSize}`;
 }
 
+function quarantineRetryNextCommand({ reason, write = false, batchSize = 1 }) {
+  const mode = write ? "--write" : "--dry-run";
+  return `gemini-agent telemetry quarantine retry --reason ${shellQuote(reason)} ${mode} --batch-size ${batchSize}`;
+}
+
 function summarizeArchiveCandidates({
   reason,
   candidates,
@@ -1214,6 +1219,33 @@ function summarizeQuarantineArchiveCandidates({
     next_command: dryRun
       ? quarantineArchiveNextCommand({ reason, write: true, batchSize })
       : "gemini-agent telemetry doctor --json",
+  };
+}
+
+function summarizeQuarantineRetryCandidates({
+  reason,
+  candidates,
+  batchSize,
+  dryRun,
+  movedCount = 0,
+  remainingCandidates = candidates,
+}) {
+  const selectedCandidates = candidates.slice(0, batchSize);
+  const remainingFiles = remainingCandidates.flatMap((candidate) => candidate.files);
+  return {
+    ok: true,
+    dry_run: dryRun,
+    reason,
+    matched_directory_count: candidates.length,
+    would_move_count: selectedCandidates.reduce((sum, candidate) => sum + candidate.files.length, 0),
+    moved_count: movedCount,
+    remaining_quarantine_count_for_reason: dryRun
+      ? candidates.reduce((sum, candidate) => sum + candidate.files.length, 0)
+      : remainingFiles.length,
+    bytes: selectedCandidates.reduce((sum, candidate) => sum + candidate.bytes, 0),
+    next_command: dryRun
+      ? quarantineRetryNextCommand({ reason, write: true, batchSize })
+      : "gemini-agent telemetry flush --dry-run --batch-size 1",
   };
 }
 
@@ -1297,6 +1329,78 @@ export async function archiveQuarantinedTelemetryEvents({
       archivedCount,
       remainingCandidates: refreshed.candidates,
       resolutionBucket: bucketName,
+    });
+  });
+}
+
+export async function retryQuarantinedTelemetryEvents({
+  cwd = process.cwd(),
+  reason,
+  batchSize = 1,
+  dryRun = true,
+  lock = {},
+} = {}) {
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new Error("Telemetry quarantine retry reason is required.");
+  }
+  assertPositiveInteger(batchSize, "batchSize");
+  if (typeof dryRun !== "boolean") {
+    throw new TypeError("dryRun must be a boolean.");
+  }
+  if (lock == null || typeof lock !== "object" || Array.isArray(lock)) {
+    throw new TypeError("lock must be an object.");
+  }
+
+  if (dryRun) {
+    const dirs = telemetryQueueDirs(cwd);
+    const { reason: sanitizedReason, candidates } = await quarantineCandidates(dirs, reason);
+    return summarizeQuarantineRetryCandidates({
+      reason: sanitizedReason,
+      candidates,
+      batchSize,
+      dryRun: true,
+    });
+  }
+
+  return withTelemetryQueueLock({ cwd, ...lock }, async () => {
+    const dirs = await ensureQueueDirs(cwd);
+    const { reason: sanitizedReason, candidates } = await quarantineCandidates(dirs, reason);
+    const selectedCandidates = candidates.slice(0, batchSize);
+    let movedCount = 0;
+    const eventIds = await loadOrRebuildEventIndex(cwd, dirs);
+
+    for (const candidate of selectedCandidates) {
+      const eventFile = candidate.files[0];
+      if (!eventFile) continue;
+      const event = await readJsonOrNull(eventFile.path);
+      const destination = join(dirs.pending, queueFileName("event"));
+      await rename(eventFile.path, destination);
+      await chmod(destination, SECURE_FILE_MODE);
+      await rm(candidate.eventDir, { recursive: true, force: true });
+      if (typeof event?.event_id === "string" && event.event_id.trim()) {
+        eventIds.add(event.event_id);
+      }
+      movedCount += 1;
+    }
+
+    if (movedCount > 0) {
+      await saveEventIndex(cwd, eventIds);
+    }
+
+    const state = await loadStateFromPath(dirs.state);
+    await saveState(cwd, {
+      ...state,
+      queue_bytes: await pendingQueueBytes(cwd),
+    });
+
+    const refreshed = await quarantineCandidates(dirs, sanitizedReason);
+    return summarizeQuarantineRetryCandidates({
+      reason: sanitizedReason,
+      candidates,
+      batchSize,
+      dryRun: false,
+      movedCount,
+      remainingCandidates: refreshed.candidates,
     });
   });
 }

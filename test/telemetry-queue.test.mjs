@@ -32,6 +32,7 @@ import {
   pruneSentTelemetry,
   quarantineTelemetryEvent,
   retryFailedTelemetryEvents,
+  retryQuarantinedTelemetryEvents,
   telemetryQueueDirs,
   withTelemetryQueueLock,
 } from "../src/telemetry-queue.mjs";
@@ -744,6 +745,105 @@ test("archiveQuarantinedTelemetryEvents write mode moves bounded events to resol
   assert.equal(secondResult.remaining_quarantine_count_for_reason, 0);
 
   const finalSnapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(finalSnapshot.quarantine.count, 0);
+});
+
+test("retryQuarantinedTelemetryEvents dry-run reports matching events without moving files", async () => {
+  const cwd = await temporaryWorkspace();
+  const event = await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(7481, {
+      event_id: "evt_quarantine_retry_private_1",
+      prompt: "private quarantined retry prompt",
+      response: "private quarantined retry response",
+    }),
+  });
+  await quarantineTelemetryEvent({
+    cwd,
+    eventId: event.event_id,
+    reason: "repeated_http_403\nAuthorization: Bearer secret-token",
+  });
+
+  const before = await loadTelemetryQueueSnapshot({ cwd });
+  const result = await retryQuarantinedTelemetryEvents({
+    cwd,
+    reason: "repeated_http_403 Authorization: Bearer secret-token",
+    batchSize: 1,
+    dryRun: true,
+  });
+  const after = await loadTelemetryQueueSnapshot({ cwd });
+  const serialized = JSON.stringify(result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dry_run, true);
+  assert.equal(result.reason, "repeated_http_403 Authorization: [MASKED]");
+  assert.equal(result.matched_directory_count, 1);
+  assert.equal(result.would_move_count, 1);
+  assert.equal(result.moved_count, 0);
+  assert.equal(result.remaining_quarantine_count_for_reason, 1);
+  assert.deepEqual(after, before);
+  assert.doesNotMatch(serialized, /evt_quarantine_retry_private/);
+  assert.doesNotMatch(serialized, /private quarantined retry/);
+  assert.doesNotMatch(serialized, /secret-token/);
+  assert.doesNotMatch(serialized, /queue\/quarantine/);
+});
+
+test("retryQuarantinedTelemetryEvents write mode moves bounded events to pending", async () => {
+  const cwd = await temporaryWorkspace();
+  const first = await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(7591, {
+      event_id: "evt_quarantine_retry_write_private_1",
+      prompt: "private retry write prompt 1",
+    }),
+  });
+  const second = await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(7592, {
+      event_id: "evt_quarantine_retry_write_private_2",
+      prompt: "private retry write prompt 2",
+    }),
+  });
+  await quarantineTelemetryEvent({ cwd, eventId: first.event_id, reason: "repeated_http_403_context_pack_payload" });
+  await quarantineTelemetryEvent({ cwd, eventId: second.event_id, reason: "repeated_http_403_context_pack_payload" });
+
+  const result = await retryQuarantinedTelemetryEvents({
+    cwd,
+    reason: "repeated_http_403_context_pack_payload",
+    batchSize: 1,
+    dryRun: false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dry_run, false);
+  assert.equal(result.would_move_count, 1);
+  assert.equal(result.moved_count, 1);
+  assert.equal(result.remaining_quarantine_count_for_reason, 1);
+  assert.equal(result.next_command, "gemini-agent telemetry flush --dry-run --batch-size 1");
+
+  const snapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(snapshot.pending.count, 1);
+  assert.equal(snapshot.quarantine.count, 1);
+
+  const claimed = await claimTelemetryBatch({
+    cwd,
+    batchSize: 1,
+    now: new Date("2026-06-12T00:00:00.000Z"),
+  });
+  assert.equal(claimed.events.length, 1);
+  assert.equal(claimed.events[0].event_id, first.event_id);
+
+  const secondResult = await retryQuarantinedTelemetryEvents({
+    cwd,
+    reason: "repeated_http_403_context_pack_payload",
+    batchSize: 5,
+    dryRun: false,
+  });
+  assert.equal(secondResult.moved_count, 1);
+  assert.equal(secondResult.remaining_quarantine_count_for_reason, 0);
+
+  const finalSnapshot = await loadTelemetryQueueSnapshot({ cwd });
+  assert.equal(finalSnapshot.pending.count, 1);
   assert.equal(finalSnapshot.quarantine.count, 0);
 });
 

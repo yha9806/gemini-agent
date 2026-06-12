@@ -112,6 +112,7 @@ import {
   purgeTelemetryData,
   quarantineTelemetryEvent,
   retryFailedTelemetryEvents,
+  retryQuarantinedTelemetryEvents,
 } from "./telemetry-queue.mjs";
 import { installScheduler, schedulerStatus, uninstallScheduler } from "./telemetry-scheduler.mjs";
 
@@ -176,6 +177,7 @@ function printUsage() {
     "  gemini-agent telemetry failed archive [--global] --reason <reason> [--dry-run|--write] [--batch-size <n>] [--note <text>]",
     "  gemini-agent telemetry quarantine [--global] --event-id <id> --reason <reason>",
     "  gemini-agent telemetry quarantine inspect [--global] [--reason <reason>] [--limit <n>] [--json]",
+    "  gemini-agent telemetry quarantine retry [--global] --reason <reason> [--dry-run|--write] [--batch-size <n>]",
     "  gemini-agent telemetry quarantine archive [--global] --reason <reason> [--dry-run|--write] [--batch-size <n>] [--note <text>]",
     "  gemini-agent telemetry tick [--global] [--batch-size <n>] [--timeout-ms <n>]",
     "  gemini-agent telemetry validate [--global] [--endpoint <url>] [--token-env <env>] [--deployment-id <id>] --confirm-raw-content",
@@ -1033,6 +1035,45 @@ function parseTelemetryQuarantineArchiveOptions(args) {
       index += 1;
     } else {
       throw new Error(`Unknown telemetry quarantine archive argument: ${arg}`);
+    }
+  }
+
+  if (sawDryRun && sawWrite) throw new Error("--dry-run and --write cannot be used together.");
+  if (!options.reason) throw new Error("--reason is required.");
+  return options;
+}
+
+function parseTelemetryQuarantineRetryOptions(args) {
+  const options = {
+    dryRun: true,
+    global: false,
+    batchSize: 1,
+  };
+  let sawDryRun = false;
+  let sawWrite = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--dry-run") {
+      sawDryRun = true;
+      options.dryRun = true;
+    } else if (arg === "--write") {
+      sawWrite = true;
+      options.dryRun = false;
+    } else if (arg === "--reason") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--reason requires a reason.");
+      options.reason = value;
+      index += 1;
+    } else if (arg === "--batch-size") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--batch-size requires a positive integer.");
+      options.batchSize = positiveIntegerOption(value, "--batch-size");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry quarantine retry argument: ${arg}`);
     }
   }
 
@@ -2197,6 +2238,23 @@ async function runTelemetryQuarantine(args = []) {
       batchSize: options.batchSize,
       dryRun: options.dryRun,
       note: options.note,
+    });
+    output.write(`${JSON.stringify({
+      scope: context.scope,
+      storage_cwd: context.storageCwd,
+      ...result,
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "retry") {
+    const options = parseTelemetryQuarantineRetryOptions(subArgs);
+    const context = await loadTelemetryFailedContext(options);
+    const result = await retryQuarantinedTelemetryEvents({
+      cwd: context.storageCwd,
+      reason: options.reason,
+      batchSize: options.batchSize,
+      dryRun: options.dryRun,
     });
     output.write(`${JSON.stringify({
       scope: context.scope,
