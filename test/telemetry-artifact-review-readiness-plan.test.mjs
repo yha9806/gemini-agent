@@ -282,7 +282,7 @@ function cleanRawPreflight(overrides = {}) {
   });
 }
 
-test("readiness plan returns collect_more_samples for current A2-shaped data", () => {
+test("readiness plan blocks current A2-shaped raw governance data", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary(),
     coveragePlan: coveragePlan(),
@@ -292,9 +292,9 @@ test("readiness plan returns collect_more_samples for current A2-shaped data", (
 
   assert.equal(report.ok, true);
   assert.equal(report.command, "artifact-review");
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
-  assert.equal(report.routing_recommendation.production_sampling_allowed, true);
+  assert.equal(report.routing_recommendation.production_sampling_allowed, false);
   assert.equal(report.routing_recommendation.additional_quick_samples_needed, 6);
   assert.deepEqual(report.routing_recommendation.recommended_budget_cohorts, ["2048"]);
   assert.ok(report.readiness.reasons.includes("active_quick_low_sample"));
@@ -327,7 +327,7 @@ test("readiness plan blocks unsafe active quick reliability", () => {
         low_confidence: false,
       },
     }),
-    doctor: doctor({ queue: { pending: { count: 0 }, failed: { count: 0 }, quarantine: { count: 0 } } }),
+    doctor: cleanDoctor(),
     rawPreflight: cleanRawPreflight(),
   });
 
@@ -377,12 +377,41 @@ test("readiness plan requires production scorecard coverage even with healthy va
         near_budget: false,
       },
     }),
-    doctor: doctor({ queue: { pending: { count: 0 }, failed: { count: 0 }, quarantine: { count: 0 } } }),
+    doctor: cleanDoctor(),
     rawPreflight: cleanRawPreflight(),
   });
 
   assert.equal(report.readiness.status, "collect_more_samples");
   assert.ok(report.readiness.reasons.includes("production_scorecard_coverage_low"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
+test("readiness plan blocks zero production scorecard coverage when production events exist", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 4,
+        missing_json_envelope_count: 0,
+        retry_event_count: 1,
+        retry_recovered_count: 1,
+        retry_recovery_rate: 1,
+        top_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan({
+      production_scorecard: scorecard({
+        eventCount: 20,
+        scorecardEventCount: 1,
+        coverage: 0,
+        fieldCoverage: 0,
+      }),
+    }),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.readiness.status, "blocked");
+  assert.ok(report.readiness.reasons.includes("production_scorecard_coverage_zero"));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
@@ -430,6 +459,8 @@ test("readiness plan does not use unrelated retry recovery for artifact-review J
   assert.equal(report.structured_response.retry_scheduled_count, 0);
   assert.equal(report.structured_response.retry_recovered_count, 0);
   assert.equal(report.structured_response.retry_recovery_rate, null);
+  assert.equal(report.structured_response.diagnosis, "unrecovered_json_envelope");
+  assert.equal(report.structured_response.recovery_action, "verify_artifact_review_json_retry_recovery");
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
@@ -461,7 +492,7 @@ test("readiness plan requires doctor and raw preflight evidence before limited r
   });
 
   assert.equal(report.generated_at, "2026-06-12T00:02:03.000Z");
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.ok(report.readiness.reasons.includes("telemetry_doctor_unavailable"));
   assert.ok(report.readiness.reasons.includes("raw_preflight_unavailable"));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
@@ -493,7 +524,7 @@ test("readiness plan requires healthy endpoint diagnostics before limited routin
     rawPreflight: cleanRawPreflight(),
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.ok(report.readiness.reasons.includes("telemetry_endpoint_unhealthy"));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
@@ -524,7 +555,7 @@ test("readiness plan requires endpoint diagnostics to be present before limited 
     rawPreflight: cleanRawPreflight(),
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.ok(report.readiness.reasons.includes("telemetry_endpoint_unhealthy"));
   assert.ok(report.next_actions.includes("Run telemetry doctor and restore healthy endpoint diagnostics before limited routing."));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
@@ -564,7 +595,7 @@ test("readiness plan requires explicit healthy doctor evidence before limited ro
     rawPreflight: cleanRawPreflight(),
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.ok(report.readiness.reasons.includes("telemetry_doctor_incomplete"));
   assert.ok(report.next_actions.includes("Run telemetry doctor to refresh complete delivery diagnostics before limited routing."));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
@@ -600,7 +631,7 @@ test("readiness plan requires explicit doctor delivery counters before limited r
     rawPreflight: cleanRawPreflight(),
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.ok(report.readiness.reasons.includes("telemetry_doctor_incomplete"));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
@@ -631,7 +662,7 @@ test("readiness plan requires complete raw preflight evidence before limited rou
     rawPreflight: { ok: true, pending: {}, batch: {}, risk: {} },
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.equal(report.raw_governance.preflight_available, false);
   assert.ok(report.readiness.reasons.includes("raw_preflight_incomplete"));
   assert.ok(report.next_actions.includes("Run raw telemetry preflight with pending, batch, and risk summaries before limited routing."));
@@ -671,7 +702,7 @@ test("readiness plan requires raw delivery to have no in-flight events", () => {
     rawPreflight: cleanRawPreflight(),
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.equal(report.raw_governance.inflight_count, 1);
   assert.ok(report.readiness.reasons.includes("raw_inflight_events_present"));
   assert.ok(report.next_actions.includes("Wait for in-flight raw telemetry delivery to settle before limited routing."));
@@ -734,7 +765,7 @@ test("readiness plan uses raw preflight pending evidence when doctor pending is 
     }),
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.equal(report.raw_governance.preflight_available, true);
   assert.equal(report.raw_governance.pending_count, 3);
   assert.equal(report.raw_governance.preflight_selected_count, 2);
@@ -780,7 +811,7 @@ test("readiness plan requires raw preflight to cover all pending telemetry", () 
     }),
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.ok(report.readiness.reasons.includes("raw_preflight_partial"));
   assert.ok(report.next_actions.includes("Run raw preflight over the remaining pending telemetry before limited routing."));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
@@ -823,7 +854,7 @@ test("readiness plan gates on raw preflight preview errors and invalid files", (
     }),
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.equal(report.raw_governance.preflight_preview_error, "invalid_pending_event");
   assert.equal(report.raw_governance.invalid_file_count, 1);
   assert.ok(report.readiness.reasons.includes("raw_preflight_preview_error"));
@@ -871,9 +902,52 @@ test("readiness plan gates on raw preflight max byte limits", () => {
     }),
   });
 
-  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.readiness.status, "blocked");
   assert.equal(report.raw_governance.exceeds_max_bytes, true);
   assert.ok(report.readiness.reasons.includes("raw_preflight_exceeds_max_bytes"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
+test("readiness plan gates on raw preflight skipped files", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight({
+      pending: { total_count: 1, total_bytes: 256 },
+      batch: {
+        batch_size: 100,
+        would_send_count: 1,
+        batch_bytes: 256,
+        exceeds_max_bytes: false,
+        excluded_by_batch_size_count: 0,
+        preview_error: null,
+      },
+      risk: rawRisk({ file_count: 1, event_count: 1, skipped_file_count: 1 }),
+    }),
+  });
+
+  assert.equal(report.readiness.status, "blocked");
+  assert.equal(report.raw_governance.skipped_file_count, 1);
+  assert.ok(report.readiness.reasons.includes("raw_preflight_skipped_files"));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
@@ -927,6 +1001,8 @@ test("readiness plan becomes ready only when every hard gate passes", () => {
 
   assert.equal(report.readiness.status, "ready_for_limited_routing");
   assert.deepEqual(report.readiness.reasons, ["artifact_review_ready_for_limited_routing"]);
+  assert.equal(report.structured_response.diagnosis, "none");
+  assert.equal(report.structured_response.recovery_action, "none");
   assert.equal(report.routing_recommendation.limited_routing_allowed, true);
   assert.equal(report.routing_recommendation.production_sampling_allowed, true);
 });
@@ -940,9 +1016,10 @@ test("readiness plan text uses aggregate fields only", () => {
   });
   const text = artifactReviewReadinessPlanToText(report);
 
-  assert.match(text, /Artifact-review readiness plan: collect_more_samples/);
+  assert.match(text, /Artifact-review readiness plan: blocked/);
+  assert.match(text, /Readiness reasons: .*raw_pending_sensitive_signals/);
   assert.match(text, /Limited routing: no/);
-  assert.match(text, /Production sampling: yes/);
+  assert.match(text, /Production sampling: no/);
   assert.match(text, /collect 6 more quick 2048 samples/);
   assert.doesNotMatch(text, /raw prompt\b|Authorization|Bearer|evt_private|private\.png|batch_private|\/home\/example/);
 });
@@ -968,7 +1045,7 @@ test("runArtifactReviewReadinessPlan degrades when endpoint diagnostics fail", a
     });
 
     assert.equal(report.ok, true);
-    assert.equal(report.readiness.status, "collect_more_samples");
+    assert.equal(report.readiness.status, "blocked");
     assert.equal(report.raw_governance.failed_count, 0);
     assert.equal(report.routing_recommendation.limited_routing_allowed, false);
     assert.equal(JSON.stringify(report).includes(cwd), false);

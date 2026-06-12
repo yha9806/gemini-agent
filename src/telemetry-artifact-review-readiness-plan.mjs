@@ -274,6 +274,7 @@ function structuredResponseSection(summary = {}) {
   const retryEventCount = nonnegativeInteger(artifactRetryRow?.retry_event_count);
   const retryScheduledCount = nonnegativeInteger(artifactRetryRow?.retry_scheduled_count);
   const retryRecoveredCount = nonnegativeInteger(artifactRetryRow?.retry_recovered_count);
+  const unrecoveredJsonEnvelope = missingCount > retryRecoveredCount;
   return {
     event_count: eventCount,
     missing_json_envelope_count: missingCount,
@@ -287,6 +288,8 @@ function structuredResponseSection(summary = {}) {
       ? nullableNumber(artifactRetryRow.retry_recovery_rate)
         ?? (retryScheduledCount > 0 ? Math.min(1, ratio(retryRecoveredCount, retryScheduledCount)) : null)
       : null,
+    diagnosis: unrecoveredJsonEnvelope ? "unrecovered_json_envelope" : "none",
+    recovery_action: unrecoveredJsonEnvelope ? "verify_artifact_review_json_retry_recovery" : "none",
     affected_command: "artifact-review",
   };
 }
@@ -360,28 +363,31 @@ function buildReadinessReasons({
     blocked.push("active_quick_error_rate_high");
   }
   if (latency.status === "over_budget") blocked.push("generation_latency_over_budget");
-  if (production.event_count > 0 && production.scorecard_event_count === 0) {
+  if (
+    production.event_count > 0
+    && (production.scorecard_event_count === 0 || production.coverage_rate === 0)
+  ) {
     blocked.push("production_scorecard_coverage_zero");
   }
-  if (raw.inflight_count > 0) collect.push("raw_inflight_events_present");
+  if (raw.inflight_count > 0) blocked.push("raw_inflight_events_present");
   if (raw.failed_count > 0) blocked.push("raw_failed_events_present");
   if (raw.quarantine_count > 0) blocked.push("raw_quarantine_events_present");
   if (doctor && doctor.ok === false) blocked.push("telemetry_delivery_unhealthy");
 
-  if (doctor === null) collect.push("telemetry_doctor_unavailable");
-  if (doctor !== null && !doctorComplete(doctor)) collect.push("telemetry_doctor_incomplete");
+  if (doctor === null) blocked.push("telemetry_doctor_unavailable");
+  if (doctor !== null && !doctorComplete(doctor)) blocked.push("telemetry_doctor_incomplete");
   if (doctor !== null && !endpointDiagnosticsHealthy(doctor)) {
-    collect.push("telemetry_endpoint_unhealthy");
+    blocked.push("telemetry_endpoint_unhealthy");
   }
-  if (raw.preflight_incomplete) collect.push("raw_preflight_incomplete");
+  if (raw.preflight_incomplete) blocked.push("raw_preflight_incomplete");
   if (!raw.preflight_available && !raw.preflight_incomplete) {
-    collect.push("raw_preflight_unavailable");
+    blocked.push("raw_preflight_unavailable");
   }
-  if (raw.preflight_partial) collect.push("raw_preflight_partial");
-  if (raw.preflight_preview_error !== null) collect.push("raw_preflight_preview_error");
-  if (raw.exceeds_max_bytes) collect.push("raw_preflight_exceeds_max_bytes");
-  if (raw.invalid_file_count > 0) collect.push("raw_preflight_invalid_files");
-  if (raw.skipped_file_count > 0) collect.push("raw_preflight_skipped_files");
+  if (raw.preflight_partial) blocked.push("raw_preflight_partial");
+  if (raw.preflight_preview_error !== null) blocked.push("raw_preflight_preview_error");
+  if (raw.exceeds_max_bytes) blocked.push("raw_preflight_exceeds_max_bytes");
+  if (raw.invalid_file_count > 0) blocked.push("raw_preflight_invalid_files");
+  if (raw.skipped_file_count > 0) blocked.push("raw_preflight_skipped_files");
   if (quick.low_confidence || quick.additional_events_needed > 0) {
     collect.push("active_quick_low_sample");
   }
@@ -396,7 +402,7 @@ function buildReadinessReasons({
     collect.push("structured_response_unrecovered_json_envelope");
   }
   if (raw.pending_count > 0 && raw.sensitive_signal_count > 0) {
-    collect.push("raw_pending_sensitive_signals");
+    blocked.push("raw_pending_sensitive_signals");
   }
   if (
     validation.coverage_rate !== null
@@ -620,6 +626,7 @@ export function artifactReviewReadinessPlanToText(report) {
   const cohort = cohorts[0];
   const lines = [
     `Artifact-review readiness plan: ${report.readiness.status}`,
+    `- Readiness reasons: ${report.readiness.reasons.join(", ")}`,
     `- Limited routing: ${routing.limited_routing_allowed ? "yes" : "no"}`,
     `- Production sampling: ${routing.production_sampling_allowed ? "yes" : "no"}${routing.additional_quick_samples_needed > 0 ? `, collect ${formatNumber(routing.additional_quick_samples_needed)} more quick ${cohort} samples` : ""}`,
     `- Production scorecard coverage: ${formatPercent(report.production_scorecard.coverage_rate)} (${formatNumber(report.production_scorecard.scorecard_event_count)} of ${formatNumber(report.production_scorecard.event_count)})`,
