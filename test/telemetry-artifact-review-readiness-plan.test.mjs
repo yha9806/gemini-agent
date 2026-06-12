@@ -177,6 +177,57 @@ function rawPreflight(overrides = {}) {
   };
 }
 
+function readyCoveragePlan(overrides = {}) {
+  return coveragePlan({
+    production_scorecard: scorecard({ eventCount: 20, scorecardEventCount: 18, coverage: 0.9, fieldCoverage: 0.85 }),
+    validation_scorecard: {
+      ...scorecard({ eventCount: 5, scorecardEventCount: 5, coverage: 1, fieldCoverage: 1 }),
+      events_needed_for_target: undefined,
+    },
+    active_quick_collection: {
+      active_budget_cohorts: [
+        {
+          budget_cohort: "2048",
+          event_count: 12,
+          success_count: 12,
+          error_count: 0,
+          error_rate: 0,
+          additional_events_needed: 0,
+          low_confidence: false,
+        },
+      ],
+      target_events_per_cohort: 10,
+      additional_events_needed: 0,
+      active_error_rate: 0,
+      low_confidence: false,
+    },
+    latency_guard: {
+      status: "within_budget",
+      p95_ms: 12000,
+      budget_ms: 15000,
+      near_budget: false,
+    },
+    ...overrides,
+  });
+}
+
+function cleanDoctor(overrides = {}) {
+  return doctor({
+    queue: { pending: { count: 0 }, failed: { count: 0 }, quarantine: { count: 0 } },
+    small_flush_safe: false,
+    ...overrides,
+  });
+}
+
+function cleanRawPreflight(overrides = {}) {
+  return rawPreflight({
+    pending: { total_count: 0, total_bytes: 0 },
+    batch: { would_send_count: 0 },
+    risk: { sensitive_signal_count: 0 },
+    ...overrides,
+  });
+}
+
 test("readiness plan returns collect_more_samples for current A2-shaped data", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary(),
@@ -286,6 +337,87 @@ test("readiness plan requires production scorecard coverage even with healthy va
 
   assert.equal(report.readiness.status, "collect_more_samples");
   assert.ok(report.readiness.reasons.includes("production_scorecard_coverage_low"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
+test("readiness plan does not use unrelated retry recovery for artifact-review JSON envelope risk", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 1,
+        missing_json_envelope_rate: 0.0833,
+        retry_event_count: 1,
+        retry_scheduled_count: 1,
+        retry_recovered_count: 1,
+        retry_recovery_rate: 1,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 4,
+            missing_json_envelope_count: 1,
+          },
+          {
+            command: "diff-review",
+            event_count: 8,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [
+          {
+            command: "diff-review",
+            retry_event_count: 1,
+            retry_scheduled_count: 1,
+            retry_recovered_count: 1,
+          },
+        ],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.ok(report.readiness.reasons.includes("structured_response_unrecovered_json_envelope"));
+  assert.equal(report.structured_response.retry_event_count, 0);
+  assert.equal(report.structured_response.retry_scheduled_count, 0);
+  assert.equal(report.structured_response.retry_recovered_count, 0);
+  assert.equal(report.structured_response.retry_recovery_rate, null);
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
+test("readiness plan requires doctor and raw preflight evidence before limited routing", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      generated_at: "2026-06-12T01:02:03+01:00",
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: null,
+    rawPreflight: null,
+  });
+
+  assert.equal(report.generated_at, "2026-06-12T00:02:03.000Z");
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.ok(report.readiness.reasons.includes("telemetry_doctor_unavailable"));
+  assert.ok(report.readiness.reasons.includes("raw_preflight_unavailable"));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 

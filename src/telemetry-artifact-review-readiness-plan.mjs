@@ -85,7 +85,7 @@ function safeLatencyStatus(value) {
 function safeGeneratedAt(value) {
   if (typeof value !== "string") return new Date(0).toISOString();
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? new Date(0).toISOString() : value;
+  return Number.isNaN(date.getTime()) ? new Date(0).toISOString() : date.toISOString();
 }
 
 function safeDoctorAction(value) {
@@ -180,19 +180,17 @@ function structuredResponseSection(summary = {}) {
     ? summary.structured_response
     : {};
   const topCommands = Array.isArray(structured.top_commands) ? structured.top_commands : [];
+  const topRetryCommands = Array.isArray(structured.top_retry_commands) ? structured.top_retry_commands : [];
   const artifactRow = topCommands.find((row) => row?.command === "artifact-review") ?? null;
+  const artifactRetryRow = topRetryCommands.find((row) => row?.command === "artifact-review") ?? null;
   const rowSelected = artifactRow !== null;
   const eventCount = nonnegativeInteger(artifactRow?.event_count ?? structured.event_count);
   const missingCount = nonnegativeInteger(
     artifactRow?.missing_json_envelope_count ?? structured.missing_json_envelope_count,
   );
-  const retryEventCount = nonnegativeInteger(artifactRow?.retry_event_count ?? structured.retry_event_count);
-  const retryScheduledCount = nonnegativeInteger(
-    artifactRow?.retry_scheduled_count ?? structured.retry_scheduled_count,
-  );
-  const retryRecoveredCount = nonnegativeInteger(
-    artifactRow?.retry_recovered_count ?? structured.retry_recovered_count,
-  );
+  const retryEventCount = nonnegativeInteger(artifactRetryRow?.retry_event_count);
+  const retryScheduledCount = nonnegativeInteger(artifactRetryRow?.retry_scheduled_count);
+  const retryRecoveredCount = nonnegativeInteger(artifactRetryRow?.retry_recovered_count);
   return {
     event_count: eventCount,
     missing_json_envelope_count: missingCount,
@@ -202,9 +200,10 @@ function structuredResponseSection(summary = {}) {
     retry_event_count: retryEventCount,
     retry_scheduled_count: retryScheduledCount,
     retry_recovered_count: retryRecoveredCount,
-    retry_recovery_rate: nullableNumber(
-      rowSelected ? artifactRow.retry_recovery_rate : structured.retry_recovery_rate,
-    ) ?? ratio(retryRecoveredCount, retryEventCount),
+    retry_recovery_rate: artifactRetryRow
+      ? nullableNumber(artifactRetryRow.retry_recovery_rate)
+        ?? (retryScheduledCount > 0 ? Math.min(1, ratio(retryRecoveredCount, retryScheduledCount)) : null)
+      : null,
     affected_command: "artifact-review",
   };
 }
@@ -268,6 +267,8 @@ function buildReadinessReasons({
   if (raw.quarantine_count > 0) blocked.push("raw_quarantine_events_present");
   if (doctor && doctor.ok === false) blocked.push("telemetry_delivery_unhealthy");
 
+  if (doctor === null) collect.push("telemetry_doctor_unavailable");
+  if (!raw.preflight_available) collect.push("raw_preflight_unavailable");
   if (quick.low_confidence || quick.additional_events_needed > 0) {
     collect.push("active_quick_low_sample");
   }
@@ -313,8 +314,9 @@ function statusFor({ blocked, production, quick, latency, structured, raw, docto
   const structuredReady = structured.missing_json_envelope_count <= structured.retry_recovered_count;
   const rawReady = raw.failed_count === 0
     && raw.quarantine_count === 0
-    && (raw.pending_count === 0 || (raw.preflight_available && raw.sensitive_signal_count === 0));
-  const deliveryReady = !doctor || doctor.ok !== false;
+    && raw.preflight_available
+    && (raw.pending_count === 0 || raw.sensitive_signal_count === 0);
+  const deliveryReady = doctor !== null && doctor.ok !== false;
   if (scorecardReady && quickReady && latencyReady && structuredReady && rawReady && deliveryReady) {
     return "ready_for_limited_routing";
   }
