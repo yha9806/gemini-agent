@@ -1448,6 +1448,7 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
     event: telemetryEvent(40, {
       command: "artifact-review",
       metadata: {
+        artifact_review_depth: "quick",
         design_scorecard: {
           overall_score: 80,
           visual_hierarchy_score: 90,
@@ -1465,6 +1466,7 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
     event: telemetryEvent(41, {
       command: "gemini-artifact-review",
       metadata: {
+        artifact_review_depth: "quick",
         design_scorecard: {
           overall_score: 60,
           visual_hierarchy_score: 80,
@@ -1510,6 +1512,7 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
     event: telemetryEvent(49, {
       command: "artifact-review",
       metadata: {
+        artifact_review_depth: "quick",
         design_scorecard: {
           overall_score: -1,
           visual_hierarchy_score: 101,
@@ -1568,11 +1571,151 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
       },
     ],
   });
+  assert.deepEqual(summary.artifact_review_routing_quality, {
+    event_count: 3,
+    success_count: 3,
+    error_count: 0,
+    scorecard_event_count: 2,
+    scorecard_field_coverage: [
+      { field: "overall_score", scored_event_count: 2, event_count: 3, coverage_rate: 0.6667 },
+      { field: "visual_hierarchy_score", scored_event_count: 2, event_count: 3, coverage_rate: 0.6667 },
+      { field: "clarity_score", scored_event_count: 2, event_count: 3, coverage_rate: 0.6667 },
+      { field: "accessibility_score", scored_event_count: 0, event_count: 3, coverage_rate: 0 },
+      { field: "consistency_score", scored_event_count: 2, event_count: 3, coverage_rate: 0.6667 },
+      { field: "implementation_readiness_score", scored_event_count: 2, event_count: 3, coverage_rate: 0.6667 },
+    ],
+    avg_overall_score: 70,
+    avg_visual_hierarchy_score: 85,
+    avg_clarity_score: 75,
+    avg_accessibility_score: null,
+    avg_consistency_score: 82.5,
+    avg_implementation_readiness_score: 72.5,
+    top_commands: [
+      {
+        command: "artifact-review",
+        event_count: 3,
+        success_count: 3,
+        error_count: 0,
+        unknown_count: 0,
+        scorecard_event_count: 2,
+        avg_overall_score: 70,
+      },
+    ],
+  });
   assert.match(text, /Artifact review quality:/);
   assert.match(text, /Average overall score: 80/);
   assert.match(text, /Scorecard field coverage:/);
   assert.match(text, /accessibility_score: 0 of 4 events \(0\.0%\)/);
   assert.doesNotMatch(serialized, /private strength|private backfill action|private invalid scorecard detail|custom_private_score/);
+});
+
+test("runTelemetrySummary routing quality excludes legacy unknown-depth and failed artifact reviews", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(140, {
+      command: "artifact-review",
+      metadata: {
+        design_scorecard: {
+          overall_score: 100,
+          visual_hierarchy_score: 100,
+          clarity_score: 100,
+          accessibility_score: 100,
+          consistency_score: 100,
+          implementation_readiness_score: 100,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(141, {
+      command: "artifact-review",
+      metadata: {
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+        design_scorecard: {
+          overall_score: 80,
+          visual_hierarchy_score: 80,
+          clarity_score: 80,
+          accessibility_score: 80,
+          consistency_score: 80,
+          implementation_readiness_score: 80,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(142, {
+      command: "artifact-review",
+      status: "error",
+      error_type: "SyntaxError",
+      metadata: {
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(143, {
+      command: "artifact-review-backfill",
+      metadata: {
+        artifact_review_depth: "quick",
+        design_scorecard: {
+          overall_score: 90,
+          visual_hierarchy_score: 90,
+          clarity_score: 90,
+          accessibility_score: 90,
+          consistency_score: 90,
+          implementation_readiness_score: 90,
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+
+  assert.equal(summary.artifact_review_quality.event_count, 4);
+  assert.deepEqual(summary.artifact_review_routing_quality, {
+    event_count: 1,
+    success_count: 1,
+    error_count: 0,
+    scorecard_event_count: 1,
+    scorecard_field_coverage: [
+      { field: "overall_score", scored_event_count: 1, event_count: 1, coverage_rate: 1 },
+      { field: "visual_hierarchy_score", scored_event_count: 1, event_count: 1, coverage_rate: 1 },
+      { field: "clarity_score", scored_event_count: 1, event_count: 1, coverage_rate: 1 },
+      { field: "accessibility_score", scored_event_count: 1, event_count: 1, coverage_rate: 1 },
+      { field: "consistency_score", scored_event_count: 1, event_count: 1, coverage_rate: 1 },
+      { field: "implementation_readiness_score", scored_event_count: 1, event_count: 1, coverage_rate: 1 },
+    ],
+    avg_overall_score: 80,
+    avg_visual_hierarchy_score: 80,
+    avg_clarity_score: 80,
+    avg_accessibility_score: 80,
+    avg_consistency_score: 80,
+    avg_implementation_readiness_score: 80,
+    top_commands: [
+      {
+        command: "artifact-review",
+        event_count: 1,
+        success_count: 1,
+        error_count: 0,
+        unknown_count: 0,
+        scorecard_event_count: 1,
+        avg_overall_score: 80,
+      },
+    ],
+  });
 });
 
 test("runTelemetrySummary compares artifact-review depth latency, reliability, usage, and scorecards safely", async () => {

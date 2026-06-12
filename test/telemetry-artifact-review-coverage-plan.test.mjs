@@ -178,6 +178,56 @@ test("validation coverage cannot make low production coverage ready for routing"
   assert.equal(report.next_actions.some((item) => /ready for limited routing/i.test(item)), false);
 });
 
+test("coverage plan uses routing artifact-review quality over historical backfill quality", () => {
+  const report = buildArtifactReviewCoveragePlan(baseSummary({
+    artifact_review_quality: scorecard({
+      eventCount: 120,
+      scorecardEventCount: 20,
+      coverage: 0.1667,
+      fieldCoverage: 0.1667,
+      overall: 60,
+      readiness: 45,
+    }),
+    artifact_review_routing_quality: scorecard({
+      eventCount: 20,
+      scorecardEventCount: 18,
+      coverage: 0.9,
+      fieldCoverage: 0.85,
+      overall: 76,
+      readiness: 74,
+    }),
+  }), qualityGate({
+    readiness: { status: "ready", reasons: [] },
+    quick_depth: {
+      active_error_rate: 0,
+      active_budget_cohorts: [
+        {
+          budget_cohort: "2048",
+          event_count: 10,
+          success_count: 10,
+          error_count: 0,
+          error_rate: 0,
+          low_confidence: false,
+        },
+      ],
+      historical_risky_budget_cohorts: [],
+    },
+    generation_latency: {
+      status: "within_budget",
+      event_count: 10,
+      p95_ms: 12000,
+      budget_ms: 15000,
+      min_events: 5,
+    },
+  }));
+
+  assert.equal(report.production_scorecard.event_count, 20);
+  assert.equal(report.production_scorecard.scorecard_event_count, 18);
+  assert.equal(report.production_scorecard.coverage_rate, 0.9);
+  assert.equal(report.plan.reasons.includes("production_scorecard_coverage_low"), false);
+  assert.equal(report.plan.status, "ready_for_limited_routing");
+});
+
 test("coverage plan blocks unsafe active quick reliability", () => {
   const report = buildArtifactReviewCoveragePlan(baseSummary({
     artifact_review_quality: scorecard({
@@ -230,6 +280,47 @@ test("coverage plan reports near latency guard", () => {
   assert.equal(report.latency_guard.near_budget, true);
   assert.ok(report.plan.reasons.includes("generation_latency_near_budget"));
   assert.ok(report.next_actions.some((item) => /latency/i.test(item)));
+});
+
+test("coverage plan uses active quick latency for limited routing decisions", () => {
+  const report = buildArtifactReviewCoveragePlan(baseSummary({
+    artifact_review_routing_quality: scorecard({
+      eventCount: 20,
+      scorecardEventCount: 18,
+      coverage: 0.9,
+      fieldCoverage: 0.85,
+    }),
+  }), qualityGate({
+    readiness: { status: "ready", reasons: [] },
+    quick_depth: {
+      active_error_rate: 0,
+      active_budget_cohorts: [
+        {
+          budget_cohort: "2048",
+          event_count: 10,
+          success_count: 10,
+          error_count: 0,
+          error_rate: 0,
+          p95_latency_ms: 12217,
+          low_confidence: false,
+        },
+      ],
+      historical_risky_budget_cohorts: [],
+    },
+    generation_latency: {
+      status: "over_budget",
+      event_count: 20,
+      p95_ms: 15243,
+      budget_ms: 15000,
+      min_events: 5,
+    },
+  }));
+
+  assert.equal(report.latency_guard.status, "within_budget");
+  assert.equal(report.latency_guard.p95_ms, 12217);
+  assert.equal(report.latency_guard.near_budget, false);
+  assert.equal(report.plan.reasons.includes("generation_latency_over_budget"), false);
+  assert.equal(report.plan.status, "ready_for_limited_routing");
 });
 
 test("coverage plan becomes ready for limited routing only when production and reliability pass", () => {

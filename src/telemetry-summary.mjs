@@ -1109,6 +1109,11 @@ function artifactReviewQualityCommand(value) {
   return command === "artifact-review" || command === "artifact-review-backfill" ? command : null;
 }
 
+function artifactReviewRoutingQualityCommand(value) {
+  const command = canonicalCommand(value);
+  return command === "artifact-review" ? command : null;
+}
+
 function buildRecommendations({
   commands,
   counts,
@@ -1371,8 +1376,10 @@ function createAccumulator(invalidSampleLimit) {
     },
     paletteSplitModels: createDimensionMap(),
     artifactReviewQuality: createArtifactReviewQualityAccumulator(),
+    artifactReviewRoutingQuality: createArtifactReviewQualityAccumulator(),
     artifactReviewValidationQuality: createArtifactReviewQualityAccumulator(),
     artifactReviewQualityCommands: new Map(),
+    artifactReviewRoutingQualityCommands: new Map(),
     artifactReviewValidationQualityCommands: new Map(),
     artifactReviewDepths: new Map(),
     artifactReviewValidationDepths: new Map(),
@@ -1425,6 +1432,7 @@ function addEvent(accumulator, state, event) {
     addArtifactReviewValidationDepthEvent(accumulator, event, status);
   } else {
     addArtifactReviewQualityEvent(accumulator, event, status);
+    addArtifactReviewRoutingQualityEvent(accumulator, event, status);
     addArtifactReviewDepthEvent(accumulator, event, status);
   }
   addContextLoopEvent(accumulator, event);
@@ -1667,8 +1675,12 @@ function addArtifactReviewValidationDepthEvent(accumulator, event, status) {
   }, event, status);
 }
 
-function addArtifactReviewQualityEventTo({ quality, commands }, event, status) {
-  const command = artifactReviewQualityCommand(event.command);
+function addArtifactReviewQualityEventTo({
+  quality,
+  commands,
+  commandForEvent = artifactReviewQualityCommand,
+}, event, status) {
+  const command = commandForEvent(event.command);
   if (!command) return;
   if (isScheduledStructuredRetryAttempt(event)) return;
   quality.event_count += 1;
@@ -1692,6 +1704,16 @@ function addArtifactReviewQualityEvent(accumulator, event, status) {
   addArtifactReviewQualityEventTo({
     quality: accumulator.artifactReviewQuality,
     commands: accumulator.artifactReviewQualityCommands,
+  }, event, status);
+}
+
+function addArtifactReviewRoutingQualityEvent(accumulator, event, status) {
+  if (status !== "success") return;
+  if (safeArtifactReviewDepth(event.metadata?.artifact_review_depth) === "unknown") return;
+  addArtifactReviewQualityEventTo({
+    quality: accumulator.artifactReviewRoutingQuality,
+    commands: accumulator.artifactReviewRoutingQualityCommands,
+    commandForEvent: artifactReviewRoutingQualityCommand,
   }, event, status);
 }
 
@@ -2162,6 +2184,10 @@ export async function runTelemetrySummary({
   };
   const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
   const artifactReviewQuality = buildArtifactReviewQualitySummary(accumulator, topLimit);
+  const artifactReviewRoutingQuality = buildArtifactReviewQualitySummary({
+    artifactReviewQuality: accumulator.artifactReviewRoutingQuality,
+    artifactReviewQualityCommands: accumulator.artifactReviewRoutingQualityCommands,
+  }, topLimit);
   const artifactReviewValidationQuality = buildArtifactReviewQualitySummary({
     artifactReviewQuality: accumulator.artifactReviewValidationQuality,
     artifactReviewQualityCommands: accumulator.artifactReviewValidationQualityCommands,
@@ -2220,6 +2246,7 @@ export async function runTelemetrySummary({
     backfill,
     palette_split: paletteSplit,
     artifact_review_quality: artifactReviewQuality,
+    artifact_review_routing_quality: artifactReviewRoutingQuality,
     artifact_review_validation_quality: artifactReviewValidationQuality,
     artifact_review_depths: artifactReviewDepths,
     artifact_review_validation_depths: artifactReviewValidationDepths,

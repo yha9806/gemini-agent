@@ -101,6 +101,14 @@ function validationScorecardSection(quality) {
   };
 }
 
+function productionScorecardSource(summary = {}) {
+  const routingQuality = summary?.artifact_review_routing_quality;
+  if (routingQuality && typeof routingQuality === "object" && !Array.isArray(routingQuality)) {
+    return routingQuality;
+  }
+  return summary?.artifact_review_quality;
+}
+
 function safeBudgetCohort(value) {
   const text = `${value ?? "unknown"}`.trim();
   if (/^\d{1,6}$/.test(text)) return text;
@@ -143,10 +151,29 @@ function activeQuickCollection(qualityGate) {
   };
 }
 
+function activeQuickP95Latency(qualityGate) {
+  const cohorts = Array.isArray(qualityGate?.quick_depth?.active_budget_cohorts)
+    ? qualityGate.quick_depth.active_budget_cohorts
+    : [];
+  const values = cohorts
+    .map((cohort) => nullableNumber(cohort?.p95_latency_ms))
+    .filter((value) => value !== null);
+  return values.length ? Math.max(...values) : null;
+}
+
 function latencyGuard(qualityGate) {
   const latency = qualityGate?.generation_latency ?? {};
-  const p95 = nullableNumber(latency.p95_ms);
   const budget = nullableNumber(latency.budget_ms) ?? 15_000;
+  const activeQuickP95 = activeQuickP95Latency(qualityGate);
+  if (activeQuickP95 !== null) {
+    return {
+      status: activeQuickP95 >= budget ? "over_budget" : "within_budget",
+      p95_ms: activeQuickP95,
+      budget_ms: budget,
+      near_budget: budget > 0 && activeQuickP95 >= budget * LATENCY_NEAR_BUDGET_RATIO,
+    };
+  }
+  const p95 = nullableNumber(latency.p95_ms);
   return {
     status: typeof latency.status === "string" ? latency.status : "unknown",
     p95_ms: p95,
@@ -292,7 +319,7 @@ export function buildArtifactReviewCoveragePlan(
   summary = {},
   qualityGate = buildArtifactReviewQualityGate(summary),
 ) {
-  const production = scorecardSection(summary?.artifact_review_quality);
+  const production = scorecardSection(productionScorecardSource(summary));
   const validation = validationScorecardSection(summary?.artifact_review_validation_quality);
   const quick = activeQuickCollection(qualityGate);
   const latency = latencyGuard(qualityGate);

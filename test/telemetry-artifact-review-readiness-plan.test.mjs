@@ -666,6 +666,50 @@ test("readiness plan uses production final structured response diagnostics for r
   assert.equal(report.readiness.status, "ready_for_limited_routing");
 });
 
+test("readiness plan follows coverage-plan routing scorecard instead of summary historical quality", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      artifact_review_quality: {
+        event_count: 120,
+        scorecard_event_count: 20,
+        scorecard_field_coverage: [
+          {
+            field: "overall_score",
+            event_count: 120,
+            scored_event_count: 20,
+            coverage_rate: 0.1667,
+          },
+        ],
+      },
+      production_structured_response: {
+        event_count: 1,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 1,
+            missing_json_envelope_count: 0,
+            missing_json_envelope_rate: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.production_scorecard.coverage_rate, 0.9);
+  assert.equal(report.readiness.reasons.includes("production_scorecard_coverage_low"), false);
+  assert.equal(report.readiness.status, "ready_for_limited_routing");
+});
+
 test("readiness plan ignores non-artifact-review structured JSON envelope failures", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary({
