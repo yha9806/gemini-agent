@@ -574,7 +574,7 @@ test("runTelemetryPriorities flags quick artifact-review depth when reliability 
           response: `private quick depth response ${index}`,
           metadata: {
             artifact_review_depth: "quick",
-            artifact_review_max_output_tokens: 2048,
+            artifact_review_max_output_tokens: index >= 3 ? 768 : 2048,
             design_scorecard: index === 4 ? undefined : {
               overall_score: 78,
               implementation_readiness_score: 72,
@@ -633,6 +633,8 @@ test("runTelemetryPriorities flags quick artifact-review depth when reliability 
     assert.ok(depthPriority.evidence.some((item) => item === "Quick depth error rate: 20.0%"));
     assert.ok(depthPriority.evidence.some((item) => item === "Quick depth p95 latency: 9,000 ms"));
     assert.ok(depthPriority.evidence.some((item) => item === "Standard depth p95 latency: 7,002 ms"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 2048: 3 events, 0 error"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 768: 2 events, 1 error"));
     assert.match(text, /quick depth/i);
     assert.doesNotMatch(serialized, /private quick depth prompt|private quick depth response/);
     assert.doesNotMatch(serialized, /evt_priority_000170/);

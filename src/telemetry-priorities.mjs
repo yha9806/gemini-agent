@@ -601,6 +601,27 @@ function artifactReviewDepthRow(summary, depth) {
   return rows.find((item) => item?.review_depth === depth) ?? null;
 }
 
+function artifactReviewBudgetCohorts(summary, depth) {
+  const rows = Array.isArray(summary.artifact_review_depths?.top_budget_cohorts)
+    ? summary.artifact_review_depths.top_budget_cohorts
+    : [];
+  return rows
+    .filter((item) => item?.review_depth === depth)
+    .sort((left, right) => (
+      nonnegativeMetric(right.event_count) - nonnegativeMetric(left.event_count)
+      || nonnegativeMetric(right.error_count) - nonnegativeMetric(left.error_count)
+      || `${left.budget_cohort ?? "unknown"}`.localeCompare(`${right.budget_cohort ?? "unknown"}`)
+    ));
+}
+
+function artifactReviewBudgetCohortEvidence(summary, depth, label, limit = 3) {
+  return artifactReviewBudgetCohorts(summary, depth)
+    .slice(0, limit)
+    .map((item) => (
+      `${label} budget cohort ${item.budget_cohort ?? "unknown"}: ${formatNumber(nonnegativeMetric(item.event_count))} events, ${formatNumber(nonnegativeMetric(item.error_count))} error`
+    ));
+}
+
 function knownErrorRate(row) {
   if (!row) return null;
   return nullableRatio(nonnegativeMetric(row.error_count), (
@@ -627,6 +648,7 @@ function artifactReviewDepthPriority(summary) {
   if (nonnegativeMetric(quick.total_tokens) > 0) {
     evidence.push(`Quick depth total tokens: ${formatNumber(nonnegativeMetric(quick.total_tokens))}`);
   }
+  evidence.push(...artifactReviewBudgetCohortEvidence(summary, "quick", "Quick"));
   return priority({
     kind: "multimodal",
     severity: "medium",

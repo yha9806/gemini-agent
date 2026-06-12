@@ -139,6 +139,7 @@ function zeroArtifactReviewDepths() {
     event_count: 0,
     known_depth_event_count: 0,
     top_depths: [],
+    top_budget_cohorts: [],
   };
 }
 
@@ -978,6 +979,13 @@ function formatArtifactReviewDepthRows(items) {
   )).join("\n");
 }
 
+function formatArtifactReviewBudgetCohortRows(items) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item.review_depth} / ${item.budget_cohort}: ${formatNumber(item.event_count)} events, ${formatNumber(item.success_count)} success, ${formatNumber(item.error_count)} error, p95 ${item.p95_latency_ms == null ? "n/a" : `${formatNumber(item.p95_latency_ms)} ms`}`
+  )).join("\n");
+}
+
 function formatBackfillManifestSourceRows(items) {
   if (items.length === 0) return "None";
   return items.map((item, index) => (
@@ -1092,6 +1100,7 @@ function createAccumulator(invalidSampleLimit) {
     },
     artifactReviewQualityCommands: new Map(),
     artifactReviewDepths: new Map(),
+    artifactReviewBudgetCohorts: new Map(),
     contextLoop: zeroContextLoop(),
     contextPackModes: new Map(),
     freshInputModes: new Map(),
@@ -1220,8 +1229,12 @@ function updateArtifactReviewQualityCommand(map, command, status, scores) {
   map.set(command, item);
 }
 
+const MAX_SAFE_ARTIFACT_REVIEW_OUTPUT_TOKENS = 100_000;
+
 function safeMaxOutputTokens(value) {
-  return Number.isInteger(value) && value > 0 ? value : null;
+  return Number.isSafeInteger(value) && value > 0 && value <= MAX_SAFE_ARTIFACT_REVIEW_OUTPUT_TOKENS
+    ? value
+    : null;
 }
 
 function createArtifactReviewDepthItem(depth) {
@@ -1237,6 +1250,36 @@ function createArtifactReviewDepthItem(depth) {
     usage: zeroUsage(),
     maxOutputTokenSum: 0,
     maxOutputTokenCount: 0,
+  };
+}
+
+function createArtifactReviewBudgetCohortItem(depth, budgetCohort, maxOutputTokens) {
+  return {
+    key: `${depth}\0${budgetCohort}`,
+    depth,
+    budgetCohort,
+    maxOutputTokens,
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    unknown_count: 0,
+    scorecard_event_count: 0,
+    scores: createDesignScoreSums(),
+    latencyValues: [],
+    usage: zeroUsage(),
+  };
+}
+
+function artifactReviewBudgetCohort(depth, maxOutputTokens) {
+  if (maxOutputTokens !== null) {
+    return {
+      budgetCohort: `${maxOutputTokens}`,
+      publicMaxOutputTokens: maxOutputTokens,
+    };
+  }
+  return {
+    budgetCohort: depth === "standard" ? "unbounded" : "unknown",
+    publicMaxOutputTokens: null,
   };
 }
 
@@ -1257,6 +1300,7 @@ function addArtifactReviewDepthEvent(accumulator, event, status) {
   const command = artifactReviewQualityCommand(event.command);
   if (!command) return;
   const depth = safeArtifactReviewDepth(event.metadata?.artifact_review_depth);
+  const maxOutputTokens = safeMaxOutputTokens(event.metadata?.artifact_review_max_output_tokens);
   const item = accumulator.artifactReviewDepths.get(depth) ?? createArtifactReviewDepthItem(depth);
   item.event_count += 1;
   if (status === "success") item.success_count += 1;
@@ -1273,12 +1317,29 @@ function addArtifactReviewDepthEvent(accumulator, event, status) {
   }
   addUsageToAggregate(item.usage, event.economics);
 
-  const maxOutputTokens = safeMaxOutputTokens(event.metadata?.artifact_review_max_output_tokens);
   if (maxOutputTokens !== null) {
     item.maxOutputTokenSum += maxOutputTokens;
     item.maxOutputTokenCount += 1;
   }
   accumulator.artifactReviewDepths.set(depth, item);
+
+  const cohort = artifactReviewBudgetCohort(depth, maxOutputTokens);
+  const cohortKey = `${depth}\0${cohort.budgetCohort}`;
+  const cohortItem = accumulator.artifactReviewBudgetCohorts.get(cohortKey)
+    ?? createArtifactReviewBudgetCohortItem(depth, cohort.budgetCohort, cohort.publicMaxOutputTokens);
+  cohortItem.event_count += 1;
+  if (status === "success") cohortItem.success_count += 1;
+  else if (status === "error") cohortItem.error_count += 1;
+  else cohortItem.unknown_count += 1;
+  if (scores) {
+    cohortItem.scorecard_event_count += 1;
+    addDesignScores(cohortItem.scores, scores);
+  }
+  if (Number.isInteger(event.latency_ms) && event.latency_ms >= 0) {
+    cohortItem.latencyValues.push(event.latency_ms);
+  }
+  addUsageToAggregate(cohortItem.usage, event.economics);
+  accumulator.artifactReviewBudgetCohorts.set(cohortKey, cohortItem);
 }
 
 function addArtifactReviewQualityEvent(accumulator, event, status) {
@@ -1619,6 +1680,60 @@ function artifactReviewDepthRows(map, topLimit) {
     });
 }
 
+const ARTIFACT_REVIEW_DEPTH_ORDER = new Map([
+  ["quick", 0],
+  ["standard", 1],
+  ["unknown", 2],
+]);
+
+function artifactReviewDepthRank(depth) {
+  return ARTIFACT_REVIEW_DEPTH_ORDER.get(depth) ?? 3;
+}
+
+function artifactReviewBudgetRank(item) {
+  if (item.maxOutputTokens !== null) return 0;
+  if (item.budgetCohort === "unbounded") return 1;
+  return 2;
+}
+
+function compareArtifactReviewBudgetCohorts(left, right) {
+  return (
+    right.event_count - left.event_count
+    || artifactReviewDepthRank(left.depth) - artifactReviewDepthRank(right.depth)
+    || artifactReviewBudgetRank(left) - artifactReviewBudgetRank(right)
+    || (right.maxOutputTokens ?? -1) - (left.maxOutputTokens ?? -1)
+    || left.budgetCohort.localeCompare(right.budgetCohort)
+  );
+}
+
+function artifactReviewBudgetCohortRows(map, topLimit) {
+  return [...map.values()]
+    .sort(compareArtifactReviewBudgetCohorts)
+    .slice(0, topLimit)
+    .map((item) => {
+      const latency = publicLatency(item.latencyValues);
+      return {
+        review_depth: item.depth,
+        budget_cohort: item.budgetCohort,
+        max_output_tokens: item.maxOutputTokens,
+        event_count: item.event_count,
+        success_count: item.success_count,
+        error_count: item.error_count,
+        unknown_count: item.unknown_count,
+        scorecard_event_count: item.scorecard_event_count,
+        avg_overall_score: averageDesignScore(item.scores, "overall_score"),
+        avg_implementation_readiness_score: averageDesignScore(item.scores, "implementation_readiness_score"),
+        p50_latency_ms: latency.p50_ms,
+        p95_latency_ms: latency.p95_ms,
+        max_latency_ms: latency.max_ms,
+        prompt_tokens: item.usage.prompt_tokens,
+        response_tokens: item.usage.response_tokens,
+        total_tokens: item.usage.total_tokens,
+        events_missing_usage: item.usage.events_missing_usage,
+      };
+    });
+}
+
 function buildArtifactReviewDepthSummary(accumulator, topLimit) {
   if (accumulator.artifactReviewDepths.size === 0) return zeroArtifactReviewDepths();
   const rows = [...accumulator.artifactReviewDepths.values()];
@@ -1628,6 +1743,7 @@ function buildArtifactReviewDepthSummary(accumulator, topLimit) {
       .filter((item) => item.key !== "unknown")
       .reduce((total, item) => total + item.event_count, 0),
     top_depths: artifactReviewDepthRows(accumulator.artifactReviewDepths, topLimit),
+    top_budget_cohorts: artifactReviewBudgetCohortRows(accumulator.artifactReviewBudgetCohorts, topLimit),
   };
 }
 
@@ -1860,6 +1976,8 @@ export function formatTelemetrySummaryText(summary) {
     `- Known depth events: ${formatNumber(summary.artifact_review_depths?.known_depth_event_count ?? 0)}`,
     "Top review depths:",
     formatArtifactReviewDepthRows(summary.artifact_review_depths?.top_depths ?? []),
+    "Artifact review budget cohorts:",
+    formatArtifactReviewBudgetCohortRows(summary.artifact_review_depths?.top_budget_cohorts ?? []),
     "",
     "Context loop:",
     `- Gate events: ${formatNumber(summary.context_loop?.gate_event_count ?? 0)}`,

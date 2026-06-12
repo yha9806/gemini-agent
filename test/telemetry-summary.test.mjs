@@ -158,6 +158,7 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     event_count: 0,
     known_depth_event_count: 0,
     top_depths: [],
+    top_budget_cohorts: [],
   });
   assert.deepEqual(result.multimodal_adjusted, {
     event_count: 0,
@@ -1131,7 +1132,7 @@ test("runTelemetrySummary compares artifact-review depth latency, reliability, u
       latency_ms: 14_000,
       metadata: {
         artifact_review_depth: "quick",
-        artifact_review_max_output_tokens: 2048,
+        artifact_review_max_output_tokens: "2048 /Users/example/private.png Authorization: Bearer secret-token",
       },
     }),
   });
@@ -1234,10 +1235,91 @@ test("runTelemetrySummary compares artifact-review depth latency, reliability, u
         avg_max_output_tokens: null,
       },
     ],
+    top_budget_cohorts: [
+      {
+        review_depth: "quick",
+        budget_cohort: "2048",
+        max_output_tokens: 2048,
+        event_count: 1,
+        success_count: 1,
+        error_count: 0,
+        unknown_count: 0,
+        scorecard_event_count: 1,
+        avg_overall_score: 80,
+        avg_implementation_readiness_score: 74,
+        p50_latency_ms: 10000,
+        p95_latency_ms: 10000,
+        max_latency_ms: 10000,
+        prompt_tokens: 2000,
+        response_tokens: 300,
+        total_tokens: 2300,
+        events_missing_usage: 0,
+      },
+      {
+        review_depth: "quick",
+        budget_cohort: "unknown",
+        max_output_tokens: null,
+        event_count: 1,
+        success_count: 0,
+        error_count: 1,
+        unknown_count: 0,
+        scorecard_event_count: 0,
+        avg_overall_score: null,
+        avg_implementation_readiness_score: null,
+        p50_latency_ms: 14000,
+        p95_latency_ms: 14000,
+        max_latency_ms: 14000,
+        prompt_tokens: 0,
+        response_tokens: 0,
+        total_tokens: 0,
+        events_missing_usage: 1,
+      },
+      {
+        review_depth: "standard",
+        budget_cohort: "unbounded",
+        max_output_tokens: null,
+        event_count: 1,
+        success_count: 1,
+        error_count: 0,
+        unknown_count: 0,
+        scorecard_event_count: 1,
+        avg_overall_score: 70,
+        avg_implementation_readiness_score: 68,
+        p50_latency_ms: 20000,
+        p95_latency_ms: 20000,
+        max_latency_ms: 20000,
+        prompt_tokens: 3000,
+        response_tokens: 900,
+        total_tokens: 3900,
+        events_missing_usage: 0,
+      },
+      {
+        review_depth: "unknown",
+        budget_cohort: "unknown",
+        max_output_tokens: null,
+        event_count: 1,
+        success_count: 1,
+        error_count: 0,
+        unknown_count: 0,
+        scorecard_event_count: 0,
+        avg_overall_score: null,
+        avg_implementation_readiness_score: null,
+        p50_latency_ms: 16000,
+        p95_latency_ms: 16000,
+        max_latency_ms: 16000,
+        prompt_tokens: 0,
+        response_tokens: 0,
+        total_tokens: 0,
+        events_missing_usage: 1,
+      },
+    ],
   });
   assert.match(text, /Artifact review depths:/);
   assert.match(text, /quick: 2 events, 1 success, 1 error, p95 14,000 ms/);
   assert.match(text, /standard: 1 events, 1 success, 0 error, p95 20,000 ms/);
+  assert.match(text, /Artifact review budget cohorts:/);
+  assert.match(text, /quick \/ 2048: 1 events, 1 success, 0 error, p95 10,000 ms/);
+  assert.match(text, /quick \/ unknown: 1 events, 0 success, 1 error, p95 14,000 ms/);
   assert.doesNotMatch(serialized, /\/Users\/example|secret-token|Authorization: Bearer|private\.png/);
 });
 
