@@ -151,6 +151,34 @@ function doctor(overrides = {}) {
   };
 }
 
+function rawRisk(overrides = {}) {
+  return {
+    file_count: 0,
+    event_count: 0,
+    invalid_file_count: 0,
+    skipped_file_count: 0,
+    prompt_events: 0,
+    response_events: 0,
+    prompt_bytes: 0,
+    response_bytes: 0,
+    truncated_prompt_events: 0,
+    truncated_response_events: 0,
+    multimodal_events: 0,
+    media_item_count: 0,
+    credential_like_prompt_events: 0,
+    credential_like_response_events: 0,
+    credential_scan_truncated_events: 0,
+    email_like_prompt_events: 0,
+    email_like_response_events: 0,
+    path_like_prompt_events: 0,
+    path_like_response_events: 0,
+    phone_like_prompt_events: 0,
+    phone_like_response_events: 0,
+    sensitive_scan_truncated_events: 0,
+    ...overrides,
+  };
+}
+
 function rawPreflight(overrides = {}) {
   return {
     ok: true,
@@ -164,15 +192,19 @@ function rawPreflight(overrides = {}) {
       excluded_by_batch_size_count: 0,
       preview_error: null,
     },
-    risk: {
+    risk: rawRisk({
       file_count: 9,
-      sensitive_signal_count: 9,
-      sensitive_scan_truncated_count: 2,
-      credential_like_prompt_count: 2,
-      path_like_prompt_count: 2,
-      phone_like_prompt_count: 3,
-      phone_like_response_count: 2,
-    },
+      event_count: 9,
+      prompt_events: 9,
+      response_events: 9,
+      prompt_bytes: 900,
+      response_bytes: 900,
+      credential_like_prompt_events: 2,
+      path_like_prompt_events: 2,
+      phone_like_prompt_events: 3,
+      phone_like_response_events: 2,
+      sensitive_scan_truncated_events: 2,
+    }),
     next_command: "gemini-agent telemetry flush --dry-run --batch-size 9",
     limitations: [],
     ...overrides,
@@ -245,7 +277,7 @@ function cleanRawPreflight(overrides = {}) {
       excluded_by_batch_size_count: 0,
       preview_error: null,
     },
-    risk: { file_count: 0, event_count: 0, sensitive_signal_count: 0 },
+    risk: rawRisk(),
     ...overrides,
   });
 }
@@ -296,11 +328,7 @@ test("readiness plan blocks unsafe active quick reliability", () => {
       },
     }),
     doctor: doctor({ queue: { pending: { count: 0 }, failed: { count: 0 }, quarantine: { count: 0 } } }),
-    rawPreflight: rawPreflight({
-      pending: { total_count: 0, total_bytes: 0 },
-      batch: { would_send_count: 0 },
-      risk: { sensitive_signal_count: 0 },
-    }),
+    rawPreflight: cleanRawPreflight(),
   });
 
   assert.equal(report.readiness.status, "blocked");
@@ -350,11 +378,7 @@ test("readiness plan requires production scorecard coverage even with healthy va
       },
     }),
     doctor: doctor({ queue: { pending: { count: 0 }, failed: { count: 0 }, quarantine: { count: 0 } } }),
-    rawPreflight: rawPreflight({
-      pending: { total_count: 0, total_bytes: 0 },
-      batch: { would_send_count: 0 },
-      risk: { sensitive_signal_count: 0 },
-    }),
+    rawPreflight: cleanRawPreflight(),
   });
 
   assert.equal(report.readiness.status, "collect_more_samples");
@@ -691,14 +715,30 @@ test("readiness plan uses raw preflight pending evidence when doctor pending is 
     }),
     rawPreflight: cleanRawPreflight({
       pending: { total_count: 3, total_bytes: 1200 },
-      batch: { would_send_count: 2 },
-      risk: { file_count: 2, sensitive_signal_count: 2 },
+      batch: {
+        batch_size: 100,
+        would_send_count: 2,
+        batch_bytes: 1000,
+        exceeds_max_bytes: false,
+        excluded_by_batch_size_count: 0,
+        preview_error: null,
+      },
+      risk: rawRisk({
+        file_count: 2,
+        event_count: 2,
+        credential_like_prompt_events: 1,
+        path_like_prompt_events: 1,
+        phone_like_response_events: 1,
+        sensitive_scan_truncated_events: 1,
+      }),
     }),
   });
 
   assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.raw_governance.preflight_available, true);
   assert.equal(report.raw_governance.pending_count, 3);
   assert.equal(report.raw_governance.preflight_selected_count, 2);
+  assert.equal(report.raw_governance.sensitive_signal_count > 0, true);
   assert.ok(report.readiness.reasons.includes("raw_pending_sensitive_signals"));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
@@ -736,7 +776,7 @@ test("readiness plan requires raw preflight to cover all pending telemetry", () 
         excluded_by_batch_size_count: 1,
         preview_error: null,
       },
-      risk: { file_count: 100, event_count: 100, sensitive_signal_count: 0 },
+      risk: rawRisk({ file_count: 100, event_count: 100 }),
     }),
   });
 

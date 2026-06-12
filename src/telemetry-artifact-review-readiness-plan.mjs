@@ -17,6 +17,35 @@ const LIMITATIONS = [
   "Small-flush readiness is a delivery signal, not a privacy guarantee.",
 ];
 
+const RAW_SENSITIVE_SIGNAL_FIELDS = [
+  "credential_like_prompt_events",
+  "credential_like_response_events",
+  "credential_scan_truncated_events",
+  "email_like_prompt_events",
+  "email_like_response_events",
+  "path_like_prompt_events",
+  "path_like_response_events",
+  "phone_like_prompt_events",
+  "phone_like_response_events",
+  "sensitive_scan_truncated_events",
+];
+
+const RAW_RISK_COUNT_FIELDS = [
+  "file_count",
+  "event_count",
+  "invalid_file_count",
+  "skipped_file_count",
+  "prompt_events",
+  "response_events",
+  "prompt_bytes",
+  "response_bytes",
+  "truncated_prompt_events",
+  "truncated_response_events",
+  "multimodal_events",
+  "media_item_count",
+  ...RAW_SENSITIVE_SIGNAL_FIELDS,
+];
+
 const SAFE_DOCTOR_ACTIONS = new Set([
   "Inspect failed reasons, fix token/endpoint/config, then retry with bounded flush.",
   "Run telemetry quarantine inspect --json, then telemetry quarantine retry --reason <reason> --dry-run before --write for receiver-policy fixes, or telemetry quarantine archive --reason <reason> --dry-run before --write for resolved cases.",
@@ -126,7 +155,7 @@ function rawPreflightComplete(rawPreflight) {
     && nonnegativeFiniteNumber(rawPreflight.pending.total_count)
     && nonnegativeFiniteNumber(rawPreflight.batch.would_send_count)
     && nonnegativeFiniteNumber(rawPreflight.batch.excluded_by_batch_size_count)
-    && nonnegativeFiniteNumber(rawPreflight.risk.sensitive_signal_count);
+    && RAW_RISK_COUNT_FIELDS.every((field) => nonnegativeFiniteNumber(rawPreflight.risk[field]));
 }
 
 function rawPreflightIncomplete(rawPreflight) {
@@ -248,22 +277,8 @@ function structuredResponseSection(summary = {}) {
   };
 }
 
-function sensitiveSignalCount(risk = {}) {
-  if (risk && Object.hasOwn(risk, "sensitive_signal_count")) {
-    return nonnegativeInteger(risk.sensitive_signal_count);
-  }
-  return [
-    "credential_like_prompt_events",
-    "credential_like_response_events",
-    "credential_scan_truncated_events",
-    "email_like_prompt_events",
-    "email_like_response_events",
-    "path_like_prompt_events",
-    "path_like_response_events",
-    "phone_like_prompt_events",
-    "phone_like_response_events",
-    "sensitive_scan_truncated_events",
-  ].reduce((sum, field) => sum + nonnegativeInteger(risk?.[field]), 0);
+function rawSensitiveSignalCount(risk = {}) {
+  return RAW_SENSITIVE_SIGNAL_FIELDS.reduce((sum, field) => sum + nonnegativeInteger(risk?.[field]), 0);
 }
 
 function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
@@ -297,7 +312,7 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
     preflight_incomplete: rawPreflightIncomplete(rawPreflight),
     preflight_partial: preflightPartial,
     preflight_selected_count: selectedCount,
-    sensitive_signal_count: sensitiveSignalCount(risk),
+    sensitive_signal_count: rawSensitiveSignalCount(risk),
     recommended_action: safeDoctorAction(doctor?.recommended_action ?? delivery.recommended_action),
   };
 }
