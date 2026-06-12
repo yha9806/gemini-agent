@@ -81,6 +81,66 @@ test("artifactReviewsToRawTelemetryBatch converts timestamped artifact reviews t
   assert.equal(legacy.events[0].context.run_id, "run-2");
 });
 
+test("artifactReviewsToRawTelemetryBatch backfills only safe numeric design scorecard metadata", async () => {
+  const artifactsDir = await tempDir();
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact({
+    design_scorecard: {
+      overall_score: 0,
+      visual_hierarchy_score: 100,
+      clarity_score: null,
+      accessibility_score: 88.5,
+      consistency_score: 72,
+      implementation_readiness_score: "90",
+      strengths: ["private strength should not appear"],
+      issues: ["private issue should not appear"],
+      recommended_actions: ["private action should not appear"],
+      custom_secret_score: 44,
+    },
+  }));
+
+  const batch = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_scorecard_test",
+  });
+
+  assert.deepEqual(batch.events[0].metadata.design_scorecard, {
+    overall_score: 0,
+    visual_hierarchy_score: 100,
+    clarity_score: null,
+    consistency_score: 72,
+  });
+  assert.doesNotMatch(JSON.stringify(batch.events[0].metadata), /private strength|private issue|private action|custom_secret_score/);
+  assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
+});
+
+test("artifactReviewsToRawTelemetryBatch omits design scorecard metadata when no safe score exists", async () => {
+  const artifactsDir = await tempDir();
+  await writeArtifact(artifactsDir, "2026-06-03T145551114Z-artifacts.json", artifact({
+    design_scorecard: {
+      overall_score: -1,
+      visual_hierarchy_score: 101,
+      clarity_score: 80.25,
+      accessibility_score: "85",
+      consistency_score: Number.NaN,
+      implementation_readiness_score: Number.POSITIVE_INFINITY,
+      strengths: ["private invalid scorecard detail"],
+    },
+  }));
+
+  const batch = await artifactReviewsToRawTelemetryBatch({
+    artifactsDir,
+    deploymentId: "gemini-agent-main",
+    agentVersion: "0.1.0",
+    batchId: "batch_backfill_invalid_scorecard_test",
+  });
+
+  assert.equal(Object.hasOwn(batch.events[0].metadata, "design_scorecard"), false);
+  assert.doesNotMatch(JSON.stringify(batch.events[0].metadata), /private invalid scorecard detail/);
+  assert.doesNotThrow(() => normalizeRawTelemetryBatch(batch));
+});
+
 test("artifactReviewsToRawTelemetryBatch enriches media manifest from artifact sources", async () => {
   const projectRoot = await tempDir();
   const artifactsDir = join(projectRoot, ".gemini-agent", "artifacts");

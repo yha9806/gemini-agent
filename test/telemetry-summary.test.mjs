@@ -1033,22 +1033,39 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
       },
     }),
   });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(43, {
+      command: "artifact-review-backfill",
+      metadata: {
+        design_scorecard: {
+          overall_score: 100,
+          visual_hierarchy_score: 100,
+          clarity_score: 100,
+          accessibility_score: null,
+          consistency_score: 100,
+          implementation_readiness_score: 100,
+          recommended_actions: ["private backfill action should not appear"],
+        },
+      },
+    }),
+  });
 
   const summary = await runTelemetrySummary({ cwd, scope: "local" });
   const text = formatTelemetrySummaryText(summary);
   const serialized = `${JSON.stringify(summary)}\n${text}`;
 
   assert.deepEqual(summary.artifact_review_quality, {
-    event_count: 2,
-    success_count: 2,
+    event_count: 3,
+    success_count: 3,
     error_count: 0,
-    scorecard_event_count: 2,
-    avg_overall_score: 70,
-    avg_visual_hierarchy_score: 85,
-    avg_clarity_score: 75,
+    scorecard_event_count: 3,
+    avg_overall_score: 80,
+    avg_visual_hierarchy_score: 90,
+    avg_clarity_score: 83.3,
     avg_accessibility_score: null,
-    avg_consistency_score: 82.5,
-    avg_implementation_readiness_score: 72.5,
+    avg_consistency_score: 88.3,
+    avg_implementation_readiness_score: 81.7,
     top_commands: [
       {
         command: "artifact-review",
@@ -1059,11 +1076,20 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
         scorecard_event_count: 2,
         avg_overall_score: 70,
       },
+      {
+        command: "artifact-review-backfill",
+        event_count: 1,
+        success_count: 1,
+        error_count: 0,
+        unknown_count: 0,
+        scorecard_event_count: 1,
+        avg_overall_score: 100,
+      },
     ],
   });
   assert.match(text, /Artifact review quality:/);
-  assert.match(text, /Average overall score: 70/);
-  assert.doesNotMatch(serialized, /private strength/);
+  assert.match(text, /Average overall score: 80/);
+  assert.doesNotMatch(serialized, /private strength|private backfill action/);
 });
 
 test("runTelemetrySummary reports correction overlays without polluting original multimodal totals", async () => {

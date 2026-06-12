@@ -73,6 +73,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
   assert.match(readme, /`artifact-review` returns a structured design scorecard/);
   assert.match(readme, /Telemetry summary and report aggregate artifact-review design scorecard metrics/);
+  assert.match(readme, /`telemetry backfill-artifacts` carries only allowlisted numeric\/null artifact-review design scorecard fields/);
   assert.match(readme, /Telemetry priorities use artifact-review design scorecard coverage and average score/);
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /`diff-review --diff` reads the current git diff directly/);

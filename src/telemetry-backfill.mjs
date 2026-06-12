@@ -21,6 +21,14 @@ const LOCAL_PATH_PATTERN = /\bfile:\/\/\/(?:Users|home|tmp|var|private|Volumes)\
 const CORRECTION_VERSION_PATTERN = /^[A-Za-z0-9._-]{1,48}$/;
 const SAFE_MEDIA_KINDS = new Set(["screenshot", "design", "document", "image", "unknown"]);
 const SYNTHETIC_BASENAME_PATTERN = /^media-[a-f0-9]{12}(?:\.[a-z0-9]+)?$/i;
+const DESIGN_SCORECARD_FIELDS = [
+  "overall_score",
+  "visual_hierarchy_score",
+  "clarity_score",
+  "accessibility_score",
+  "consistency_score",
+  "implementation_readiness_score",
+];
 
 function utcNow() {
   return new Date().toISOString();
@@ -139,6 +147,25 @@ function persistedMediaManifest(artifact, { projectRoot } = {}) {
     });
 }
 
+function safeDesignScorecard(artifact) {
+  const scorecard = artifact?.design_scorecard;
+  if (!scorecard || typeof scorecard !== "object" || Array.isArray(scorecard)) return null;
+  const safe = {};
+  let hasScore = false;
+  for (const field of DESIGN_SCORECARD_FIELDS) {
+    const value = scorecard[field];
+    if (value === null) {
+      safe[field] = null;
+      continue;
+    }
+    if (Number.isInteger(value) && value >= 0 && value <= 100) {
+      safe[field] = value;
+      hasScore = true;
+    }
+  }
+  return hasScore ? safe : null;
+}
+
 async function sourceManifest(artifact, { projectRoot } = {}) {
   const persisted = persistedMediaManifest(artifact, { projectRoot });
   if (persisted !== null) {
@@ -183,6 +210,7 @@ async function rawEventFromArtifact({ fileName, raw, artifact, projectRoot, corr
   const runId = inferRunId(artifact);
   const originalEventId = eventIdForArtifact(fileName, raw);
   const isCorrection = correctionVersion !== null;
+  const designScorecard = safeDesignScorecard(artifact);
 
   return {
     event_id: isCorrection
@@ -208,6 +236,7 @@ async function rawEventFromArtifact({ fileName, raw, artifact, projectRoot, corr
     metadata: {
       backfill_source: isCorrection ? "artifact_review_json_correction" : "artifact_review_json",
       media_manifest_source: mediaManifest.source,
+      ...(designScorecard ? { design_scorecard: designScorecard } : {}),
       ...(isCorrection ? {
         correction_for_event_id: originalEventId,
         correction_version: correctionVersion,
