@@ -1,3 +1,4 @@
+import { QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS } from "./artifact-review.mjs";
 import { runTelemetryEconomics } from "./telemetry-economics.mjs";
 import { runTelemetryRawPreflight } from "./telemetry-raw-preflight.mjs";
 import { runTelemetrySummary } from "./telemetry-summary.mjs";
@@ -732,6 +733,7 @@ function multimodalPriority(summary, multimodalCoverage) {
 const QUICK_DEPTH_MIN_EVENTS = 5;
 const QUICK_DEPTH_MAX_ERROR_RATE = 0.2;
 const QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES = 10;
+const ACTIVE_QUICK_BUDGET_COHORT = String(QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS);
 const PRIORITY_ANALYSIS_TOP_LIMIT = 50;
 
 function artifactReviewDepthRow(summary, depth) {
@@ -762,6 +764,12 @@ function artifactReviewBudgetCohortEvidence(summary, depth, label, limit = 3) {
     ));
 }
 
+function activeArtifactReviewBudgetCohort(summary, depth) {
+  return artifactReviewBudgetCohorts(summary, depth)
+    .find((item) => `${item.max_output_tokens ?? item.budget_cohort ?? ""}` === ACTIVE_QUICK_BUDGET_COHORT)
+    ?? null;
+}
+
 function knownOutcomeCount(row) {
   return nonnegativeMetric(row?.success_count) + nonnegativeMetric(row?.error_count);
 }
@@ -789,24 +797,57 @@ function worstArtifactReviewBudgetCohortEvidence(summary, depth) {
   return `Worst ${depth} budget cohort: ${worst.item.budget_cohort ?? "unknown"} at ${formatPercent(worst.errorRate)} error rate (${formatNumber(worst.knownOutcomes)} events, ${formatNumber(nonnegativeMetric(worst.item.error_count))} error)`;
 }
 
+function riskyHistoricalArtifactReviewBudgetCohortEvidence(summary, depth, active) {
+  const risky = artifactReviewBudgetCohorts(summary, depth)
+    .map((item) => ({
+      item,
+      knownOutcomes: knownOutcomeCount(item),
+      errorRate: knownErrorRate(item),
+    }))
+    .filter((item) => (
+      item.item.budget_cohort !== active?.budget_cohort
+      && item.knownOutcomes > 0
+      && item.errorRate !== null
+      && nonnegativeMetric(item.item.error_count) >= 2
+      && item.errorRate >= 0.5
+    ))
+    .sort((left, right) => (
+      right.errorRate - left.errorRate
+      || nonnegativeMetric(right.item.error_count) - nonnegativeMetric(left.item.error_count)
+      || right.knownOutcomes - left.knownOutcomes
+      || `${left.item.budget_cohort ?? "unknown"}`.localeCompare(`${right.item.budget_cohort ?? "unknown"}`)
+    ))[0] ?? null;
+  if (!risky) return null;
+  return `Historical ${depth} budget cohort risk: ${risky.item.budget_cohort ?? "unknown"} at ${formatPercent(risky.errorRate)} error rate (${formatNumber(risky.knownOutcomes)} events, ${formatNumber(nonnegativeMetric(risky.item.error_count))} error)`;
+}
+
 function hasLowConfidenceBudgetCohort(summary, depth) {
-  return artifactReviewBudgetCohorts(summary, depth)
-    .some((item) => {
-      const outcomes = knownOutcomeCount(item);
-      return outcomes > 0 && outcomes < QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES;
-    });
+  const active = activeArtifactReviewBudgetCohort(summary, depth);
+  const rows = active ? [active] : artifactReviewBudgetCohorts(summary, depth);
+  return rows.some((item) => {
+    const outcomes = knownOutcomeCount(item);
+    return outcomes > 0 && outcomes < QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES;
+  });
 }
 
 function artifactReviewDepthPriority(summary) {
   const quick = artifactReviewDepthRow(summary, "quick");
   if (!quick || nonnegativeMetric(quick.event_count) < QUICK_DEPTH_MIN_EVENTS) return null;
-  const quickErrorRate = knownErrorRate(quick);
+  const activeQuickCohort = activeArtifactReviewBudgetCohort(summary, "quick");
+  const routingRow = activeQuickCohort ?? quick;
+  if (nonnegativeMetric(routingRow.event_count) < QUICK_DEPTH_MIN_EVENTS) return null;
+  const quickErrorRate = knownErrorRate(routingRow);
   if (quickErrorRate === null || quickErrorRate < QUICK_DEPTH_MAX_ERROR_RATE) return null;
   const standard = artifactReviewDepthRow(summary, "standard");
   const evidence = [
     `Quick depth events: ${formatNumber(nonnegativeMetric(quick.event_count))}`,
-    `Quick depth error rate: ${formatPercent(quickErrorRate)}`,
+    activeQuickCohort
+      ? `Active quick budget cohort ${activeQuickCohort.budget_cohort ?? "unknown"}: ${formatNumber(nonnegativeMetric(activeQuickCohort.event_count))} events, ${formatNumber(nonnegativeMetric(activeQuickCohort.error_count))} error`
+      : `Quick depth error rate: ${formatPercent(quickErrorRate)}`,
   ];
+  if (activeQuickCohort) {
+    evidence.push(`Active quick budget cohort error rate: ${formatPercent(quickErrorRate)}`);
+  }
   if (quick.p95_latency_ms !== null) {
     evidence.push(`Quick depth p95 latency: ${formatNumber(nonnegativeMetric(quick.p95_latency_ms))} ms`);
   }
@@ -817,7 +858,9 @@ function artifactReviewDepthPriority(summary) {
     evidence.push(`Quick depth total tokens: ${formatNumber(nonnegativeMetric(quick.total_tokens))}`);
   }
   evidence.push(...artifactReviewBudgetCohortEvidence(summary, "quick", "Quick"));
-  const worstQuickCohort = worstArtifactReviewBudgetCohortEvidence(summary, "quick");
+  const worstQuickCohort = activeQuickCohort
+    ? riskyHistoricalArtifactReviewBudgetCohortEvidence(summary, "quick", activeQuickCohort)
+    : worstArtifactReviewBudgetCohortEvidence(summary, "quick");
   if (worstQuickCohort) evidence.push(worstQuickCohort);
   if (hasLowConfidenceBudgetCohort(summary, "quick")) {
     evidence.push(`Quick budget cohort samples are low-confidence until each active cohort has at least ${formatNumber(QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES)} known outcomes`);

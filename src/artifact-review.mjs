@@ -10,7 +10,7 @@ import { normalizeArtifactReview } from "./schemas.mjs";
 const MAX_ARTIFACT_REVIEW_FILES = 4;
 const ARTIFACT_REVIEW_MODES = new Set(["single", "comparison"]);
 const ARTIFACT_REVIEW_DEPTHS = new Set(["quick", "standard"]);
-const QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS = 2048;
+export const QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS = 2048;
 const SAFE_MEDIA_KINDS = new Set(["screenshot", "design", "document", "image", "unknown"]);
 
 function artifactTypeFor({ artifactKind = "image", mimeType }) {

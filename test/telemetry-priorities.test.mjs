@@ -767,7 +767,7 @@ test("runTelemetryPriorities flags quick artifact-review depth when reliability 
           response: `private quick depth response ${index}`,
           metadata: {
             artifact_review_depth: "quick",
-            artifact_review_max_output_tokens: index >= 3 ? 768 : 2048,
+            artifact_review_max_output_tokens: 2048,
             design_scorecard: index === 4 ? undefined : {
               overall_score: 78,
               implementation_readiness_score: 72,
@@ -824,12 +824,11 @@ test("runTelemetryPriorities flags quick artifact-review depth when reliability 
     assert.match(depthPriority.action, /Keep standard fallback/);
     assert.match(depthPriority.action, /low sample size/i);
     assert.ok(depthPriority.evidence.some((item) => item === "Quick depth events: 5"));
-    assert.ok(depthPriority.evidence.some((item) => item === "Quick depth error rate: 20.0%"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Active quick budget cohort 2048: 5 events, 1 error"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Active quick budget cohort error rate: 20.0%"));
     assert.ok(depthPriority.evidence.some((item) => item === "Quick depth p95 latency: 9,000 ms"));
     assert.ok(depthPriority.evidence.some((item) => item === "Standard depth p95 latency: 7,002 ms"));
-    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 2048: 3 events, 0 error"));
-    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 768: 2 events, 1 error"));
-    assert.ok(depthPriority.evidence.some((item) => item === "Worst quick budget cohort: 768 at 50.0% error rate (2 events, 1 error)"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 2048: 5 events, 1 error"));
     assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort samples are low-confidence until each active cohort has at least 10 known outcomes"));
     assert.match(text, /quick depth/i);
     assert.doesNotMatch(serialized, /private quick depth prompt|private quick depth response/);
@@ -848,11 +847,13 @@ test("runTelemetryPriorities keeps quick budget cohort diagnostics when returned
       tokenEnv: TOKEN_ENV,
       deploymentId: "gemini-agent-main",
     });
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       await appendTelemetryEvent({
         cwd,
         event: telemetryEvent(190 + index, {
           command: "artifact-review",
+          status: index >= 3 ? "error" : "success",
+          error_type: index >= 3 ? "ParseError" : null,
           latency_ms: 5000 + index,
           prompt: `private quick current cohort prompt ${index}`,
           response: `private quick current cohort response ${index}`,
@@ -924,9 +925,85 @@ test("runTelemetryPriorities keeps quick budget cohort diagnostics when returned
 
     assert.equal(report.priorities.length, 2);
     assert.ok(depthPriority);
-    assert.ok(depthPriority.evidence.some((item) => item === "Worst quick budget cohort: 768 at 100.0% error rate (2 events, 2 error)"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Active quick budget cohort 2048: 5 events, 2 error"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Active quick budget cohort error rate: 40.0%"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Historical quick budget cohort risk: 768 at 100.0% error rate (2 events, 2 error)"));
     assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 768: 2 events, 2 error"));
     assert.doesNotMatch(serialized, /private quick current cohort|private quick old cohort/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities does not route-block on historical quick budget cohort failures", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    for (let index = 0; index < 12; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(220 + index, {
+          command: "artifact-review",
+          status: "success",
+          latency_ms: 5000 + index,
+          metadata: {
+            artifact_review_depth: "quick",
+            artifact_review_max_output_tokens: 2048,
+            design_scorecard: {
+              overall_score: 82,
+              implementation_readiness_score: 79,
+            },
+          },
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            total_tokens: 1200,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+    for (let index = 0; index < 4; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(240 + index, {
+          command: "artifact-review",
+          status: "error",
+          error_type: "ParseError",
+          latency_ms: 9000 + index,
+          prompt: `private historical quick prompt ${index}`,
+          response: `private historical quick response ${index}`,
+          metadata: {
+            artifact_review_depth: "quick",
+            artifact_review_max_output_tokens: 768,
+          },
+          economics: {
+            input_tokens: 900,
+            output_tokens: 150,
+            total_tokens: 1050,
+            codex_tokens_saved_estimate: 1200,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const serialized = JSON.stringify(report);
+
+    assert.equal(report.priorities.some((item) => (
+      item.kind === "multimodal"
+      && /quick depth/i.test(item.title)
+    )), false);
+    assert.doesNotMatch(serialized, /private historical quick/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

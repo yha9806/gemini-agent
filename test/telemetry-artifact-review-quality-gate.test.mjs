@@ -81,11 +81,11 @@ test("quality gate flags risky quick depth budget cohort and weak scorecard cove
       top_depths: [
         {
           review_depth: "quick",
-          event_count: 6,
-          success_count: 4,
-          error_count: 2,
+          event_count: 7,
+          success_count: 3,
+          error_count: 4,
           p95_latency_ms: 12217,
-          total_tokens: 18924,
+          total_tokens: 21924,
           scorecard_event_count: 1,
         },
       ],
@@ -93,11 +93,11 @@ test("quality gate flags risky quick depth budget cohort and weak scorecard cove
         {
           review_depth: "quick",
           budget_cohort: "2048",
-          event_count: 4,
-          success_count: 4,
-          error_count: 0,
+          event_count: 5,
+          success_count: 3,
+          error_count: 2,
           p95_latency_ms: 12383,
-          total_tokens: 12000,
+          total_tokens: 15000,
           scorecard_event_count: 1,
         },
         {
@@ -117,7 +117,8 @@ test("quality gate flags risky quick depth budget cohort and weak scorecard cove
   assert.equal(gate.readiness.status, "blocked");
   assert.ok(gate.readiness.reasons.includes("quick_depth_error_rate_high"));
   assert.ok(gate.readiness.reasons.includes("scorecard_coverage_low"));
-  assert.equal(gate.quick_depth.error_rate, 0.3333);
+  assert.equal(gate.quick_depth.error_rate, 0.5714);
+  assert.equal(gate.quick_depth.active_error_rate, 0.4);
   assert.equal(gate.quick_depth.low_confidence, true);
   assert.deepEqual(gate.quick_depth.worst_budget_cohort, {
     budget_cohort: "768",
@@ -134,6 +135,71 @@ test("quality gate flags risky quick depth budget cohort and weak scorecard cove
   assert.equal(gate.scorecard.weakest_field.field, "accessibility_score");
   assert.ok(gate.next_actions.some((item) => /Avoid expanding quick depth/i.test(item)));
   assert.ok(gate.next_actions.some((item) => /Capture numeric design scorecards/i.test(item)));
+});
+
+test("quality gate treats non-active quick budget cohort failures as historical risk", () => {
+  const gate = buildArtifactReviewQualityGate(summary({
+    event_counts: { total: 36 },
+    artifact_review_quality: {
+      event_count: 18,
+      scorecard_event_count: 16,
+      avg_overall_score: 82,
+      avg_implementation_readiness_score: 78,
+      scorecard_field_coverage: [
+        { field: "overall_score", events: 18, scored_events: 16, coverage: 0.8889 },
+        { field: "accessibility_score", events: 18, scored_events: 15, coverage: 0.8333 },
+      ],
+      top_commands: [],
+    },
+    artifact_review_depths: {
+      event_count: 18,
+      known_depth_event_count: 18,
+      top_depths: [
+        {
+          review_depth: "quick",
+          event_count: 18,
+          success_count: 16,
+          error_count: 2,
+          p95_latency_ms: 12217,
+          total_tokens: 42924,
+          scorecard_event_count: 16,
+        },
+      ],
+      top_budget_cohorts: [
+        {
+          review_depth: "quick",
+          budget_cohort: "2048",
+          max_output_tokens: 2048,
+          event_count: 16,
+          success_count: 16,
+          error_count: 0,
+          p95_latency_ms: 9000,
+          total_tokens: 36000,
+          scorecard_event_count: 16,
+        },
+        {
+          review_depth: "quick",
+          budget_cohort: "768",
+          max_output_tokens: 768,
+          event_count: 2,
+          success_count: 0,
+          error_count: 2,
+          p95_latency_ms: 12217,
+          total_tokens: 6924,
+          scorecard_event_count: 0,
+        },
+      ],
+    },
+  }));
+
+  assert.equal(gate.readiness.status, "ready");
+  assert.deepEqual(gate.readiness.reasons, ["quick_depth_ready"]);
+  assert.equal(gate.quick_depth.active_budget_cohort.budget_cohort, "2048");
+  assert.equal(gate.quick_depth.active_budget_cohort.error_rate, 0);
+  assert.equal(gate.quick_depth.historical_risky_budget_cohorts.length, 1);
+  assert.equal(gate.quick_depth.historical_risky_budget_cohorts[0].budget_cohort, "768");
+  assert.ok(gate.next_actions.some((item) => /current 2048 quick budget cohort/i.test(item)));
+  assert.ok(gate.next_actions.some((item) => /historical 768 quick budget cohort/i.test(item)));
 });
 
 test("quality gate returns ready when quick depth and scorecard evidence are healthy", () => {
@@ -216,6 +282,7 @@ test("artifactReviewQualityGateToText is aggregate-only and operator readable", 
   const text = artifactReviewQualityGateToText(gate);
   assert.match(text, /Artifact-review quality gate: caution/);
   assert.match(text, /Quick depth:/);
+  assert.match(text, /Active quick budget cohort:/);
   assert.match(text, /Scorecard coverage:/);
   assert.doesNotMatch(text, /private prompt|Authorization|Bearer|evt_|\/Users\/|media\.png/);
 });

@@ -118,6 +118,7 @@ Global Gemini review gate for Codex.
 - Telemetry priorities use latency stage attribution to distinguish captured Gemini generation latency from pre-Gemini artifact-review work without exposing raw prompts, responses, event ids, paths, or media file names.
 - Telemetry priorities use artifact-review design scorecard coverage, per-field score coverage, and average score to choose between scorecard capture work, design-quality calibration, and broader visual workflow expansion.
 - `telemetry artifact-review quality-gate` reports aggregate quick-depth readiness, risky budget cohorts, and design scorecard coverage without exposing raw prompts, raw responses, event ids, paths, or media file names.
+- Artifact-review quality gate and priorities distinguish the current active quick budget cohort from historical non-active cohorts, so old quick-depth failures stay visible without blocking current 2048-token routing when that active cohort is healthy.
 - Latency priorities only use stage attribution when `gemini_generation` or `pre_gemini_total` has at least 5 command-level samples, avoiding overconfident conclusions from smoke-test or sparse stage data.
 - Latency priorities initially require at least 5 samples and command p95 >= 10,000 ms before recommending profiling a slow Gemini route.
 - `telemetry report` combines aggregate health, economics, context reuse, attribution, multimodal adoption, and top development priority into a product decision snapshot; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.

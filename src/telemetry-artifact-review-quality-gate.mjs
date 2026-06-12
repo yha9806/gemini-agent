@@ -1,3 +1,4 @@
+import { QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS } from "./artifact-review.mjs";
 import { runTelemetrySummary } from "./telemetry-summary.mjs";
 
 const QUICK_MIN_READY_EVENTS = 10;
@@ -5,6 +6,7 @@ const QUICK_MAX_READY_ERROR_RATE = 0.05;
 const QUICK_MIN_BLOCK_EVENTS = 5;
 const COHORT_MIN_CONFIDENCE_EVENTS = 10;
 const SCORECARD_READY_COVERAGE = 0.8;
+const ACTIVE_QUICK_BUDGET_COHORT = String(QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS);
 
 const LIMITATIONS = [
   "Quality gate uses aggregate local telemetry only; no raw prompts, responses, event ids, paths, or media file names are included.",
@@ -136,24 +138,47 @@ function worstBudgetCohort(cohorts) {
     ))[0] ?? null;
 }
 
+function isRiskyBudgetCohort(cohort) {
+  return cohort.error_count >= 2 && cohort.error_rate !== null && cohort.error_rate >= 0.5;
+}
+
+function activeQuickBudgetCohort(cohorts) {
+  return cohorts.find((cohort) => cohort.budget_cohort === ACTIVE_QUICK_BUDGET_COHORT) ?? null;
+}
+
+function historicalRiskyBudgetCohorts(cohorts, active) {
+  return cohorts.filter((cohort) => (
+    cohort.budget_cohort !== active?.budget_cohort
+    && isRiskyBudgetCohort(cohort)
+  ));
+}
+
 function quickDepthSection(summary) {
   const quick = quickDepthRow(summary);
   const eventCount = nonnegativeInteger(quick?.event_count);
   const successCount = nonnegativeInteger(quick?.success_count);
   const errorCount = nonnegativeInteger(quick?.error_count);
   const cohorts = quickBudgetCohorts(summary);
-  const lowConfidence = eventCount < QUICK_MIN_READY_EVENTS
-    || cohorts.some((cohort) => cohort.low_confidence);
+  const active = activeQuickBudgetCohort(cohorts);
+  const activeEventCount = active?.event_count ?? eventCount;
+  const activeErrorRate = active?.error_rate ?? ratio(errorCount, successCount + errorCount);
+  const lowConfidence = active
+    ? active.low_confidence
+    : eventCount < QUICK_MIN_READY_EVENTS || cohorts.some((cohort) => cohort.low_confidence);
 
   return {
     event_count: eventCount,
     success_count: successCount,
     error_count: errorCount,
     error_rate: ratio(errorCount, successCount + errorCount),
+    active_event_count: activeEventCount,
+    active_error_rate: activeErrorRate,
     p95_latency_ms: nullableNumber(quick?.p95_latency_ms),
     total_tokens: nonnegativeInteger(quick?.total_tokens),
     budget_cohorts: cohorts,
+    active_budget_cohort: active,
     worst_budget_cohort: worstBudgetCohort(cohorts),
+    historical_risky_budget_cohorts: historicalRiskyBudgetCohorts(cohorts, active),
     low_confidence: lowConfidence,
   };
 }
@@ -165,14 +190,23 @@ function hasEnoughArtifactReviewData(summary, quick, scorecard) {
 
 function nextActionsFor({ status, reasons, quick, scorecard }) {
   const actions = [];
+  const activeCohort = quick.active_budget_cohort;
+  const historicalRisk = quick.historical_risky_budget_cohorts?.[0] ?? null;
   if (status === "ready") {
-    actions.push("Expand quick depth gradually while keeping standard artifact-review fallback available.");
+    const currentCohort = activeCohort?.budget_cohort ?? ACTIVE_QUICK_BUDGET_COHORT;
+    actions.push(`Expand quick depth gradually for the current ${currentCohort} quick budget cohort while keeping standard artifact-review fallback available.`);
+    if (historicalRisk) {
+      actions.push(`Treat the historical ${historicalRisk.budget_cohort} quick budget cohort as non-active risk; do not route back to it without fresh validation.`);
+    }
     actions.push("Continue monitoring quick-depth latency, token usage, and scorecard coverage.");
     return actions;
   }
   if (reasons.includes("quick_depth_error_rate_high") || reasons.includes("quick_budget_cohort_error_rate_high")) {
-    const cohort = quick.worst_budget_cohort?.budget_cohort ?? "unknown";
+    const cohort = quick.active_budget_cohort?.budget_cohort ?? quick.worst_budget_cohort?.budget_cohort ?? "unknown";
     actions.push(`Avoid expanding quick depth for the ${cohort} budget cohort until it has clean outcomes.`);
+  }
+  if (historicalRisk) {
+    actions.push(`Keep historical ${historicalRisk.budget_cohort} quick budget cohort failures visible, but judge current routing from the active ${activeCohort?.budget_cohort ?? ACTIVE_QUICK_BUDGET_COHORT} cohort.`);
   }
   if (reasons.includes("quick_depth_low_sample") || reasons.includes("quick_budget_cohort_low_confidence")) {
     actions.push(`Collect at least ${formatNumber(QUICK_MIN_READY_EVENTS)} quick-depth events and ${formatNumber(COHORT_MIN_CONFIDENCE_EVENTS)} outcomes per active quick budget cohort before wider routing.`);
@@ -197,17 +231,21 @@ export function buildArtifactReviewQualityGate(summary = {}) {
   if (!hasEnoughArtifactReviewData(summary, quick, scorecard)) {
     reasons.push("insufficient_artifact_review_data");
   }
-  if (quick.event_count > 0 && quick.event_count < QUICK_MIN_READY_EVENTS) {
+  if (quick.active_event_count > 0 && quick.active_event_count < QUICK_MIN_READY_EVENTS) {
     reasons.push("quick_depth_low_sample");
   }
-  if (quick.error_rate !== null && quick.event_count >= QUICK_MIN_BLOCK_EVENTS && quick.error_rate >= QUICK_MAX_READY_ERROR_RATE) {
+  if (
+    quick.active_error_rate !== null
+    && quick.active_event_count >= QUICK_MIN_BLOCK_EVENTS
+    && quick.active_error_rate >= QUICK_MAX_READY_ERROR_RATE
+  ) {
     reasons.push("quick_depth_error_rate_high");
   }
-  if (quick.budget_cohorts.some((cohort) => cohort.low_confidence)) {
+  if (quick.active_budget_cohort ? quick.active_budget_cohort.low_confidence : quick.budget_cohorts.some((cohort) => cohort.low_confidence)) {
     reasons.push("quick_budget_cohort_low_confidence");
   }
-  const worst = quick.worst_budget_cohort;
-  if (worst && worst.error_count >= 2 && worst.error_rate !== null && worst.error_rate >= 0.5) {
+  const worst = quick.active_budget_cohort ?? quick.worst_budget_cohort;
+  if (worst && isRiskyBudgetCohort(worst)) {
     reasons.push("quick_budget_cohort_error_rate_high");
   }
   if (scorecard.event_count > 0 && (scorecard.coverage_rate === null || scorecard.coverage_rate < SCORECARD_READY_COVERAGE)) {
@@ -218,9 +256,9 @@ export function buildArtifactReviewQualityGate(summary = {}) {
   }
 
   const blockedReasons = new Set(["quick_depth_error_rate_high", "quick_budget_cohort_error_rate_high"]);
-  const ready = quick.event_count >= QUICK_MIN_READY_EVENTS
-    && quick.error_rate !== null
-    && quick.error_rate < QUICK_MAX_READY_ERROR_RATE
+  const ready = quick.active_event_count >= QUICK_MIN_READY_EVENTS
+    && quick.active_error_rate !== null
+    && quick.active_error_rate < QUICK_MAX_READY_ERROR_RATE
     && !quick.low_confidence
     && scorecard.coverage_rate !== null
     && scorecard.coverage_rate >= SCORECARD_READY_COVERAGE
@@ -269,11 +307,19 @@ export async function runArtifactReviewQualityGate({
 export function artifactReviewQualityGateToText(gate) {
   const quick = gate.quick_depth;
   const scorecard = gate.scorecard;
+  const active = quick.active_budget_cohort;
   const worst = quick.worst_budget_cohort;
+  const historicalRisk = quick.historical_risky_budget_cohorts?.[0] ?? null;
   const lines = [
     `Artifact-review quality gate: ${gate.readiness.status}`,
     `- Quick depth: ${formatNumber(quick.event_count)} events, ${formatPercent(quick.error_rate)} error, p95 ${quick.p95_latency_ms == null ? "n/a" : `${formatNumber(quick.p95_latency_ms)} ms`}, total tokens ${formatNumber(quick.total_tokens)}`,
+    active
+      ? `- Active quick budget cohort: ${active.budget_cohort} at ${formatPercent(active.error_rate)} error rate (${formatNumber(active.event_count)} events, ${formatNumber(active.error_count)} error)`
+      : "- Active quick budget cohort: n/a",
   ];
+  if (historicalRisk) {
+    lines.push(`- Historical quick budget cohort risk: ${historicalRisk.budget_cohort} at ${formatPercent(historicalRisk.error_rate)} error rate (${formatNumber(historicalRisk.event_count)} events, ${formatNumber(historicalRisk.error_count)} error)`);
+  }
   if (worst) {
     lines.push(`- Worst quick budget cohort: ${worst.budget_cohort} at ${formatPercent(worst.error_rate)} error rate (${formatNumber(worst.event_count)} events, ${formatNumber(worst.error_count)} error)`);
   } else {
