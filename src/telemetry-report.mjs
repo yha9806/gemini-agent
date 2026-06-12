@@ -64,6 +64,44 @@ function compactArtifactReviewQualityCommand(row) {
   };
 }
 
+function compactStructuredResponseCommand(row) {
+  if (!row) return null;
+  return {
+    command: row.command,
+    event_count: row.event_count,
+    missing_json_envelope_count: row.missing_json_envelope_count,
+    avg_response_text_bytes: row.avg_response_text_bytes,
+    max_response_text_bytes: row.max_response_text_bytes,
+  };
+}
+
+function compactStructuredResponseFinishReason(row) {
+  if (!row) return null;
+  return {
+    gemini_finish_reason: row.gemini_finish_reason,
+    event_count: row.event_count,
+  };
+}
+
+export function buildStructuredResponseReport(summary) {
+  const structured = summary.structured_response ?? {};
+  const eventCount = structured.event_count ?? 0;
+  const missingJsonEnvelopeCount = structured.missing_json_envelope_count ?? 0;
+  return {
+    event_count: eventCount,
+    missing_json_envelope_count: missingJsonEnvelopeCount,
+    missing_json_envelope_rate: nullableRatio(missingJsonEnvelopeCount, eventCount, 4),
+    avg_response_text_bytes: structured.avg_response_text_bytes ?? null,
+    max_response_text_bytes: structured.max_response_text_bytes ?? null,
+    top_finish_reason: compactStructuredResponseFinishReason(
+      firstOrNull(structured.top_finish_reasons),
+    ),
+    top_command: compactStructuredResponseCommand(
+      firstOrNull(structured.top_commands),
+    ),
+  };
+}
+
 function compactGateCommand(row) {
   if (!row) return null;
   return {
@@ -241,6 +279,7 @@ export async function runTelemetryReport({
         firstOrNull(summary.artifact_review_quality.top_commands),
       ),
     },
+    structured_response: buildStructuredResponseReport(summary),
     attribution: {
       top_projects: compactDimensionRows(summary.top_projects, "project_id"),
       top_workspaces: compactDimensionRows(summary.top_workspaces, "workspace_id"),
@@ -260,6 +299,11 @@ export async function runTelemetryReport({
 function formatTopCommand(item) {
   if (!item) return "None";
   return item.command;
+}
+
+function formatTopFinishReason(item) {
+  if (!item) return "None";
+  return item.gemini_finish_reason;
 }
 
 function formatTopPriority(priorities) {
@@ -325,6 +369,14 @@ export function formatTelemetryReportText(report) {
     `- Average overall score: ${report.artifact_review_quality.avg_overall_score ?? "n/a"}`,
     `- Average implementation readiness score: ${report.artifact_review_quality.avg_implementation_readiness_score ?? "n/a"}`,
     `- Top quality command: ${formatTopCommand(report.artifact_review_quality.top_command)}`,
+    "",
+    "Structured responses:",
+    `- Events: ${formatNumber(report.structured_response.event_count)}`,
+    `- Missing JSON envelope: ${formatNumber(report.structured_response.missing_json_envelope_count)} (${formatPercent(report.structured_response.missing_json_envelope_rate)})`,
+    `- Average response bytes: ${report.structured_response.avg_response_text_bytes == null ? "n/a" : formatNumber(report.structured_response.avg_response_text_bytes)}`,
+    `- Max response bytes: ${report.structured_response.max_response_text_bytes == null ? "n/a" : formatNumber(report.structured_response.max_response_text_bytes)}`,
+    `- Top finish reason: ${formatTopFinishReason(report.structured_response.top_finish_reason)}`,
+    `- Top structured command: ${formatTopCommand(report.structured_response.top_command)}`,
     "",
     "Attribution:",
     `- Top projects: ${formatDimensionRows(report.attribution.top_projects, "project_id")}`,

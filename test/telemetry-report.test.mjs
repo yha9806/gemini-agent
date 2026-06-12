@@ -6,6 +6,7 @@ import test from "node:test";
 import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
 import { appendTelemetryEvent } from "../src/telemetry-queue.mjs";
 import {
+  buildStructuredResponseReport,
   formatTelemetryReportText,
   runTelemetryReport,
 } from "../src/telemetry-report.mjs";
@@ -323,6 +324,92 @@ test("runTelemetryReport exposes product-adjusted analytics when validation even
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+test("runTelemetryReport exposes aggregate structured response diagnostics safely", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(7, {
+        command: "artifact-review --file /Users/example/private.png",
+        status: "error",
+        error_type: "SyntaxError",
+        response: "{\"partial\":\"private report response with secret-token",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 4096,
+            response_has_json_object_envelope: false,
+            gemini_finish_reason: "MAX_TOKENS",
+          },
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(8, {
+        command: "artifact-review",
+        response: "{\"ok\":true}",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 128,
+            response_has_json_object_envelope: true,
+            gemini_finish_reason: "STOP",
+          },
+        },
+      }),
+    });
+
+    const report = await runTelemetryReport({ cwd, scope: "local", topLimit: 5 });
+    const text = formatTelemetryReportText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.deepEqual(report.structured_response, {
+      event_count: 2,
+      missing_json_envelope_count: 1,
+      missing_json_envelope_rate: 0.5,
+      avg_response_text_bytes: 2112,
+      max_response_text_bytes: 4096,
+      top_finish_reason: {
+        gemini_finish_reason: "MAX_TOKENS",
+        event_count: 1,
+      },
+      top_command: {
+        command: "artifact-review",
+        event_count: 2,
+        missing_json_envelope_count: 1,
+        avg_response_text_bytes: 2112,
+        max_response_text_bytes: 4096,
+      },
+    });
+    assert.equal(report.priorities[0].kind, "reliability");
+    assert.match(report.priorities[0].title, /Structured response JSON envelope failures/);
+    assert.match(text, /Structured responses/);
+    assert.match(text, /Missing JSON envelope: 1/);
+    assert.match(text, /Top finish reason: MAX_TOKENS/);
+    assert.match(text, /Top structured command: artifact-review/);
+    assert.doesNotMatch(serialized, /private report response|secret-token|\/Users\/example|private\.png|evt_report_000007/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("buildStructuredResponseReport tolerates legacy summaries without structured diagnostics", () => {
+  assert.deepEqual(buildStructuredResponseReport({}), {
+    event_count: 0,
+    missing_json_envelope_count: 0,
+    missing_json_envelope_rate: null,
+    avg_response_text_bytes: null,
+    max_response_text_bytes: null,
+    top_finish_reason: null,
+    top_command: null,
+  });
 });
 
 test("runTelemetryReport points pending delivery attention at bounded flush diagnostics", async () => {

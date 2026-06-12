@@ -384,6 +384,66 @@ function latencyPriority(summary) {
   });
 }
 
+function structuredResponseFinishReasonCount(summary, reason) {
+  const rows = Array.isArray(summary.structured_response?.top_finish_reasons)
+    ? summary.structured_response.top_finish_reasons
+    : [];
+  const row = rows.find((item) => item?.gemini_finish_reason === reason);
+  return nonnegativeMetric(row?.event_count);
+}
+
+function topStructuredResponseMissingCommand(summary) {
+  const rows = Array.isArray(summary.structured_response?.top_commands)
+    ? summary.structured_response.top_commands
+    : [];
+  return rows
+    .filter((item) => nonnegativeMetric(item?.missing_json_envelope_count) > 0)
+    .sort((left, right) => (
+      nonnegativeMetric(right.missing_json_envelope_count) - nonnegativeMetric(left.missing_json_envelope_count)
+      || nonnegativeMetric(right.event_count) - nonnegativeMetric(left.event_count)
+      || `${left.command ?? "unknown"}`.localeCompare(`${right.command ?? "unknown"}`)
+    ))[0] ?? null;
+}
+
+function structuredResponsePriority(summary) {
+  const structured = summary.structured_response ?? {};
+  const eventCount = nonnegativeMetric(structured.event_count);
+  const missingCount = nonnegativeMetric(structured.missing_json_envelope_count);
+  if (eventCount <= 0 || missingCount <= 0) return null;
+  const missingRate = nullableRatio(missingCount, eventCount, 4);
+  const maxTokensCount = structuredResponseFinishReasonCount(summary, "MAX_TOKENS");
+  const topCommand = topStructuredResponseMissingCommand(summary);
+  const command = typeof topCommand?.command === "string" && topCommand.command !== "unknown"
+    ? topCommand.command
+    : null;
+  const severity = maxTokensCount > 0 || (missingRate !== null && missingRate >= 0.1)
+    ? "high"
+    : "medium";
+  const action = maxTokensCount > 0
+    ? `Tune output budget, retry, or schema constraints for ${command ?? "the affected structured route"} before expanding structured multimodal routing.`
+    : `Inspect structured parser and prompt constraints for ${command ?? "the affected structured route"} before expanding automation.`;
+  const evidence = [
+    `Structured response events: ${formatNumber(eventCount)}`,
+    `Missing JSON envelope: ${formatNumber(missingCount)}`,
+    `Missing JSON envelope rate: ${formatPercent(missingRate)}`,
+  ];
+  if (maxTokensCount > 0) {
+    evidence.push(`MAX_TOKENS finish reason events: ${formatNumber(maxTokensCount)}`);
+  }
+  if (topCommand) {
+    evidence.push(`Top affected command: ${topCommand.command ?? "unknown"} missing ${formatNumber(nonnegativeMetric(topCommand.missing_json_envelope_count))} of ${formatNumber(nonnegativeMetric(topCommand.event_count))} structured responses`);
+  }
+  return priority({
+    kind: "reliability",
+    severity,
+    score: maxTokensCount > 0 ? 151 : 91,
+    title: "Structured response JSON envelope failures need routing fixes.",
+    action,
+    command,
+    evidence,
+  });
+}
+
 function multimodalGapEvidence(gaps) {
   const evidence = [];
   for (const item of gaps) {
@@ -884,6 +944,7 @@ export function buildPriorities({ summary, economics, rawPreflight = null }) {
     reliabilityPriority(summary, errorRate),
     deliveryPriority(summary),
     rawGovernancePriority(rawPreflight),
+    structuredResponsePriority(summary),
     latencyPriority(summary),
     instrumentationPriority(summary, economics, multimodal, multimodalAggregate),
     economicsPriority(economics),
@@ -1004,6 +1065,15 @@ export async function runTelemetryPriorities({
       artifact_review_avg_overall_score: summary.artifact_review_quality?.avg_overall_score ?? null,
       artifact_review_depth_event_count: summary.artifact_review_depths?.event_count ?? 0,
       artifact_review_known_depth_event_count: summary.artifact_review_depths?.known_depth_event_count ?? 0,
+      structured_response_event_count: summary.structured_response?.event_count ?? 0,
+      structured_response_missing_json_envelope_count: (
+        summary.structured_response?.missing_json_envelope_count ?? 0
+      ),
+      structured_response_missing_json_envelope_rate: nullableRatio(
+        summary.structured_response?.missing_json_envelope_count ?? 0,
+        summary.structured_response?.event_count ?? 0,
+        4,
+      ),
       gemini_estimated_cost_usd: economics.totals.gemini_estimated_cost_usd,
       codex_tokens_saved_estimate: economics.totals.codex_tokens_saved_estimate,
       product_adjusted_gemini_estimated_cost_usd: (

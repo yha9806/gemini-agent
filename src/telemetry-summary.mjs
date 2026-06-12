@@ -289,6 +289,30 @@ function canonicalCommand(value) {
   return normalizeTelemetryCommandAlias(sanitized.toLowerCase().replaceAll("_", "-"));
 }
 
+const SAFE_STRUCTURED_RESPONSE_COMMAND_PREFIXES = [
+  // Keep this in sync with structured JSON-producing CLI commands; it strips unsafe arguments from public telemetry.
+  "artifact-review-backfill-correction",
+  "artifact-review-backfill",
+  "artifact-review",
+  "context-pack",
+  "diff-review",
+  "patch-precheck",
+  "plan-critique",
+  "research-brief",
+  "palette-split",
+  "ask",
+];
+
+function structuredResponseCommandKey(command) {
+  const canonical = canonicalCommand(command);
+  for (const prefix of SAFE_STRUCTURED_RESPONSE_COMMAND_PREFIXES) {
+    if (canonical === prefix || canonical.startsWith(`${prefix} `) || canonical.startsWith(`${prefix}:`)) {
+      return prefix;
+    }
+  }
+  return /^[a-z0-9][a-z0-9_.-]{0,63}$/.test(canonical) ? canonical : "unknown";
+}
+
 const SAFE_MULTIMODAL_COMMANDS = new Set([
   "artifact-review",
   "artifact-review-backfill",
@@ -426,7 +450,7 @@ function createStructuredResponseAggregate() {
 }
 
 function addStructuredResponseCommand(map, command, responseTextBytes, hasJsonEnvelope) {
-  const key = canonicalCommand(command);
+  const key = structuredResponseCommandKey(command);
   const item = map.get(key) ?? {
     key,
     event_count: 0,

@@ -384,6 +384,71 @@ test("runTelemetryPriorities ranks quarantined delivery diagnostics before expan
   }
 });
 
+test("runTelemetryPriorities flags structured response JSON envelope failures", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(45, {
+        command: "artifact-review --file /Users/example/private.png",
+        status: "error",
+        error_type: "SyntaxError",
+        response: "{\"partial\":\"private response with secret-token",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 4096,
+            response_has_json_object_envelope: false,
+            gemini_finish_reason: "MAX_TOKENS",
+          },
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(46, {
+        command: "artifact-review",
+        response: "{\"ok\":true}",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 128,
+            response_has_json_object_envelope: true,
+            gemini_finish_reason: "STOP",
+          },
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({ cwd, scope: "local", topLimit: 5 });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const structured = report.priorities.find((item) => item.title.includes("Structured response"));
+
+    assert.ok(structured);
+    assert.equal(structured.kind, "reliability");
+    assert.equal(structured.severity, "high");
+    assert.equal(structured.command, "artifact-review");
+    assert.match(structured.action, /budget, retry, or schema/);
+    assert.ok(structured.evidence.some((item) => item === "Structured response events: 2"));
+    assert.ok(structured.evidence.some((item) => item === "Missing JSON envelope: 1"));
+    assert.ok(structured.evidence.some((item) => item === "Missing JSON envelope rate: 50.0%"));
+    assert.ok(structured.evidence.some((item) => item === "MAX_TOKENS finish reason events: 1"));
+    assert.ok(structured.evidence.some((item) => item === "Top affected command: artifact-review missing 1 of 2 structured responses"));
+    assert.equal(report.totals.structured_response_event_count, 2);
+    assert.equal(report.totals.structured_response_missing_json_envelope_count, 1);
+    assert.equal(report.totals.structured_response_missing_json_envelope_rate, 0.5);
+    assert.match(text, /Structured response JSON envelope failures/);
+    assert.doesNotMatch(serialized, /private response|secret-token|\/Users\/example|evt_priority_000045/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities omits quarantine delivery priority when quarantine is empty", async () => {
   const cwd = await temporaryWorkspace();
   try {
