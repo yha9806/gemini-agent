@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { gzipSync } from "node:zlib";
 import { validateTelemetryEndpoint } from "./telemetry-config.mjs";
 import { getDefaultModel } from "./gemini-client.mjs";
 import {
@@ -20,6 +21,8 @@ import {
 
 const VALIDATION_FLUSH_BATCH_SIZE = 100;
 const MAX_HTTP_ERROR_BODY_BYTES = 256 * 1024;
+const RAW_CONTENT_ENCODING_ALGORITHM = "gzip+base64url";
+const RAW_CONTENT_ENCODING_MIN_BYTES = 32 * 1024;
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
 
@@ -155,8 +158,77 @@ function triggerSourceFromLegacy(event) {
   return "manual";
 }
 
-function rawEventFromLegacy(event) {
+function rawContentFieldText(value, kind) {
+  if (value === undefined) return kind === "text" ? "" : "null";
+  if (value === null) return kind === "text" ? "" : "null";
+  return kind === "text" ? String(value) : JSON.stringify(value);
+}
+
+function encodedRawContentField(value, kind) {
+  const rawText = rawContentFieldText(value, kind);
+  const rawBytes = Buffer.from(rawText, "utf8");
+  const encoded = gzipSync(rawBytes).toString("base64url");
   return {
+    encoded,
+    metadata: {
+      algorithm: RAW_CONTENT_ENCODING_ALGORITHM,
+      kind,
+      original_bytes: rawBytes.length,
+      encoded_bytes: Buffer.byteLength(encoded, "utf8"),
+    },
+  };
+}
+
+function rawContentTransportBytes(rawEvent) {
+  return [
+    ["request_raw", "json"],
+    ["prompt_raw", "text"],
+    ["response_raw", "text"],
+    ["response_candidates_raw", "json"],
+    ["tool_calls_raw", "json"],
+  ].reduce((sum, [field, kind]) => (
+    sum + Buffer.byteLength(rawContentFieldText(rawEvent[field], kind), "utf8")
+  ), 0);
+}
+
+function rawContentEncodingMode() {
+  const value = process.env.GEMINI_AGENT_TELEMETRY_RAW_ENCODING;
+  if (value === "off" || value === "always" || value === "auto") return value;
+  return "auto";
+}
+
+function shouldEncodeRawContent(rawEvent) {
+  const mode = rawContentEncodingMode();
+  if (mode === "off") return false;
+  if (mode === "always") return true;
+  return rawEvent.command === "context-pack"
+    || rawContentTransportBytes(rawEvent) >= RAW_CONTENT_ENCODING_MIN_BYTES;
+}
+
+function encodeRawContentForTransport(rawEvent) {
+  if (!shouldEncodeRawContent(rawEvent)) return rawEvent;
+  const encodedEvent = { ...rawEvent };
+  const fields = {};
+  for (const [field, kind] of [
+    ["request_raw", "json"],
+    ["prompt_raw", "text"],
+    ["response_raw", "text"],
+    ["response_candidates_raw", "json"],
+    ["tool_calls_raw", "json"],
+  ]) {
+    const { encoded, metadata } = encodedRawContentField(rawEvent[field], kind);
+    encodedEvent[field] = encoded;
+    fields[field] = metadata;
+  }
+  encodedEvent.raw_content_encoding = {
+    algorithm: RAW_CONTENT_ENCODING_ALGORITHM,
+    fields,
+  };
+  return encodedEvent;
+}
+
+function rawEventFromLegacy(event) {
+  return encodeRawContentForTransport({
     event_id: event.event_id,
     source_host_app: sourceHostAppFromLegacy(event),
     trigger_source: triggerSourceFromLegacy(event),
@@ -200,7 +272,7 @@ function rawEventFromLegacy(event) {
       outcome: event.outcome,
       economics: event.economics,
     },
-  };
+  });
 }
 
 function checksumEvents(events) {

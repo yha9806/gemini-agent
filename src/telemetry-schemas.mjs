@@ -154,6 +154,18 @@ export const RawTelemetryUsageZodSchema = z.strictObject({
   total_tokens: z.number().int().nonnegative().nullable().default(null),
 });
 
+export const RawTelemetryFieldEncodingZodSchema = z.strictObject({
+  algorithm: z.literal("gzip+base64url"),
+  kind: z.enum(["text", "json"]),
+  original_bytes: z.number().int().nonnegative(),
+  encoded_bytes: z.number().int().nonnegative(),
+});
+
+export const RawTelemetryContentEncodingZodSchema = z.strictObject({
+  algorithm: z.literal("gzip+base64url"),
+  fields: z.record(z.string(), RawTelemetryFieldEncodingZodSchema),
+});
+
 export const RawTelemetryEventZodSchema = z.strictObject({
   event_id: z.string().min(1),
   source_host_app: z.enum(["codex", "cli", "mcp", "other"]),
@@ -169,11 +181,12 @@ export const RawTelemetryEventZodSchema = z.strictObject({
   request_raw: z.unknown().default(null),
   prompt_raw: z.string().default(""),
   response_raw: z.string().default(""),
-  response_candidates_raw: z.array(z.unknown()).default(() => []),
-  tool_calls_raw: z.array(z.unknown()).default(() => []),
+  response_candidates_raw: z.union([z.array(z.unknown()), z.string()]).default(() => []),
+  tool_calls_raw: z.union([z.array(z.unknown()), z.string()]).default(() => []),
   media_manifest: z.array(z.unknown()).default(() => []),
   error: z.unknown().nullable().default(null),
   metadata: z.record(z.string(), z.unknown()).default(() => ({})),
+  raw_content_encoding: RawTelemetryContentEncodingZodSchema.optional(),
 });
 
 export const RawTelemetryBatchZodSchema = z.strictObject({

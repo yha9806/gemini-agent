@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import test from "node:test";
 import {
   appendTelemetryEvent,
@@ -99,6 +100,11 @@ function metricsResponse(overrides = {}) {
     status_counts: { success: 1, error: 0 },
     ...overrides,
   };
+}
+
+function decodeRawContentField(value, kind) {
+  const text = gunzipSync(Buffer.from(value, "base64url")).toString("utf8");
+  return kind === "json" ? JSON.parse(text) : text;
 }
 
 test("flushTelemetryQueue sends a strict batch and completes the queue", async () => {
@@ -200,6 +206,181 @@ test("flushTelemetryQueue preserves correction metadata in raw upload", async ()
   assert.equal(request.body.events[0].metadata.correction_for_event_id, "artifact_original_abc123");
   assert.equal(request.body.events[0].metadata.correction_version, "media-v1");
   assert.equal(request.body.events[0].metadata.correction_reason, "media_manifest_enrichment");
+});
+
+test("flushTelemetryQueue encodes context-pack raw content for transport", async () => {
+  const cwd = await temporaryWorkspace();
+  const rawPrompt = `waf-sensitive context ${"x".repeat(40_000)} <script>drop table</script>`;
+  const rawResponse = `compact response ${"y".repeat(4096)}`;
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(4, {
+      command: "context-pack",
+      prompt: rawPrompt,
+      response: rawResponse,
+    }),
+  });
+
+  let postedBatch;
+  const fetchImpl = async (url, options) => {
+    postedBatch = JSON.parse(options.body);
+    return new Response(JSON.stringify({
+      ok: true,
+      batch_id: postedBatch.batch_id,
+      received_count: postedBatch.events.length,
+      received_at: "2026-05-29T10:00:01.000Z",
+    }), { status: 200 });
+  };
+
+  await flushTelemetryQueue({
+    cwd,
+    endpoint: ENDPOINT,
+    token: TOKEN,
+    fetchImpl,
+    now: NOW,
+    batchSize: 1,
+  });
+
+  const rawEvent = postedBatch.events[0];
+  assert.equal(rawEvent.command, "context-pack");
+  assert.equal(rawEvent.raw_content_encoding.algorithm, "gzip+base64url");
+  assert.deepEqual(Object.keys(rawEvent.raw_content_encoding.fields).sort(), [
+    "prompt_raw",
+    "request_raw",
+    "response_candidates_raw",
+    "response_raw",
+    "tool_calls_raw",
+  ]);
+  assert.equal(typeof rawEvent.request_raw, "string");
+  assert.equal(typeof rawEvent.prompt_raw, "string");
+  assert.equal(typeof rawEvent.response_raw, "string");
+  assert.doesNotMatch(JSON.stringify(postedBatch), /waf-sensitive context/);
+  assert.doesNotMatch(JSON.stringify(postedBatch), /drop table/);
+  assert.equal(decodeRawContentField(
+    rawEvent.prompt_raw,
+    rawEvent.raw_content_encoding.fields.prompt_raw.kind,
+  ), rawPrompt);
+  assert.equal(decodeRawContentField(
+    rawEvent.response_raw,
+    rawEvent.raw_content_encoding.fields.response_raw.kind,
+  ), rawResponse);
+  assert.equal(decodeRawContentField(
+    rawEvent.request_raw,
+    rawEvent.raw_content_encoding.fields.request_raw.kind,
+  ).prompt, rawPrompt);
+});
+
+test("flushTelemetryQueue can disable raw transport encoding with env", async () => {
+  const cwd = await temporaryWorkspace();
+  const previous = process.env.GEMINI_AGENT_TELEMETRY_RAW_ENCODING;
+  process.env.GEMINI_AGENT_TELEMETRY_RAW_ENCODING = "off";
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(5, {
+      command: "context-pack",
+      prompt: "context pack prompt",
+      response: "context pack response",
+    }),
+  });
+
+  let postedBatch;
+  try {
+    await flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async (url, options) => {
+        postedBatch = JSON.parse(options.body);
+        return new Response(JSON.stringify({
+          ok: true,
+          batch_id: postedBatch.batch_id,
+          received_count: postedBatch.events.length,
+          received_at: "2026-05-29T10:00:01.000Z",
+        }), { status: 200 });
+      },
+      now: NOW,
+      batchSize: 1,
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.GEMINI_AGENT_TELEMETRY_RAW_ENCODING;
+    } else {
+      process.env.GEMINI_AGENT_TELEMETRY_RAW_ENCODING = previous;
+    }
+  }
+
+  assert.equal(postedBatch.events[0].raw_content_encoding, undefined);
+  assert.equal(postedBatch.events[0].prompt_raw, "context pack prompt");
+});
+
+test("flushTelemetryQueue encodes missing optional raw content fields without throwing", async () => {
+  const cwd = await temporaryWorkspace();
+  const previous = process.env.GEMINI_AGENT_TELEMETRY_RAW_ENCODING;
+  process.env.GEMINI_AGENT_TELEMETRY_RAW_ENCODING = "always";
+  let postedBatch;
+  try {
+    const event = telemetryEvent(6, {
+      command: "ask",
+      prompt: "prompt with optional raw gaps",
+      response: "response with optional raw gaps",
+    });
+    delete event.request;
+    delete event.candidates;
+    delete event.tool_calls;
+    await appendTelemetryEvent({ cwd, event });
+
+    await flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async (url, options) => {
+        postedBatch = JSON.parse(options.body);
+        return new Response(JSON.stringify({
+          ok: true,
+          batch_id: postedBatch.batch_id,
+          received_count: postedBatch.events.length,
+          received_at: "2026-05-29T10:00:01.000Z",
+        }), { status: 200 });
+      },
+      now: NOW,
+      batchSize: 1,
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.GEMINI_AGENT_TELEMETRY_RAW_ENCODING;
+    } else {
+      process.env.GEMINI_AGENT_TELEMETRY_RAW_ENCODING = previous;
+    }
+  }
+
+  const rawEvent = postedBatch.events[0];
+  assert.equal(rawEvent.raw_content_encoding.algorithm, "gzip+base64url");
+  assert.deepEqual(decodeRawContentField(
+    rawEvent.request_raw,
+    rawEvent.raw_content_encoding.fields.request_raw.kind,
+  ), {
+    trace_id: "trace_000006",
+    project_id: "gemini-agent",
+    source: "cli",
+    prompt: "prompt with optional raw gaps",
+    payload: {
+      prompt_truncated: false,
+      response_truncated: false,
+      multimodal: [],
+    },
+  });
+  assert.equal(decodeRawContentField(
+    rawEvent.response_raw,
+    rawEvent.raw_content_encoding.fields.response_raw.kind,
+  ), "response with optional raw gaps");
+  assert.deepEqual(decodeRawContentField(
+    rawEvent.response_candidates_raw,
+    rawEvent.raw_content_encoding.fields.response_candidates_raw.kind,
+  ), []);
+  assert.deepEqual(decodeRawContentField(
+    rawEvent.tool_calls_raw,
+    rawEvent.raw_content_encoding.fields.tool_calls_raw.kind,
+  ), []);
 });
 
 test("flushTelemetryQueue returns zero without sending when queue is empty", async () => {

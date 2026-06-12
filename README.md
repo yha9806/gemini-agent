@@ -86,6 +86,7 @@ Global Gemini review gate for Codex.
 - Generated context/review artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - Telemetry raw mode is explicit and requires `--confirm-raw-content`.
 - Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.
+- Raw telemetry transport encoding defaults to `auto`: `context-pack` and large raw payloads encode request/prompt/response raw fields as gzip+base64url in transit so front-end WAFs do not inspect raw source text; set `GEMINI_AGENT_TELEMETRY_RAW_ENCODING=off` only as a temporary compatibility fallback, or `always` to encode all raw events.
 - Telemetry config stores a generated `install_id`; captured events add a pseudonymous hashed `workspace_id` derived from the project root when available and salted with local install metadata. `workspace_id` is not a secret. `--user-label` is optional, rejects email-shaped labels, and can be cleared with `--clear-user-label`.
 - `telemetry summary` reports aggregate usage, queue health, project/workspace attribution, latency p50/p95/p99, palette-split quality, multimodal MIME/kind/byte coverage, and backfill media-manifest source adoption; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
 - Telemetry summary reports aggregate latency p50/p95/p99 by command so slow Gemini routes can be diagnosed without exposing raw prompts, responses, event ids, paths, or media file names.
