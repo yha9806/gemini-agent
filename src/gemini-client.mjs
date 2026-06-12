@@ -11,6 +11,7 @@ import {
 import { captureGeminiTelemetry } from "./telemetry-capture.mjs";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+const STRUCTURED_JSON_RETRY_MAX_OUTPUT_TOKENS = 8192;
 
 export function getDefaultModel() {
   return DEFAULT_GEMINI_MODEL;
@@ -85,6 +86,40 @@ function structuredResponseMetadata(response, responseText) {
 
 function withStructuredResponseMetadata(metadata, response, responseText) {
   return mergeTelemetryMetadata(metadata, structuredResponseMetadata(response, responseText));
+}
+
+function structuredJsonRetryReason(metadata) {
+  const diagnostic = metadata?.structured_response;
+  if (!diagnostic || typeof diagnostic !== "object") return null;
+  if (diagnostic.gemini_finish_reason === "MAX_TOKENS") return "MAX_TOKENS";
+  if (diagnostic.response_has_json_object_envelope === false) return "missing_json_envelope";
+  return null;
+}
+
+function retryMaxOutputTokens(maxOutputTokens) {
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) {
+    return STRUCTURED_JSON_RETRY_MAX_OUTPUT_TOKENS;
+  }
+  return Math.min(maxOutputTokens * 2, STRUCTURED_JSON_RETRY_MAX_OUTPUT_TOKENS);
+}
+
+function structuredJsonRetryMetadata({
+  attempt,
+  willRetry,
+  recovered = false,
+  retryReason,
+  nextMaxOutputTokens,
+}) {
+  const metadata = {
+    attempt,
+    will_retry: willRetry,
+    retry_reason: retryReason,
+  };
+  if (recovered) metadata.recovered = true;
+  if (Number.isInteger(nextMaxOutputTokens) && nextMaxOutputTokens > 0) {
+    metadata.next_max_output_tokens = nextMaxOutputTokens;
+  }
+  return { structured_response_retry: metadata };
 }
 
 async function captureTelemetry(telemetry, event, { awaitCapture = false } = {}) {
@@ -163,6 +198,7 @@ export async function generateJson({
   maxOutputTokens,
   telemetry,
   telemetryResultMetadata,
+  retryStructuredJsonFailure = false,
 }) {
   if (!apiKey) throw new Error("Gemini API key is missing.");
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
@@ -187,77 +223,114 @@ export async function generateJson({
     return normalized;
   }
 
-  let response;
-  const started = Date.now();
-  try {
-    const ai = makeAi(apiKey);
-    response = await ai.models.generateContent({
-      model: getDefaultModel(),
-      contents,
-      config: {
-        temperature,
-        ...(Number.isInteger(maxOutputTokens) && maxOutputTokens > 0 ? { maxOutputTokens } : {}),
-        responseMimeType: "application/json",
-        responseSchema,
-      },
-    });
-  } catch (error) {
-    const latencyMs = Date.now() - started;
-    await captureTelemetry(telemetry, {
-      command: "generate-json",
-      prompt,
-      response: "",
-      status: "error",
-      errorType: errorType(error),
-      latencyMs,
-      contents,
-      metadata: withGeminiGenerationLatency(undefined, latencyMs),
-    }, { awaitCapture: true });
-    throw requestError(error, apiKey);
-  }
+  let attempt = 1;
+  let effectiveMaxOutputTokens = maxOutputTokens;
+  let retryReason = null;
 
-  const responseText = response.text || "";
-  let normalized;
-  try {
-    normalized = normalize(parseJsonObject(responseText));
-  } catch (error) {
+  while (true) {
+    let response;
+    const started = Date.now();
+    try {
+      const ai = makeAi(apiKey);
+      response = await ai.models.generateContent({
+        model: getDefaultModel(),
+        contents,
+        config: {
+          temperature,
+          ...(Number.isInteger(effectiveMaxOutputTokens) && effectiveMaxOutputTokens > 0
+            ? { maxOutputTokens: effectiveMaxOutputTokens }
+            : {}),
+          responseMimeType: "application/json",
+          responseSchema,
+        },
+      });
+    } catch (error) {
+      const latencyMs = Date.now() - started;
+      await captureTelemetry(telemetry, {
+        command: "generate-json",
+        prompt,
+        response: "",
+        status: "error",
+        errorType: errorType(error),
+        latencyMs,
+        contents,
+        metadata: withGeminiGenerationLatency(undefined, latencyMs),
+      }, { awaitCapture: true });
+      throw requestError(error, apiKey);
+    }
+
+    const responseText = response.text || "";
+    let normalized;
+    try {
+      normalized = normalize(parseJsonObject(responseText));
+    } catch (error) {
+      const latencyMs = Date.now() - started;
+      const structuredMetadata = withStructuredResponseMetadata(undefined, response, responseText);
+      const currentRetryReason = retryStructuredJsonFailure && attempt === 1
+        ? structuredJsonRetryReason(structuredMetadata)
+        : null;
+      const nextMaxOutputTokens = currentRetryReason ? retryMaxOutputTokens(effectiveMaxOutputTokens) : null;
+      await captureTelemetry(telemetry, {
+        command: "generate-json",
+        prompt,
+        response: responseText,
+        status: "error",
+        errorType: errorType(error),
+        latencyMs,
+        contents,
+        economics: usageMetadataFromResponse(response),
+        metadata: withGeminiGenerationLatency(
+          mergeTelemetryMetadata(
+            structuredMetadata,
+            currentRetryReason
+              ? structuredJsonRetryMetadata({
+                attempt,
+                willRetry: true,
+                retryReason: currentRetryReason,
+                nextMaxOutputTokens,
+              })
+              : undefined,
+          ),
+          latencyMs,
+        ),
+      }, { awaitCapture: true });
+      if (currentRetryReason) {
+        attempt += 1;
+        retryReason = currentRetryReason;
+        effectiveMaxOutputTokens = nextMaxOutputTokens;
+        continue;
+      }
+      throw error;
+    }
+
     const latencyMs = Date.now() - started;
     await captureTelemetry(telemetry, {
       command: "generate-json",
       prompt,
       response: responseText,
-      status: "error",
-      errorType: errorType(error),
+      status: "success",
       latencyMs,
       contents,
       economics: usageMetadataFromResponse(response),
       metadata: withGeminiGenerationLatency(
-        withStructuredResponseMetadata(undefined, response, responseText),
+        withStructuredResponseMetadata(
+          mergeTelemetryMetadata(
+            telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+            retryReason ? structuredJsonRetryMetadata({
+              attempt,
+              willRetry: false,
+              recovered: true,
+              retryReason,
+            }) : undefined,
+          ),
+          response,
+          responseText,
+        ),
         latencyMs,
       ),
-    }, { awaitCapture: true });
-    throw error;
+    });
+    return normalized;
   }
-
-  const latencyMs = Date.now() - started;
-  await captureTelemetry(telemetry, {
-    command: "generate-json",
-    prompt,
-    response: responseText,
-    status: "success",
-    latencyMs,
-    contents,
-    economics: usageMetadataFromResponse(response),
-    metadata: withGeminiGenerationLatency(
-      withStructuredResponseMetadata(
-        telemetryMetadataFromResult(telemetryResultMetadata, normalized),
-        response,
-        responseText,
-      ),
-      latencyMs,
-    ),
-  });
-  return normalized;
 }
 
 function designScoreValue(value) {
@@ -316,6 +389,7 @@ export async function generateArtifactReview(options) {
     responseSchema: GeminiArtifactReviewSchema,
     normalize: normalizeArtifactReview,
     telemetryResultMetadata: artifactReviewTelemetryMetadata,
+    retryStructuredJsonFailure: true,
   });
 }
 
