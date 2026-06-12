@@ -709,6 +709,56 @@ test("readiness plan requires raw delivery to have no in-flight events", () => {
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
+test("readiness plan uses delivery counters even when queue counters are zero", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor({
+      delivery: {
+        pending_events: 0,
+        inflight_events: 2,
+        failed_events: 3,
+        quarantine_events: 4,
+      },
+      queue: {
+        pending: { count: 0 },
+        inflight: { count: 0 },
+        failed: { count: 0 },
+        quarantine: { count: 0 },
+      },
+    }),
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.readiness.status, "blocked");
+  assert.equal(report.raw_governance.inflight_count, 2);
+  assert.equal(report.raw_governance.failed_count, 3);
+  assert.equal(report.raw_governance.quarantine_count, 4);
+  assert.ok(report.readiness.reasons.includes("raw_inflight_events_present"));
+  assert.ok(report.readiness.reasons.includes("raw_failed_events_present"));
+  assert.ok(report.readiness.reasons.includes("raw_quarantine_events_present"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+  assert.equal(report.routing_recommendation.production_sampling_allowed, false);
+});
+
 test("readiness plan uses raw preflight pending evidence when doctor pending is zero", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary({

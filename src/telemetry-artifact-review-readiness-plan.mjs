@@ -324,9 +324,18 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
     && (excludedCount > 0 || nonnegativeInteger(pending.total_count) > selectedCount);
   return {
     pending_count: pendingCount,
-    inflight_count: nonnegativeInteger(queue.inflight?.count ?? delivery.inflight_events),
-    failed_count: nonnegativeInteger(queue.failed?.count ?? delivery.failed_events),
-    quarantine_count: nonnegativeInteger(queue.quarantine?.count ?? delivery.quarantine_events),
+    inflight_count: Math.max(
+      nonnegativeInteger(queue.inflight?.count),
+      nonnegativeInteger(delivery.inflight_events),
+    ),
+    failed_count: Math.max(
+      nonnegativeInteger(queue.failed?.count),
+      nonnegativeInteger(delivery.failed_events),
+    ),
+    quarantine_count: Math.max(
+      nonnegativeInteger(queue.quarantine?.count),
+      nonnegativeInteger(delivery.quarantine_events),
+    ),
     small_flush_safe: doctor?.small_flush_safe === true,
     preflight_available: preflightComplete,
     preflight_incomplete: rawPreflightIncomplete(rawPreflight),
