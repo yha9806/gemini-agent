@@ -7,6 +7,11 @@ import {
 } from "./telemetry-queue.mjs";
 import { buildTelemetryFlushPreview } from "./telemetry-sender.mjs";
 import {
+  hasEmailLikeIdentifier,
+  hasLocalPathLikeIdentifier,
+  hasPhoneLikeIdentifier,
+} from "./telemetry-dimension-safety.mjs";
+import {
   maskCredentialText,
   normalizeTelemetryEvent,
 } from "./telemetry-schemas.mjs";
@@ -36,6 +41,13 @@ function zeroRiskCounts() {
     credential_like_prompt_events: 0,
     credential_like_response_events: 0,
     credential_scan_truncated_events: 0,
+    email_like_prompt_events: 0,
+    email_like_response_events: 0,
+    path_like_prompt_events: 0,
+    path_like_response_events: 0,
+    phone_like_prompt_events: 0,
+    phone_like_response_events: 0,
+    sensitive_scan_truncated_events: 0,
   };
 }
 
@@ -50,6 +62,24 @@ function credentialLikeText(value) {
   const scanText = value.slice(0, CREDENTIAL_SCAN_CHAR_LIMIT);
   return {
     credentialLike: scanText.includes("[MASKED]") || maskCredentialText(scanText) !== scanText,
+    scanTruncated: value.length > CREDENTIAL_SCAN_CHAR_LIMIT,
+  };
+}
+
+function sensitiveLikeText(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    return {
+      emailLike: false,
+      pathLike: false,
+      phoneLike: false,
+      scanTruncated: false,
+    };
+  }
+  const scanText = value.slice(0, CREDENTIAL_SCAN_CHAR_LIMIT);
+  return {
+    emailLike: hasEmailLikeIdentifier(scanText),
+    pathLike: hasLocalPathLikeIdentifier(scanText),
+    phoneLike: hasPhoneLikeIdentifier(scanText),
     scanTruncated: value.length > CREDENTIAL_SCAN_CHAR_LIMIT,
   };
 }
@@ -80,6 +110,18 @@ function addEventRisk(counts, event) {
   if (responseCredential.credentialLike) counts.credential_like_response_events += 1;
   if (promptCredential.scanTruncated || responseCredential.scanTruncated) {
     counts.credential_scan_truncated_events += 1;
+  }
+
+  const promptSensitive = sensitiveLikeText(event.prompt);
+  const responseSensitive = sensitiveLikeText(event.response);
+  if (promptSensitive.emailLike) counts.email_like_prompt_events += 1;
+  if (responseSensitive.emailLike) counts.email_like_response_events += 1;
+  if (promptSensitive.pathLike) counts.path_like_prompt_events += 1;
+  if (responseSensitive.pathLike) counts.path_like_response_events += 1;
+  if (promptSensitive.phoneLike) counts.phone_like_prompt_events += 1;
+  if (responseSensitive.phoneLike) counts.phone_like_response_events += 1;
+  if (promptSensitive.scanTruncated || responseSensitive.scanTruncated) {
+    counts.sensitive_scan_truncated_events += 1;
   }
 }
 
@@ -225,7 +267,7 @@ export async function runTelemetryRawPreflight({
     limitations: [
       "Preflight output is aggregate-only and does not reveal raw prompt, response, event ids, batch ids, paths, or media filenames.",
       "Preflight does not send, move, delete, or quarantine telemetry files.",
-      "Credential-like detection uses a bounded local scan and can miss secrets outside the scanned prefix.",
+      "Credential-like and sensitive-like detection use bounded local scans and can miss values outside the scanned prefix.",
     ],
   };
 }
@@ -266,6 +308,14 @@ export function formatTelemetryRawPreflightText(report) {
     `- Media items: ${formatNumber(report.risk.media_item_count)}`,
     `- Credential-like prompt events: ${formatNumber(report.risk.credential_like_prompt_events)}`,
     `- Credential-like response events: ${formatNumber(report.risk.credential_like_response_events)}`,
+    `- Credential scan truncated events: ${formatNumber(report.risk.credential_scan_truncated_events)}`,
+    `- Email-like prompt events: ${formatNumber(report.risk.email_like_prompt_events)}`,
+    `- Email-like response events: ${formatNumber(report.risk.email_like_response_events)}`,
+    `- Path-like prompt events: ${formatNumber(report.risk.path_like_prompt_events)}`,
+    `- Path-like response events: ${formatNumber(report.risk.path_like_response_events)}`,
+    `- Phone-like prompt events: ${formatNumber(report.risk.phone_like_prompt_events)}`,
+    `- Phone-like response events: ${formatNumber(report.risk.phone_like_response_events)}`,
+    `- Sensitive scan truncated events: ${formatNumber(report.risk.sensitive_scan_truncated_events)}`,
     "",
     "Next command:",
     report.next_command,

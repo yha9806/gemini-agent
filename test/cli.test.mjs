@@ -1794,8 +1794,8 @@ test("telemetry raw preflight reports pending upload risk without exposing conte
       cwd,
       event: telemetryEvent(96, {
         command: "artifact-review",
-        prompt: "Authorization: Bearer cli-secret-token",
-        response: "raw preflight response should not print",
+        prompt: "Authorization: Bearer cli-secret-token\ncontact person@example.com in /Users/alice/private-cli-project",
+        response: "raw preflight response should not print +1 (415) 555-1212",
         payload: {
           prompt_truncated: false,
           response_truncated: false,
@@ -1820,8 +1820,11 @@ test("telemetry raw preflight reports pending upload risk without exposing conte
     assert.equal(parsed.pending.total_count, 2);
     assert.equal(parsed.batch.would_send_count, 1);
     assert.equal(parsed.risk.credential_like_prompt_events, 1);
+    assert.equal(parsed.risk.email_like_prompt_events, 1);
+    assert.equal(parsed.risk.path_like_prompt_events, 1);
+    assert.equal(parsed.risk.phone_like_response_events, 1);
     assert.equal(parsed.risk.media_item_count, 1);
-    assert.doesNotMatch(stdout, /cli-secret-token/);
+    assert.doesNotMatch(stdout, /cli-secret-token|person@example\.com|Users\/alice|415|555/);
     assert.doesNotMatch(stdout, /raw preflight response should not print/);
     assert.doesNotMatch(stdout, /evt_cli_96|private-cli-design|queue\/pending/);
   } finally {
