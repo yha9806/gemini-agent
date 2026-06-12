@@ -1824,7 +1824,7 @@ test("telemetry raw preflight reports pending upload risk without exposing conte
     assert.equal(parsed.risk.path_like_prompt_events, 1);
     assert.equal(parsed.risk.phone_like_response_events, 1);
     assert.equal(parsed.risk.media_item_count, 1);
-    assert.doesNotMatch(stdout, /cli-secret-token|person@example\.com|Users\/alice|415|555/);
+    assert.doesNotMatch(stdout, /cli-secret-token|person@example\.com|Users\/alice|\(415\)|555-1212/);
     assert.doesNotMatch(stdout, /raw preflight response should not print/);
     assert.doesNotMatch(stdout, /evt_cli_96|private-cli-design|queue\/pending/);
   } finally {

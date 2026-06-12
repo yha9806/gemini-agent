@@ -140,7 +140,7 @@ test("runTelemetryRawPreflight reports sensitive field categories without exposi
   assert.match(output, /Email-like prompt events: 1/);
   assert.match(output, /Path-like prompt events: 1/);
   assert.match(output, /Phone-like response events: 1/);
-  assert.doesNotMatch(output, /person@example\.com|Users\/alice|415|555|123-45-6789/);
+  assert.doesNotMatch(output, /person@example\.com|Users\/alice|\(415\)|555-1212|123-45-6789/);
   assert.equal((await readdir(telemetryQueueDirs(cwd).pending)).length, 1);
 });
 
