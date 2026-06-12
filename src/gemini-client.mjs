@@ -90,6 +90,12 @@ function usageMetadataFromResponse(response) {
   };
 }
 
+function telemetryMetadataFromResult(extract, result) {
+  if (typeof extract !== "function") return undefined;
+  const metadata = extract(result);
+  return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : undefined;
+}
+
 export async function generateJson({
   apiKey,
   prompt,
@@ -101,6 +107,7 @@ export async function generateJson({
   makeAi = makeGoogleGenAI,
   temperature = 0.2,
   telemetry,
+  telemetryResultMetadata,
 }) {
   if (!apiKey) throw new Error("Gemini API key is missing.");
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
@@ -116,6 +123,7 @@ export async function generateJson({
       status: "success",
       latencyMs: Date.now() - started,
       contents,
+      metadata: telemetryMetadataFromResult(telemetryResultMetadata, normalized),
     });
     return normalized;
   }
@@ -172,8 +180,28 @@ export async function generateJson({
     latencyMs: Date.now() - started,
     contents,
     economics: usageMetadataFromResponse(response),
+    metadata: telemetryMetadataFromResult(telemetryResultMetadata, normalized),
   });
   return normalized;
+}
+
+function designScoreValue(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 100 ? value : null;
+}
+
+function artifactReviewTelemetryMetadata(review) {
+  const scorecard = review?.design_scorecard;
+  if (!scorecard || typeof scorecard !== "object" || Array.isArray(scorecard)) return undefined;
+  return {
+    design_scorecard: {
+      overall_score: designScoreValue(scorecard.overall_score),
+      visual_hierarchy_score: designScoreValue(scorecard.visual_hierarchy_score),
+      clarity_score: designScoreValue(scorecard.clarity_score),
+      accessibility_score: designScoreValue(scorecard.accessibility_score),
+      consistency_score: designScoreValue(scorecard.consistency_score),
+      implementation_readiness_score: designScoreValue(scorecard.implementation_readiness_score),
+    },
+  };
 }
 
 export async function generateReview({
@@ -212,6 +240,7 @@ export async function generateArtifactReview(options) {
     ...options,
     responseSchema: GeminiArtifactReviewSchema,
     normalize: normalizeArtifactReview,
+    telemetryResultMetadata: artifactReviewTelemetryMetadata,
   });
 }
 

@@ -49,6 +49,16 @@ function compactMultimodalCommand(row) {
   };
 }
 
+function compactArtifactReviewQualityCommand(row) {
+  if (!row) return null;
+  return {
+    command: row.command,
+    event_count: row.event_count,
+    scorecard_event_count: row.scorecard_event_count,
+    avg_overall_score: row.avg_overall_score,
+  };
+}
+
 function compactGateCommand(row) {
   if (!row) return null;
   return {
@@ -190,6 +200,17 @@ export async function runTelemetryReport({
       applied_correction_event_count: multimodal.applied_correction_event_count ?? 0,
       top_command: compactMultimodalCommand(firstOrNull(multimodal.top_commands)),
     },
+    artifact_review_quality: {
+      event_count: summary.artifact_review_quality.event_count,
+      scorecard_event_count: summary.artifact_review_quality.scorecard_event_count,
+      avg_overall_score: summary.artifact_review_quality.avg_overall_score,
+      avg_implementation_readiness_score: (
+        summary.artifact_review_quality.avg_implementation_readiness_score
+      ),
+      top_command: compactArtifactReviewQualityCommand(
+        firstOrNull(summary.artifact_review_quality.top_commands),
+      ),
+    },
     attribution: {
       top_projects: compactDimensionRows(summary.top_projects, "project_id"),
       top_workspaces: compactDimensionRows(summary.top_workspaces, "workspace_id"),
@@ -201,7 +222,7 @@ export async function runTelemetryReport({
       "Product report fields are aggregate telemetry only; no raw prompt, response text, event ids, batch ids, paths, media file names, or per-event records are included.",
       "Gemini cost and Codex token savings are estimates from captured usage metadata.",
       "Reliability rates are telemetry observations and still depend on failure paths emitting telemetry.",
-      "Multimodal adoption shows media-bearing workflow usage, not visual quality by itself.",
+      "Artifact-review quality uses aggregate scorecard metadata only when scorecard capture is available.",
     ],
   };
 }
@@ -259,6 +280,13 @@ export function formatTelemetryReportText(report) {
     `- Media bytes: ${formatNumber(report.multimodal.byte_count)}`,
     `- Metadata minimum coverage: ${formatPercent(report.multimodal.metadata_coverage_min)}`,
     `- Top multimodal command: ${formatTopCommand(report.multimodal.top_command)}`,
+    "",
+    "Artifact-review quality:",
+    `- Events: ${formatNumber(report.artifact_review_quality.event_count)}`,
+    `- Scorecard events: ${formatNumber(report.artifact_review_quality.scorecard_event_count)}`,
+    `- Average overall score: ${report.artifact_review_quality.avg_overall_score ?? "n/a"}`,
+    `- Average implementation readiness score: ${report.artifact_review_quality.avg_implementation_readiness_score ?? "n/a"}`,
+    `- Top quality command: ${formatTopCommand(report.artifact_review_quality.top_command)}`,
     "",
     "Attribution:",
     `- Top projects: ${formatDimensionRows(report.attribution.top_projects, "project_id")}`,

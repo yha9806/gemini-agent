@@ -256,6 +256,65 @@ test("generateArtifactReview sends multimodal contents", async () => {
   assert.equal(review.artifact_type, "image");
 });
 
+test("generateArtifactReview reports safe design scorecard telemetry metadata", async () => {
+  let seenMetadata = null;
+
+  const review = await generateArtifactReview({
+    apiKey: "fake-key",
+    prompt: "review artifact",
+    contents: [{ text: "review artifact" }],
+    allowFakeResponse: true,
+    env: {
+      GEMINI_AGENT_FAKE_RESPONSE: JSON.stringify({
+        kind: "artifact_review",
+        artifact_type: "design",
+        summary: ["summary"],
+        important_details: [],
+        design_or_research_findings: [],
+        implementation_hints_for_codex: [],
+        risks_or_ambiguities: [],
+        questions_for_user: [],
+        limitations: [],
+        design_scorecard: {
+          overall_score: 82,
+          visual_hierarchy_score: 90,
+          clarity_score: 84,
+          accessibility_score: 72,
+          consistency_score: 80,
+          implementation_readiness_score: 78,
+          strengths: ["Private strengths should stay out of telemetry metadata"],
+          issues: ["Private issues should stay out of telemetry metadata"],
+          recommended_actions: ["Private action should stay out of telemetry metadata"],
+        },
+        metadata: {
+          model: "gemini-3.5-flash",
+          generated_at: "2026-05-28T00:00:00Z",
+          sources: [],
+          omitted_sources: [],
+        },
+      }),
+    },
+    telemetry: {
+      cwd: await tempDir(),
+      command: "artifact-review",
+      capture: async (event) => {
+        seenMetadata = event.metadata;
+      },
+    },
+  });
+
+  assert.equal(review.design_scorecard.overall_score, 82);
+  assert.deepEqual(seenMetadata.design_scorecard, {
+    overall_score: 82,
+    visual_hierarchy_score: 90,
+    clarity_score: 84,
+    accessibility_score: 72,
+    consistency_score: 80,
+    implementation_readiness_score: 78,
+  });
+  assert.doesNotMatch(JSON.stringify(seenMetadata), /Private/);
+});
+
 test("generateJson keeps telemetry contents separate from Gemini request contents", async () => {
   const requestContents = [
     { inlineData: { mimeType: "image/png", data: "YWJjZA==" } },

@@ -115,6 +115,17 @@ test("runTelemetryReport builds a safe product decision snapshot", async () => {
             byte_size: 42_000,
           }],
         },
+        metadata: {
+          design_scorecard: {
+            overall_score: 81,
+            visual_hierarchy_score: 82,
+            clarity_score: 83,
+            accessibility_score: 84,
+            consistency_score: 85,
+            implementation_readiness_score: 86,
+            strengths: ["private report strength"],
+          },
+        },
         economics: {
           input_tokens: 40_000,
           output_tokens: 8_000,
@@ -163,6 +174,18 @@ test("runTelemetryReport builds a safe product decision snapshot", async () => {
     assert.equal(report.context_loop.top_gate_command.command, "diff-review");
     assert.equal(report.multimodal.event_count, 1);
     assert.equal(report.multimodal.top_command.command, "artifact-review");
+    assert.deepEqual(report.artifact_review_quality, {
+      event_count: 1,
+      scorecard_event_count: 1,
+      avg_overall_score: 81,
+      avg_implementation_readiness_score: 86,
+      top_command: {
+        command: "artifact-review",
+        event_count: 1,
+        scorecard_event_count: 1,
+        avg_overall_score: 81,
+      },
+    });
     assert.deepEqual(report.attribution.top_projects, [
       { project_id: "vulca-platform", event_count: 2, success_count: 2, error_count: 0, unknown_count: 0 },
     ]);
@@ -177,11 +200,14 @@ test("runTelemetryReport builds a safe product decision snapshot", async () => {
     assert.match(text, /Telemetry Product Report/);
     assert.match(text, /Estimated Codex tokens saved/);
     assert.match(text, /Multimodal adoption/);
+    assert.match(text, /Artifact-review quality/);
+    assert.match(text, /Average overall score: 81/);
     assert.match(text, /Attribution/);
     assert.match(text, /vulca-platform/);
     assert.match(text, /ws_vulca/);
     assert.match(text, /emoart-operator/);
     assert.doesNotMatch(serialized, /private report prompt|private report response/);
+    assert.doesNotMatch(serialized, /private report strength/);
     assert.doesNotMatch(serialized, /evt_report_|trace_report_|dep_report/);
     assert.doesNotMatch(serialized, /person@example\.com/);
     assert.doesNotMatch(serialized, /\/Users\/example|latest\.json|secret-report-screenshot\.png/);

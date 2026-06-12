@@ -109,6 +109,35 @@ function zeroPaletteSplit() {
   };
 }
 
+const DESIGN_SCORE_FIELDS = [
+  ["overall_score", "avg_overall_score"],
+  ["visual_hierarchy_score", "avg_visual_hierarchy_score"],
+  ["clarity_score", "avg_clarity_score"],
+  ["accessibility_score", "avg_accessibility_score"],
+  ["consistency_score", "avg_consistency_score"],
+  ["implementation_readiness_score", "avg_implementation_readiness_score"],
+];
+
+function zeroArtifactReviewQuality() {
+  return {
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    scorecard_event_count: 0,
+    avg_overall_score: null,
+    avg_visual_hierarchy_score: null,
+    avg_clarity_score: null,
+    avg_accessibility_score: null,
+    avg_consistency_score: null,
+    avg_implementation_readiness_score: null,
+    top_commands: [],
+  };
+}
+
+function createDesignScoreSums() {
+  return Object.fromEntries(DESIGN_SCORE_FIELDS.map(([key]) => [key, { sum: 0, count: 0 }]));
+}
+
 function zeroContextLoop() {
   return {
     gate_event_count: 0,
@@ -795,6 +824,11 @@ function isPaletteSplitEvent(event) {
   return event.command === "palette-split" || event.metadata?.workflow === "palette-split";
 }
 
+function artifactReviewQualityCommand(value) {
+  const command = canonicalCommand(value);
+  return command === "artifact-review" || command === "artifact-review-backfill" ? command : null;
+}
+
 function buildRecommendations({
   commands,
   counts,
@@ -1028,6 +1062,14 @@ function createAccumulator(invalidSampleLimit) {
       foreground_area_pct_count: 0,
     },
     paletteSplitModels: createDimensionMap(),
+    artifactReviewQuality: {
+      event_count: 0,
+      success_count: 0,
+      error_count: 0,
+      scorecard_event_count: 0,
+      scores: createDesignScoreSums(),
+    },
+    artifactReviewQualityCommands: new Map(),
     contextLoop: zeroContextLoop(),
     contextPackModes: new Map(),
     freshInputModes: new Map(),
@@ -1058,6 +1100,7 @@ function addEvent(accumulator, state, event) {
   updateDimension(accumulator.sources, event.source, status);
   updateDimension(accumulator.models, event.model, status);
   if (isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
+  addArtifactReviewQualityEvent(accumulator, event, status);
   addContextLoopEvent(accumulator, event);
   addLatency(accumulator.latency, event.command, event.latency_ms);
   addLatencyStages(accumulator.latencyStages, event.command, event.metadata);
@@ -1104,6 +1147,74 @@ function addEvent(accumulator, state, event) {
   accumulator.usage.response_tokens += safeInteger(outputTokens);
   accumulator.usage.total_tokens += safeInteger(totalTokens);
   accumulator.usage.estimated_codex_tokens_saved += safeInteger(inputTokens);
+}
+
+function safeDesignScore(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 100 ? value : null;
+}
+
+function designScorecardFromMetadata(metadata) {
+  const scorecard = metadata?.design_scorecard;
+  if (!scorecard || typeof scorecard !== "object" || Array.isArray(scorecard)) return null;
+  const scores = {};
+  let hasScore = false;
+  for (const [key] of DESIGN_SCORE_FIELDS) {
+    const score = safeDesignScore(scorecard[key]);
+    scores[key] = score;
+    if (score !== null) hasScore = true;
+  }
+  return hasScore ? scores : null;
+}
+
+function addDesignScores(target, scores) {
+  if (!scores) return;
+  for (const [key] of DESIGN_SCORE_FIELDS) {
+    const score = scores[key];
+    if (score === null) continue;
+    target[key].sum += score;
+    target[key].count += 1;
+  }
+}
+
+function updateArtifactReviewQualityCommand(map, command, status, scores) {
+  const item = map.get(command) ?? {
+    key: command,
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    unknown_count: 0,
+    scorecard_event_count: 0,
+    scores: createDesignScoreSums(),
+  };
+  item.event_count += 1;
+  if (status === "success") item.success_count += 1;
+  else if (status === "error") item.error_count += 1;
+  else item.unknown_count += 1;
+  if (scores) {
+    item.scorecard_event_count += 1;
+    addDesignScores(item.scores, scores);
+  }
+  map.set(command, item);
+}
+
+function addArtifactReviewQualityEvent(accumulator, event, status) {
+  const command = artifactReviewQualityCommand(event.command);
+  if (!command) return;
+  accumulator.artifactReviewQuality.event_count += 1;
+  if (status === "success") accumulator.artifactReviewQuality.success_count += 1;
+  else if (status === "error") accumulator.artifactReviewQuality.error_count += 1;
+
+  const scores = designScorecardFromMetadata(event.metadata);
+  if (scores) {
+    accumulator.artifactReviewQuality.scorecard_event_count += 1;
+    addDesignScores(accumulator.artifactReviewQuality.scores, scores);
+  }
+  updateArtifactReviewQualityCommand(
+    accumulator.artifactReviewQualityCommands,
+    command,
+    status,
+    scores,
+  );
 }
 
 function addContextLoopEvent(accumulator, event) {
@@ -1353,6 +1464,45 @@ function buildPaletteSplitSummary(accumulator, topLimit) {
   };
 }
 
+function averageDesignScore(scores, key) {
+  const item = scores[key];
+  return item.count > 0 ? roundOne(item.sum / item.count) : null;
+}
+
+function artifactReviewQualityCommandRows(map, topLimit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.event_count - left.event_count
+      || right.scorecard_event_count - left.scorecard_event_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, topLimit)
+    .map((item) => ({
+      command: item.key,
+      event_count: item.event_count,
+      success_count: item.success_count,
+      error_count: item.error_count,
+      unknown_count: item.unknown_count,
+      scorecard_event_count: item.scorecard_event_count,
+      avg_overall_score: averageDesignScore(item.scores, "overall_score"),
+    }));
+}
+
+function buildArtifactReviewQualitySummary(accumulator, topLimit) {
+  if (accumulator.artifactReviewQuality.event_count === 0) return zeroArtifactReviewQuality();
+  return {
+    event_count: accumulator.artifactReviewQuality.event_count,
+    success_count: accumulator.artifactReviewQuality.success_count,
+    error_count: accumulator.artifactReviewQuality.error_count,
+    scorecard_event_count: accumulator.artifactReviewQuality.scorecard_event_count,
+    ...Object.fromEntries(DESIGN_SCORE_FIELDS.map(([key, avgKey]) => [
+      avgKey,
+      averageDesignScore(accumulator.artifactReviewQuality.scores, key),
+    ])),
+    top_commands: artifactReviewQualityCommandRows(accumulator.artifactReviewQualityCommands, topLimit),
+  };
+}
+
 export async function runTelemetrySummary({
   cwd = process.cwd(),
   home,
@@ -1412,6 +1562,7 @@ export async function runTelemetrySummary({
     media_manifest_sources: topBackfillManifestSources(accumulator.backfillManifestSources, topLimit),
   };
   const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
+  const artifactReviewQuality = buildArtifactReviewQualitySummary(accumulator, topLimit);
   const latency = buildLatencySummary(accumulator.latency, topLimit);
   const latencyStages = buildLatencyStagesSummary(accumulator.latencyStages, topLimit);
   const contextLoop = {
@@ -1449,6 +1600,7 @@ export async function runTelemetrySummary({
     corrections,
     backfill,
     palette_split: paletteSplit,
+    artifact_review_quality: artifactReviewQuality,
     latency,
     latency_stages: latencyStages,
     context_loop: contextLoop,
@@ -1566,6 +1718,12 @@ export function formatTelemetrySummaryText(summary) {
     `- Quality events: ${formatNumber(summary.palette_split?.quality_event_count ?? 0)}`,
     `- Average quality score: ${summary.palette_split?.avg_quality_score ?? "n/a"}`,
     `- Resized masks: ${formatNumber(summary.palette_split?.resized_mask_count ?? 0)}`,
+    "",
+    "Artifact review quality:",
+    `- Events: ${formatNumber(summary.artifact_review_quality?.event_count ?? 0)}`,
+    `- Scorecard events: ${formatNumber(summary.artifact_review_quality?.scorecard_event_count ?? 0)}`,
+    `- Average overall score: ${summary.artifact_review_quality?.avg_overall_score ?? "n/a"}`,
+    `- Average implementation readiness score: ${summary.artifact_review_quality?.avg_implementation_readiness_score ?? "n/a"}`,
     "",
     "Context loop:",
     `- Gate events: ${formatNumber(summary.context_loop?.gate_event_count ?? 0)}`,

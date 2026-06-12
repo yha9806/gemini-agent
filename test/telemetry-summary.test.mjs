@@ -141,6 +141,19 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     avg_foreground_area_pct: null,
     top_actual_models: [],
   });
+  assert.deepEqual(result.artifact_review_quality, {
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    scorecard_event_count: 0,
+    avg_overall_score: null,
+    avg_visual_hierarchy_score: null,
+    avg_clarity_score: null,
+    avg_accessibility_score: null,
+    avg_consistency_score: null,
+    avg_implementation_readiness_score: null,
+    top_commands: [],
+  });
   assert.deepEqual(result.multimodal_adjusted, {
     event_count: 0,
     item_count: 0,
@@ -964,6 +977,93 @@ test("runTelemetrySummary aggregates palette-split quality metrics with legacy e
   });
   assert.match(text, /Palette split:/);
   assert.match(text, /Average quality score: 82/);
+});
+
+test("runTelemetrySummary aggregates artifact-review design scorecards safely", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(40, {
+      command: "artifact-review",
+      metadata: {
+        design_scorecard: {
+          overall_score: 80,
+          visual_hierarchy_score: 90,
+          clarity_score: 70,
+          accessibility_score: null,
+          consistency_score: 85,
+          implementation_readiness_score: 75,
+          strengths: ["private strength should not appear"],
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(41, {
+      command: "gemini-artifact-review",
+      metadata: {
+        design_scorecard: {
+          overall_score: 60,
+          visual_hierarchy_score: 80,
+          clarity_score: 80,
+          accessibility_score: null,
+          consistency_score: 80,
+          implementation_readiness_score: 70,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(42, {
+      command: "ask",
+      metadata: {
+        design_scorecard: {
+          overall_score: 1,
+          visual_hierarchy_score: 1,
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = `${JSON.stringify(summary)}\n${text}`;
+
+  assert.deepEqual(summary.artifact_review_quality, {
+    event_count: 2,
+    success_count: 2,
+    error_count: 0,
+    scorecard_event_count: 2,
+    avg_overall_score: 70,
+    avg_visual_hierarchy_score: 85,
+    avg_clarity_score: 75,
+    avg_accessibility_score: null,
+    avg_consistency_score: 82.5,
+    avg_implementation_readiness_score: 72.5,
+    top_commands: [
+      {
+        command: "artifact-review",
+        event_count: 2,
+        success_count: 2,
+        error_count: 0,
+        unknown_count: 0,
+        scorecard_event_count: 2,
+        avg_overall_score: 70,
+      },
+    ],
+  });
+  assert.match(text, /Artifact review quality:/);
+  assert.match(text, /Average overall score: 70/);
+  assert.doesNotMatch(serialized, /private strength/);
 });
 
 test("runTelemetrySummary reports correction overlays without polluting original multimodal totals", async () => {
