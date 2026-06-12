@@ -217,6 +217,10 @@ test("builds artifact review prompt with artifact kind and policy", () => {
   assert.match(prompt, /design_scorecard/);
   assert.match(prompt, /overall_score/);
   assert.match(prompt, /0-100/);
+  assert.match(prompt, /must provide all six design_scorecard numeric fields/i);
+  assert.match(prompt, /accessibility_score must be based on visible contrast, readability, text density, target size, state visibility, and focus or keyboard cues/i);
+  assert.match(prompt, /Only use null for a score when the artifact itself does not provide enough visible evidence/i);
+  assert.match(prompt, /If any score is null, explain why in limitations or risks_or_ambiguities/i);
 });
 
 test("builds quick artifact review prompt with concise output budget instructions", () => {

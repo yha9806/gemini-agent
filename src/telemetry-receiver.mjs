@@ -8,6 +8,7 @@ import {
   normalizeTelemetryReceiverAck,
   normalizeTelemetryReceiverMetrics,
 } from "./telemetry-schemas.mjs";
+import { safeTelemetryPurpose } from "./telemetry-purpose.mjs";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8787;
@@ -19,6 +20,7 @@ const PALETTE_SPLIT_COMMAND = "palette-split";
 const CORRECTION_VERSION_PATTERN = /^[A-Za-z0-9._-]{1,48}$/;
 const TOP_CORRECTION_VERSION_LIMIT = 10;
 const TOP_PALETTE_MODEL_LIMIT = 10;
+const PRODUCT_ANALYTICS_NOTE = "Product analytics exclude validation telemetry; health and delivery counts include all events.";
 
 function utcNow() {
   return new Date().toISOString();
@@ -129,6 +131,7 @@ function ensureEventColumns(db) {
     ["palette_empty_target_count", "INTEGER NOT NULL DEFAULT 0"],
     ["palette_degenerate_target_count", "INTEGER NOT NULL DEFAULT 0"],
     ["palette_foreground_area_pct", "REAL"],
+    ["telemetry_purpose", "TEXT NOT NULL DEFAULT 'production'"],
   ];
   for (const [name, definition] of requiredColumns) {
     if (!columns.has(name)) {
@@ -255,9 +258,10 @@ function insertBatch(db, batch, receivedAt, clockSkewWarning) {
         palette_mask_resized,
         palette_empty_target_count,
         palette_degenerate_target_count,
-        palette_foreground_area_pct
+        palette_foreground_area_pct,
+        telemetry_purpose
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(event_id) DO NOTHING
     `);
     let insertedEvents = 0;
@@ -285,6 +289,7 @@ function insertBatch(db, batch, receivedAt, clockSkewWarning) {
         palette.palette_empty_target_count,
         palette.palette_degenerate_target_count,
         palette.palette_foreground_area_pct,
+        safeTelemetryPurpose(event.metadata?.telemetry_purpose),
       );
       insertedEvents += Number(eventResult.changes);
     }
@@ -362,6 +367,13 @@ function currentMetrics(db) {
     ORDER BY received_at DESC, rowid DESC
     LIMIT 1
   `).get();
+  const productAnalytics = db.prepare(`
+    SELECT
+      COUNT(*) AS event_count,
+      COALESCE(SUM(CASE WHEN telemetry_purpose = 'validation' THEN 1 ELSE 0 END), 0) AS validation_event_count,
+      COALESCE(SUM(CASE WHEN telemetry_purpose != 'validation' THEN 1 ELSE 0 END), 0) AS product_adjusted_event_count
+    FROM events
+  `).get();
   const corrections = db.prepare(`
     SELECT
       COUNT(*) AS event_count,
@@ -432,6 +444,13 @@ function currentMetrics(db) {
       error: Number(totals.error),
     },
     clock_skew_warnings: Number(batches.clock_skew_warnings ?? 0),
+    product_analytics: {
+      product_adjusted: true,
+      event_count: Number(productAnalytics.event_count),
+      product_adjusted_event_count: Number(productAnalytics.product_adjusted_event_count),
+      validation_event_count: Number(productAnalytics.validation_event_count),
+      note: PRODUCT_ANALYTICS_NOTE,
+    },
     corrections: {
       event_count: Number(corrections.event_count),
       corrected_original_event_count: Number(corrections.corrected_original_event_count),
@@ -496,6 +515,12 @@ function dashboardHtml(metrics) {
 <head><meta charset="utf-8"><title>Telemetry Receiver</title></head>
 <body>
 <h1>Telemetry Receiver</h1>
+<h2>Product analytics</h2>
+<ul>
+<li>Product-adjusted events: ${metrics.product_analytics.product_adjusted_event_count} of ${metrics.product_analytics.event_count}</li>
+<li>Validation events excluded from product metrics: ${metrics.product_analytics.validation_event_count}</li>
+<li>${escapeHtml(metrics.product_analytics.note)}</li>
+</ul>
 <h2>Palette split</h2>
 <ul>
 <li>Palette split events: ${metrics.palette_split.event_count}</li>

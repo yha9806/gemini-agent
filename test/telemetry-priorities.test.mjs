@@ -176,6 +176,142 @@ test("runTelemetryPriorities ranks delivery diagnostics when queued delivery is 
   }
 });
 
+test("runTelemetryPriorities surfaces raw governance when pending raw preflight has sensitive risk", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(30, {
+        command: "artifact-review",
+        prompt: "Authorization: Bearer priority-secret\ncontact person@example.com in /Users/alice/private-project",
+        response: "call +1 (415) 555-1212",
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+      now: new Date("2026-06-10T10:00:00.000Z"),
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const rawGovernance = report.priorities.find((item) => item.kind === "raw_governance");
+
+    assert.ok(rawGovernance);
+    assert.equal(rawGovernance.severity, "high");
+    assert.match(rawGovernance.title, /Raw telemetry upload risk/);
+    assert.match(rawGovernance.action, /raw preflight/);
+    assert.equal(report.totals.raw_preflight_pending_count, 1);
+    assert.equal(report.totals.raw_preflight_selected_count, 1);
+    assert.equal(report.totals.raw_preflight_sensitive_signal_count, 4);
+    assert.ok(rawGovernance.evidence.some((item) => item === "Pending raw events/files: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Selected preflight events: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Credential-like prompt events: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Email-like prompt events: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Path-like prompt events: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Phone-like response events: 1"));
+    assert.match(text, /Raw telemetry upload risk/);
+    assert.doesNotMatch(serialized, /priority-secret|person@example\.com|Users\/alice|415|555|evt_priority_000030/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities keeps delivery ahead of raw governance when both apply", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(35, {
+        prompt: "contact person@example.com",
+        response: "safe response",
+      }),
+    });
+    const batch = await claimTelemetryBatch({
+      cwd,
+      batchSize: 1,
+      now: new Date("2026-06-10T10:00:00.000Z"),
+    });
+    await failTelemetryBatch({
+      cwd,
+      batchId: batch.batchId,
+      retryable: true,
+      reason: "receiver_error",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(36, {
+        prompt: "new pending raw risk /Users/alice/private-project",
+        response: "safe response",
+      }),
+    });
+
+    const report = await runTelemetryPriorities({ cwd, scope: "local", topLimit: 5 });
+
+    assert.equal(report.priorities[0].kind, "delivery");
+    assert.ok(report.priorities.some((item) => item.kind === "raw_governance"));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities degrades when raw preflight analysis fails", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    for (let index = 40; index <= 43; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(index, {
+          command: "diff-review",
+          status: index <= 41 ? "error" : "success",
+          error_type: index <= 41 ? "APIError" : null,
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+      rawPreflightRunner: async () => {
+        throw new Error("raw preflight failed for /Users/alice/private secret-token");
+      },
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.ok(report.priorities.some((item) => item.kind === "reliability"));
+    assert.equal(report.totals.raw_preflight_available, false);
+    assert.equal(report.totals.raw_preflight_pending_count, 0);
+    assert.equal(report.totals.raw_preflight_selected_count, 0);
+    assert.equal(report.totals.raw_preflight_sensitive_signal_count, 0);
+    assert.ok(report.limitations.some((item) => /Raw preflight analysis was unavailable/.test(item)));
+    assert.match(text, /Raw preflight risk signals: unavailable/);
+    assert.doesNotMatch(serialized, /alice|private|secret-token|raw preflight failed/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities ranks quarantined delivery diagnostics before expansion work", async () => {
   const cwd = await temporaryWorkspace();
   try {
@@ -243,6 +379,88 @@ test("runTelemetryPriorities ranks quarantined delivery diagnostics before expan
     assert.doesNotMatch(serialized, /private quarantined response/);
     assert.doesNotMatch(serialized, /secret-token/);
     assert.doesNotMatch(serialized, /Authorization: Bearer/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities flags structured response JSON envelope failures", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(45, {
+        command: "artifact-review --file /Users/example/private.png",
+        status: "error",
+        error_type: "SyntaxError",
+        response: "{\"partial\":\"private response with secret-token",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 4096,
+            response_has_json_object_envelope: false,
+            gemini_finish_reason: "MAX_TOKENS",
+          },
+          structured_response_retry: {
+            attempt: 1,
+            will_retry: true,
+            retry_reason: "MAX_TOKENS",
+            next_max_output_tokens: 4096,
+          },
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(46, {
+        command: "artifact-review",
+        response: "{\"ok\":true}",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 128,
+            response_has_json_object_envelope: true,
+            gemini_finish_reason: "STOP",
+          },
+          structured_response_retry: {
+            attempt: 2,
+            will_retry: false,
+            recovered: true,
+            retry_reason: "MAX_TOKENS",
+          },
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({ cwd, scope: "local", topLimit: 5 });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const structured = report.priorities.find((item) => item.title.includes("Structured response"));
+
+    assert.ok(structured);
+    assert.equal(structured.kind, "reliability");
+    assert.equal(structured.severity, "high");
+    assert.equal(structured.command, "artifact-review");
+    assert.match(structured.action, /budget, retry, or schema/);
+    assert.ok(structured.evidence.some((item) => item === "Structured response events: 2"));
+    assert.ok(structured.evidence.some((item) => item === "Missing JSON envelope: 1"));
+    assert.ok(structured.evidence.some((item) => item === "Missing JSON envelope rate: 50.0%"));
+    assert.ok(structured.evidence.some((item) => item === "MAX_TOKENS finish reason events: 1"));
+    assert.ok(structured.evidence.some((item) => item === "Structured JSON retries recovered: 1 of 1"));
+    assert.ok(structured.evidence.some((item) => item === "Top affected command: artifact-review missing 1 of 2 structured responses"));
+    assert.equal(report.totals.structured_response_event_count, 2);
+    assert.equal(report.totals.structured_response_missing_json_envelope_count, 1);
+    assert.equal(report.totals.structured_response_missing_json_envelope_rate, 0.5);
+    assert.equal(report.totals.structured_response_retry_event_count, 2);
+    assert.equal(report.totals.structured_response_retry_scheduled_count, 1);
+    assert.equal(report.totals.structured_response_retry_recovered_count, 1);
+    assert.equal(report.totals.structured_response_retry_recovery_rate, 1);
+    assert.match(text, /Structured response JSON envelope failures/);
+    assert.doesNotMatch(serialized, /private response|secret-token|\/Users\/example|evt_priority_000045/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -404,6 +622,63 @@ test("runTelemetryPriorities uses latency stage attribution for slow multimodal 
     assert.match(text, /pre_gemini_total p95: 250 ms/);
     assert.doesNotMatch(serialized, /private staged artifact prompt|private staged artifact response/);
     assert.doesNotMatch(serialized, /evt_priority_000100/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities uses captured Gemini generation latency stage when available", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const latencies = [10_000, 11_000, 12_000, 13_000, 14_000];
+    const generationLatencies = [9900, 10_900, 11_900, 12_900, 13_900];
+    for (const [index, latency] of latencies.entries()) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(120 + index, {
+          command: "artifact-review",
+          prompt: `private generated latency prompt ${index}`,
+          response: `private generated latency response ${index}`,
+          latency_ms: latency,
+          metadata: {
+            latency_stages_ms: {
+              gemini_generation: generationLatencies[index],
+            },
+          },
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 100,
+            total_tokens: 1100,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.priorities[0].kind, "latency");
+    assert.equal(report.priorities[0].command, "artifact-review");
+    assert.equal(
+      report.priorities[0].action,
+      "Focus on Gemini generation latency for artifact-review; captured generation stage accounts for most observed p95.",
+    );
+    assert.ok(report.priorities[0].evidence.some((item) => item === "gemini_generation p95: 13,900 ms"));
+    assert.match(text, /gemini_generation p95: 13,900 ms/);
+    assert.doesNotMatch(serialized, /private generated latency prompt|private generated latency response/);
+    assert.doesNotMatch(serialized, /evt_priority_000120/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -574,7 +849,7 @@ test("runTelemetryPriorities flags quick artifact-review depth when reliability 
           response: `private quick depth response ${index}`,
           metadata: {
             artifact_review_depth: "quick",
-            artifact_review_max_output_tokens: index >= 3 ? 768 : 2048,
+            artifact_review_max_output_tokens: 2048,
             design_scorecard: index === 4 ? undefined : {
               overall_score: 78,
               implementation_readiness_score: 72,
@@ -629,15 +904,188 @@ test("runTelemetryPriorities flags quick artifact-review depth when reliability 
     assert.ok(depthPriority);
     assert.equal(depthPriority.command, "artifact-review");
     assert.match(depthPriority.action, /Keep standard fallback/);
+    assert.match(depthPriority.action, /low sample size/i);
     assert.ok(depthPriority.evidence.some((item) => item === "Quick depth events: 5"));
-    assert.ok(depthPriority.evidence.some((item) => item === "Quick depth error rate: 20.0%"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Active quick budget cohort 2048: 5 events, 1 error"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Active quick budget cohort error rate: 20.0%"));
     assert.ok(depthPriority.evidence.some((item) => item === "Quick depth p95 latency: 9,000 ms"));
     assert.ok(depthPriority.evidence.some((item) => item === "Standard depth p95 latency: 7,002 ms"));
-    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 2048: 3 events, 0 error"));
-    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 768: 2 events, 1 error"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 2048: 5 events, 1 error"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort samples are low-confidence until each active cohort has at least 10 known outcomes"));
     assert.match(text, /quick depth/i);
     assert.doesNotMatch(serialized, /private quick depth prompt|private quick depth response/);
     assert.doesNotMatch(serialized, /evt_priority_000170/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities keeps quick budget cohort diagnostics when returned priority limit is small", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    for (let index = 0; index < 5; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(190 + index, {
+          command: "artifact-review",
+          status: index >= 3 ? "error" : "success",
+          error_type: index >= 3 ? "ParseError" : null,
+          latency_ms: 5000 + index,
+          prompt: `private quick current cohort prompt ${index}`,
+          response: `private quick current cohort response ${index}`,
+          metadata: {
+            artifact_review_depth: "quick",
+            artifact_review_max_output_tokens: 2048,
+          },
+          economics: {
+            input_tokens: 900,
+            output_tokens: 150,
+            total_tokens: 1050,
+            codex_tokens_saved_estimate: 1200,
+          },
+        }),
+      });
+    }
+    for (let index = 0; index < 2; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(200 + index, {
+          command: "artifact-review",
+          status: "error",
+          error_type: "ParseError",
+          latency_ms: 8000 + index,
+          prompt: `private quick old cohort prompt ${index}`,
+          response: `private quick old cohort response ${index}`,
+          metadata: {
+            artifact_review_depth: "quick",
+            artifact_review_max_output_tokens: 768,
+          },
+          economics: {
+            input_tokens: 900,
+            output_tokens: 150,
+            total_tokens: 1050,
+            codex_tokens_saved_estimate: 1200,
+          },
+        }),
+      });
+    }
+    for (let index = 0; index < 4; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(210 + index, {
+          command: "artifact-review",
+          latency_ms: 6000 + index,
+          metadata: {
+            artifact_review_depth: "standard",
+          },
+          economics: {
+            input_tokens: 1600,
+            output_tokens: 450,
+            total_tokens: 2050,
+            codex_tokens_saved_estimate: 1200,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 2,
+    });
+    const serialized = JSON.stringify(report);
+    const depthPriority = report.priorities.find((item) => (
+      item.kind === "multimodal"
+      && /quick depth/i.test(item.title)
+    ));
+
+    assert.equal(report.priorities.length, 2);
+    assert.ok(depthPriority);
+    assert.ok(depthPriority.evidence.some((item) => item === "Active quick budget cohort 2048: 5 events, 2 error"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Active quick budget cohort error rate: 40.0%"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Historical quick budget cohort risk: 768 at 100.0% error rate (2 events, 2 error)"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 768: 2 events, 2 error"));
+    assert.doesNotMatch(serialized, /private quick current cohort|private quick old cohort/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities does not route-block on historical quick budget cohort failures", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    for (let index = 0; index < 12; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(220 + index, {
+          command: "artifact-review",
+          status: "success",
+          latency_ms: 5000 + index,
+          metadata: {
+            artifact_review_depth: "quick",
+            artifact_review_max_output_tokens: 2048,
+            design_scorecard: {
+              overall_score: 82,
+              implementation_readiness_score: 79,
+            },
+          },
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            total_tokens: 1200,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+    for (let index = 0; index < 4; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(240 + index, {
+          command: "artifact-review",
+          status: "error",
+          error_type: "ParseError",
+          latency_ms: 9000 + index,
+          prompt: `private historical quick prompt ${index}`,
+          response: `private historical quick response ${index}`,
+          metadata: {
+            artifact_review_depth: "quick",
+            artifact_review_max_output_tokens: 768,
+          },
+          economics: {
+            input_tokens: 900,
+            output_tokens: 150,
+            total_tokens: 1050,
+            codex_tokens_saved_estimate: 1200,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 10,
+    });
+    const serialized = JSON.stringify(report);
+
+    assert.equal(report.priorities.some((item) => (
+      item.kind === "multimodal"
+      && /quick depth/i.test(item.title)
+    )), false);
+    assert.doesNotMatch(serialized, /private historical quick/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -685,6 +1133,62 @@ test("runTelemetryPriorities supports global scope, top limit, and pricing overr
   } finally {
     await rm(project, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities surfaces product-adjusted counts and ignores validation-only economics", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(31, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 10,
+          total_tokens: 110,
+          codex_tokens_saved_estimate: 120,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(32, {
+        command: "artifact-review",
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          total_tokens: 1_100_000,
+          codex_tokens_saved_estimate: 2_000_000,
+        },
+        metadata: {
+          telemetry_purpose: "validation",
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({ cwd, scope: "local", topLimit: 5 });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.totals.event_count, 2);
+    assert.equal(report.totals.product_adjusted, true);
+    assert.equal(report.totals.product_adjusted_event_count, 1);
+    assert.equal(report.totals.validation_event_count, 1);
+    assert.equal(report.totals.product_adjusted_codex_tokens_saved_estimate, 120);
+    assert.equal(report.totals.codex_tokens_saved_estimate, 2_000_120);
+    assert.equal(report.priorities.some((item) => item.kind === "economics"), false);
+    assert.match(text, /Product-adjusted events: 1 of 2/);
+    assert.match(text, /Validation events excluded from product metrics: 1/);
+    assert.doesNotMatch(serialized, /evt_priority_000031|evt_priority_000032|private priority prompt|private priority response/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 
@@ -965,7 +1469,9 @@ test("runTelemetryPriorities keeps workflow priority stable without gate input b
       workflow.action,
       "Reduce prompt size, narrow context packs, or route only the parts Gemini can handle cheaply.",
     );
-    assert.ok(workflow.evidence.some((item) => item === "Gemini tokens per estimated Codex token saved: 11"));
+    assert.ok(workflow.evidence.some((item) => (
+      item === "Product-adjusted Gemini tokens per estimated Codex token saved: 11"
+    )));
     assert.equal(workflow.evidence.some((item) => /Gate input/.test(item)), false);
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -1471,6 +1977,9 @@ test("runTelemetryPriorities recommends scorecard capture when artifact-review q
           metadata: index <= 2 ? {
             design_scorecard: {
               overall_score: 78,
+              visual_hierarchy_score: 76,
+              clarity_score: 72,
+              consistency_score: 80,
               implementation_readiness_score: 74,
               strengths: ["private coverage detail"],
             },
@@ -1492,9 +2001,11 @@ test("runTelemetryPriorities recommends scorecard capture when artifact-review q
 
     assert.equal(report.totals.artifact_review_quality_event_count, 5);
     assert.equal(report.totals.artifact_review_scorecard_coverage_rate, 0.4);
+    assert.equal(report.totals.artifact_review_scorecard_field_coverage_min, 0);
     assert.equal(multimodal.title, "Improve artifact-review design scorecard coverage.");
     assert.match(multimodal.action, /Capture numeric design scorecards/);
     assert.ok(multimodal.evidence.includes("Artifact-review scorecard coverage: 40.0%"));
+    assert.ok(multimodal.evidence.includes("Weakest scorecard field: accessibility_score 0.0% coverage (0 of 5 events)"));
     assert.doesNotMatch(serialized, /private coverage detail/);
   } finally {
     await rm(cwd, { recursive: true, force: true });

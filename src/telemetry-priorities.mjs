@@ -1,4 +1,6 @@
+import { QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS } from "./artifact-review.mjs";
 import { runTelemetryEconomics } from "./telemetry-economics.mjs";
+import { runTelemetryRawPreflight } from "./telemetry-raw-preflight.mjs";
 import { runTelemetrySummary } from "./telemetry-summary.mjs";
 
 function assertPositiveInteger(value, name) {
@@ -103,7 +105,32 @@ function latencyStageForCommand(summary, stage, command) {
   };
 }
 
+function geminiGenerationLatencyContext(summary, candidate, p95) {
+  const generation = latencyStageForCommand(summary, "gemini_generation", candidate.command);
+  if (!generation || p95 <= 0) return null;
+  if (nonnegativeMetric(generation.command.event_count) < MIN_LATENCY_STAGE_EVENTS) return null;
+  const generationP95 = nonnegativeMetric(generation.command.p95_ms);
+  if (generationP95 <= 0) return null;
+  const share = nullableRatio(generationP95, p95, 4);
+  const evidence = [`gemini_generation p95: ${formatNumber(generationP95)} ms`];
+  if (share !== null) {
+    evidence.push(`gemini_generation share of p95 latency: ${formatPercent(share)}`);
+  }
+  if (share !== null && share >= 0.8) {
+    return {
+      action: `Focus on Gemini generation latency for ${candidate.command}; captured generation stage accounts for most observed p95.`,
+      evidence,
+    };
+  }
+  return {
+    action: `Profile ${candidate.command} latency stages before routing more Codex work through this path.`,
+    evidence,
+  };
+}
+
 function latencyStageContext(summary, candidate, p95) {
+  const generationContext = geminiGenerationLatencyContext(summary, candidate, p95);
+  if (generationContext) return generationContext;
   const preGemini = latencyStageForCommand(summary, "pre_gemini_total", candidate.command);
   if (!preGemini || p95 <= 0) {
     return {
@@ -260,6 +287,77 @@ function deliveryPriority(summary) {
   });
 }
 
+function rawPreflightRiskSignalCount(rawPreflight) {
+  const risk = rawPreflight?.risk ?? {};
+  return [
+    "credential_like_prompt_events",
+    "credential_like_response_events",
+    "email_like_prompt_events",
+    "email_like_response_events",
+    "path_like_prompt_events",
+    "path_like_response_events",
+    "phone_like_prompt_events",
+    "phone_like_response_events",
+  ].reduce((total, key) => total + nonnegativeMetric(risk[key]), 0);
+}
+
+async function runRawPreflightSafely({ runner = runTelemetryRawPreflight, ...options }) {
+  try {
+    const report = await runner(options);
+    if (!report || typeof report !== "object") {
+      return { available: false, report: null };
+    }
+    return { available: true, report };
+  } catch {
+    return { available: false, report: null };
+  }
+}
+
+function rawPreflightEvidenceItem(risk, key, label) {
+  const value = nonnegativeMetric(risk?.[key]);
+  return value > 0 ? [`${label}: ${formatNumber(value)}`] : [];
+}
+
+function rawGovernancePriority(rawPreflight) {
+  const pending = nonnegativeMetric(rawPreflight?.pending?.total_count);
+  const selected = nonnegativeMetric(rawPreflight?.batch?.would_send_count);
+  if (!rawPreflight || pending <= 0 || selected <= 0) return null;
+  const risk = rawPreflight.risk ?? {};
+  const signalCount = rawPreflightRiskSignalCount(rawPreflight);
+  const credentialSignals = (
+    nonnegativeMetric(risk.credential_like_prompt_events)
+    + nonnegativeMetric(risk.credential_like_response_events)
+  );
+  const truncatedScans = (
+    nonnegativeMetric(risk.credential_scan_truncated_events)
+    + nonnegativeMetric(risk.sensitive_scan_truncated_events)
+  );
+  if (signalCount <= 0 && truncatedScans <= 0) return null;
+  const severity = credentialSignals > 0 || signalCount >= 3 ? "high" : "medium";
+  return priority({
+    kind: "raw_governance",
+    severity,
+    score: severity === "high" ? 93 : 86,
+    title: "Raw telemetry upload risk needs governance before broad flushing.",
+    action: "Run telemetry raw preflight --json, review aggregate risk counts, then use local raw reveal/export/delete/prune workflows before broad flushes when sensitive categories are present.",
+    evidence: [
+      `Pending raw events/files: ${formatNumber(pending)}`,
+      `Selected preflight events: ${formatNumber(selected)}`,
+      `Sensitive risk signals: ${formatNumber(signalCount)}`,
+      ...rawPreflightEvidenceItem(risk, "credential_like_prompt_events", "Credential-like prompt events"),
+      ...rawPreflightEvidenceItem(risk, "credential_like_response_events", "Credential-like response events"),
+      ...rawPreflightEvidenceItem(risk, "email_like_prompt_events", "Email-like prompt events"),
+      ...rawPreflightEvidenceItem(risk, "email_like_response_events", "Email-like response events"),
+      ...rawPreflightEvidenceItem(risk, "path_like_prompt_events", "Path-like prompt events"),
+      ...rawPreflightEvidenceItem(risk, "path_like_response_events", "Path-like response events"),
+      ...rawPreflightEvidenceItem(risk, "phone_like_prompt_events", "Phone-like prompt events"),
+      ...rawPreflightEvidenceItem(risk, "phone_like_response_events", "Phone-like response events"),
+      ...rawPreflightEvidenceItem(risk, "credential_scan_truncated_events", "Credential scan truncated events"),
+      ...rawPreflightEvidenceItem(risk, "sensitive_scan_truncated_events", "Sensitive scan truncated events"),
+    ],
+  });
+}
+
 function latencyPriority(summary) {
   const candidate = summary.latency?.top_commands?.find((item) => (
     nonnegativeMetric(item.event_count) >= 5
@@ -283,6 +381,75 @@ function latencyPriority(summary) {
       `Latency events: ${formatNumber(nonnegativeMetric(candidate.event_count))}`,
       ...stageContext.evidence,
     ],
+  });
+}
+
+function structuredResponseFinishReasonCount(summary, reason) {
+  const rows = Array.isArray(summary.structured_response?.top_finish_reasons)
+    ? summary.structured_response.top_finish_reasons
+    : [];
+  const row = rows.find((item) => item?.gemini_finish_reason === reason);
+  return nonnegativeMetric(row?.event_count);
+}
+
+function topStructuredResponseMissingCommand(summary) {
+  const rows = Array.isArray(summary.structured_response?.top_commands)
+    ? summary.structured_response.top_commands
+    : [];
+  return rows
+    .filter((item) => nonnegativeMetric(item?.missing_json_envelope_count) > 0)
+    .sort((left, right) => (
+      nonnegativeMetric(right.missing_json_envelope_count) - nonnegativeMetric(left.missing_json_envelope_count)
+      || nonnegativeMetric(right.event_count) - nonnegativeMetric(left.event_count)
+      || `${left.command ?? "unknown"}`.localeCompare(`${right.command ?? "unknown"}`)
+    ))[0] ?? null;
+}
+
+function structuredResponsePriority(summary) {
+  const structured = summary.structured_response ?? {};
+  const eventCount = nonnegativeMetric(structured.event_count);
+  const missingCount = nonnegativeMetric(structured.missing_json_envelope_count);
+  if (eventCount <= 0 || missingCount <= 0) return null;
+  const missingRate = nullableRatio(missingCount, eventCount, 4);
+  const maxTokensCount = structuredResponseFinishReasonCount(summary, "MAX_TOKENS");
+  const retryScheduledCount = nonnegativeMetric(structured.retry_scheduled_count);
+  const retryRecoveredCount = nonnegativeMetric(structured.retry_recovered_count);
+  const retryRecoveryRate = retryScheduledCount > 0
+    ? Math.min(1, nullableRatio(retryRecoveredCount, retryScheduledCount, 4))
+    : null;
+  const topCommand = topStructuredResponseMissingCommand(summary);
+  const command = typeof topCommand?.command === "string" && topCommand.command !== "unknown"
+    ? topCommand.command
+    : null;
+  const severity = maxTokensCount > 0 || (missingRate !== null && missingRate >= 0.1)
+    ? "high"
+    : "medium";
+  const action = maxTokensCount > 0
+    ? `Tune output budget, retry, or schema constraints for ${command ?? "the affected structured route"} before expanding structured multimodal routing.`
+    : `Inspect structured parser and prompt constraints for ${command ?? "the affected structured route"} before expanding automation.`;
+  const evidence = [
+    `Structured response events: ${formatNumber(eventCount)}`,
+    `Missing JSON envelope: ${formatNumber(missingCount)}`,
+    `Missing JSON envelope rate: ${formatPercent(missingRate)}`,
+  ];
+  if (maxTokensCount > 0) {
+    evidence.push(`MAX_TOKENS finish reason events: ${formatNumber(maxTokensCount)}`);
+  }
+  if (retryScheduledCount > 0 || retryRecoveredCount > 0) {
+    evidence.push(`Structured JSON retries recovered: ${formatNumber(retryRecoveredCount)} of ${formatNumber(retryScheduledCount)}`);
+    evidence.push(`Structured JSON retry recovery rate: ${formatPercent(retryRecoveryRate)}`);
+  }
+  if (topCommand) {
+    evidence.push(`Top affected command: ${topCommand.command ?? "unknown"} missing ${formatNumber(nonnegativeMetric(topCommand.missing_json_envelope_count))} of ${formatNumber(nonnegativeMetric(topCommand.event_count))} structured responses`);
+  }
+  return priority({
+    kind: "reliability",
+    severity,
+    score: maxTokensCount > 0 ? 151 : 91,
+    title: "Structured response JSON envelope failures need routing fixes.",
+    action,
+    command,
+    evidence,
   });
 }
 
@@ -403,9 +570,12 @@ function instrumentationPriority(summary, economics, multimodalCoverage, multimo
 }
 
 function economicsPriority(economics) {
-  const candidate = economics.top_commands.find((item) => (
-    item.codex_tokens_saved_estimate >= 1_000_000
-    && item.gemini_estimated_cost_usd <= 10
+  const rows = economics.product_adjusted_top_commands?.length
+    ? economics.product_adjusted_top_commands
+    : economics.top_commands;
+  const candidate = rows.find((item) => (
+    item.product_adjusted_codex_tokens_saved_estimate >= 1_000_000
+    && item.product_adjusted_gemini_estimated_cost_usd <= 10
     && (item.success_rate ?? 0) >= 0.8
   ));
   if (!candidate) return null;
@@ -417,8 +587,8 @@ function economicsPriority(economics) {
     action: "Keep this route active and build product affordances that make it easier to call intentionally.",
     command: candidate.command,
     evidence: [
-      `Estimated Codex tokens saved: ${formatNumber(candidate.codex_tokens_saved_estimate)}`,
-      `Estimated Gemini cost: ${formatUsd(candidate.gemini_estimated_cost_usd)}`,
+      `Product-adjusted Codex tokens saved: ${formatNumber(candidate.product_adjusted_codex_tokens_saved_estimate)}`,
+      `Product-adjusted Gemini cost: ${formatUsd(candidate.product_adjusted_gemini_estimated_cost_usd)}`,
       `Success rate: ${formatPercent(candidate.success_rate)}`,
     ],
   });
@@ -442,10 +612,13 @@ function gateInputForCommand(economics, command) {
 }
 
 function workflowPriority(economics) {
-  const candidate = economics.top_commands.find((item) => (
-    item.codex_tokens_saved_estimate > 0
-    && item.gemini_tokens_per_codex_token_saved !== null
-    && item.gemini_tokens_per_codex_token_saved > 2
+  const rows = economics.product_adjusted_top_commands?.length
+    ? economics.product_adjusted_top_commands
+    : economics.top_commands;
+  const candidate = rows.find((item) => (
+    item.product_adjusted_codex_tokens_saved_estimate > 0
+    && item.product_adjusted_gemini_tokens_per_codex_token_saved !== null
+    && item.product_adjusted_gemini_tokens_per_codex_token_saved > 2
   ));
   if (!candidate) return null;
   const gateInput = gateInputForCommand(economics, candidate.command);
@@ -467,8 +640,8 @@ function workflowPriority(economics) {
       : "Reduce prompt size, narrow context packs, or route only the parts Gemini can handle cheaply.",
     command: candidate.command,
     evidence: [
-      `Gemini tokens per estimated Codex token saved: ${candidate.gemini_tokens_per_codex_token_saved}`,
-      `Estimated Codex tokens saved: ${formatNumber(candidate.codex_tokens_saved_estimate)}`,
+      `Product-adjusted Gemini tokens per estimated Codex token saved: ${candidate.product_adjusted_gemini_tokens_per_codex_token_saved}`,
+      `Product-adjusted Codex tokens saved: ${formatNumber(candidate.product_adjusted_codex_tokens_saved_estimate)}`,
       ...gateInputEvidence,
     ],
   });
@@ -482,6 +655,40 @@ function artifactReviewScorecardCoverage(summary) {
     nonnegativeMetric(quality.event_count),
     4,
   );
+}
+
+function scorecardFieldCoverageRows(summary) {
+  const rows = summary.artifact_review_quality?.scorecard_field_coverage;
+  return Array.isArray(rows) ? rows : [];
+}
+
+function scorecardFieldCoverageMin(summary) {
+  const rows = scorecardFieldCoverageRows(summary)
+    .map((item) => nullableMetricRatio(item?.coverage_rate))
+    .filter((item) => item !== null);
+  if (rows.length === 0) return null;
+  return Math.min(...rows);
+}
+
+function weakestScorecardFieldEvidence(summary) {
+  const rows = scorecardFieldCoverageRows(summary)
+    .map((item) => ({
+      field: typeof item?.field === "string" && item.field.trim() ? item.field : null,
+      coverage: nullableMetricRatio(item?.coverage_rate),
+      scoredEvents: nonnegativeMetric(item?.scored_event_count),
+      events: nonnegativeMetric(item?.event_count),
+    }))
+    .filter((item) => item.field && item.coverage !== null && item.events > 0)
+    .sort((left, right) => (
+      left.coverage - right.coverage
+      || left.scoredEvents - right.scoredEvents
+      || left.field.localeCompare(right.field)
+    ));
+  const weakest = rows[0];
+  if (!weakest) return [];
+  return [
+    `Weakest scorecard field: ${weakest.field} ${formatPercent(weakest.coverage)} coverage (${formatNumber(weakest.scoredEvents)} of ${formatNumber(weakest.events)} events)`,
+  ];
 }
 
 function topArtifactReviewQualityCommand(summary) {
@@ -552,6 +759,7 @@ function multimodalPriority(summary, multimodalCoverage) {
         `Artifact-review quality events: ${formatNumber(qualityEventCount)}`,
         `Scorecard events: ${formatNumber(scorecardEventCount)}`,
         `Artifact-review scorecard coverage: ${formatPercent(scorecardCoverage)}`,
+        ...weakestScorecardFieldEvidence(summary),
       ],
     });
   }
@@ -593,6 +801,9 @@ function multimodalPriority(summary, multimodalCoverage) {
 
 const QUICK_DEPTH_MIN_EVENTS = 5;
 const QUICK_DEPTH_MAX_ERROR_RATE = 0.2;
+const QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES = 10;
+const ACTIVE_QUICK_BUDGET_COHORT = String(QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS);
+const PRIORITY_ANALYSIS_TOP_LIMIT = 50;
 
 function artifactReviewDepthRow(summary, depth) {
   const rows = Array.isArray(summary.artifact_review_depths?.top_depths)
@@ -622,23 +833,90 @@ function artifactReviewBudgetCohortEvidence(summary, depth, label, limit = 3) {
     ));
 }
 
+function activeArtifactReviewBudgetCohort(summary, depth) {
+  return artifactReviewBudgetCohorts(summary, depth)
+    .find((item) => `${item.max_output_tokens ?? item.budget_cohort ?? ""}` === ACTIVE_QUICK_BUDGET_COHORT)
+    ?? null;
+}
+
+function knownOutcomeCount(row) {
+  return nonnegativeMetric(row?.success_count) + nonnegativeMetric(row?.error_count);
+}
+
 function knownErrorRate(row) {
   if (!row) return null;
-  return nullableRatio(nonnegativeMetric(row.error_count), (
-    nonnegativeMetric(row.success_count) + nonnegativeMetric(row.error_count)
-  ), 4);
+  return nullableRatio(nonnegativeMetric(row.error_count), knownOutcomeCount(row), 4);
+}
+
+function worstArtifactReviewBudgetCohortEvidence(summary, depth) {
+  const worst = artifactReviewBudgetCohorts(summary, depth)
+    .map((item) => ({
+      item,
+      knownOutcomes: knownOutcomeCount(item),
+      errorRate: knownErrorRate(item),
+    }))
+    .filter((item) => item.knownOutcomes > 0 && item.errorRate !== null)
+    .sort((left, right) => (
+      right.errorRate - left.errorRate
+      || nonnegativeMetric(right.item.error_count) - nonnegativeMetric(left.item.error_count)
+      || right.knownOutcomes - left.knownOutcomes
+      || `${left.item.budget_cohort ?? "unknown"}`.localeCompare(`${right.item.budget_cohort ?? "unknown"}`)
+    ))[0] ?? null;
+  if (!worst) return null;
+  return `Worst ${depth} budget cohort: ${worst.item.budget_cohort ?? "unknown"} at ${formatPercent(worst.errorRate)} error rate (${formatNumber(worst.knownOutcomes)} events, ${formatNumber(nonnegativeMetric(worst.item.error_count))} error)`;
+}
+
+function riskyHistoricalArtifactReviewBudgetCohortEvidence(summary, depth, active) {
+  const risky = artifactReviewBudgetCohorts(summary, depth)
+    .map((item) => ({
+      item,
+      knownOutcomes: knownOutcomeCount(item),
+      errorRate: knownErrorRate(item),
+    }))
+    .filter((item) => (
+      item.item.budget_cohort !== active?.budget_cohort
+      && item.knownOutcomes > 0
+      && item.errorRate !== null
+      && nonnegativeMetric(item.item.error_count) >= 2
+      && item.errorRate >= 0.5
+    ))
+    .sort((left, right) => (
+      right.errorRate - left.errorRate
+      || nonnegativeMetric(right.item.error_count) - nonnegativeMetric(left.item.error_count)
+      || right.knownOutcomes - left.knownOutcomes
+      || `${left.item.budget_cohort ?? "unknown"}`.localeCompare(`${right.item.budget_cohort ?? "unknown"}`)
+    ))[0] ?? null;
+  if (!risky) return null;
+  return `Historical ${depth} budget cohort risk: ${risky.item.budget_cohort ?? "unknown"} at ${formatPercent(risky.errorRate)} error rate (${formatNumber(risky.knownOutcomes)} events, ${formatNumber(nonnegativeMetric(risky.item.error_count))} error)`;
+}
+
+function hasLowConfidenceBudgetCohort(summary, depth) {
+  const active = activeArtifactReviewBudgetCohort(summary, depth);
+  const rows = active ? [active] : artifactReviewBudgetCohorts(summary, depth);
+  return rows.some((item) => {
+    const outcomes = knownOutcomeCount(item);
+    return outcomes > 0 && outcomes < QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES;
+  });
 }
 
 function artifactReviewDepthPriority(summary) {
   const quick = artifactReviewDepthRow(summary, "quick");
   if (!quick || nonnegativeMetric(quick.event_count) < QUICK_DEPTH_MIN_EVENTS) return null;
-  const quickErrorRate = knownErrorRate(quick);
+  const activeQuickCohort = activeArtifactReviewBudgetCohort(summary, "quick");
+  const routingRow = activeQuickCohort ?? quick;
+  if (nonnegativeMetric(routingRow.event_count) < QUICK_DEPTH_MIN_EVENTS) return null;
+  const quickErrorRate = knownErrorRate(routingRow);
   if (quickErrorRate === null || quickErrorRate < QUICK_DEPTH_MAX_ERROR_RATE) return null;
   const standard = artifactReviewDepthRow(summary, "standard");
   const evidence = [
     `Quick depth events: ${formatNumber(nonnegativeMetric(quick.event_count))}`,
-    `Quick depth error rate: ${formatPercent(quickErrorRate)}`,
+    activeQuickCohort
+      ? `Active quick budget cohort ${activeQuickCohort.budget_cohort ?? "unknown"}: ${formatNumber(nonnegativeMetric(activeQuickCohort.event_count))} events, ${formatNumber(nonnegativeMetric(activeQuickCohort.error_count))} error`
+      : `Quick depth error rate: ${formatPercent(quickErrorRate)}`,
   ];
+  if (activeQuickCohort) {
+    evidence.push(`Active quick budget cohort error rate: ${formatPercent(quickErrorRate)}`);
+  }
   if (quick.p95_latency_ms !== null) {
     evidence.push(`Quick depth p95 latency: ${formatNumber(nonnegativeMetric(quick.p95_latency_ms))} ms`);
   }
@@ -649,24 +927,33 @@ function artifactReviewDepthPriority(summary) {
     evidence.push(`Quick depth total tokens: ${formatNumber(nonnegativeMetric(quick.total_tokens))}`);
   }
   evidence.push(...artifactReviewBudgetCohortEvidence(summary, "quick", "Quick"));
+  const worstQuickCohort = activeQuickCohort
+    ? riskyHistoricalArtifactReviewBudgetCohortEvidence(summary, "quick", activeQuickCohort)
+    : worstArtifactReviewBudgetCohortEvidence(summary, "quick");
+  if (worstQuickCohort) evidence.push(worstQuickCohort);
+  if (hasLowConfidenceBudgetCohort(summary, "quick")) {
+    evidence.push(`Quick budget cohort samples are low-confidence until each active cohort has at least ${formatNumber(QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES)} known outcomes`);
+  }
   return priority({
     kind: "multimodal",
     severity: "medium",
     score: 87,
     title: "Validate artifact-review quick depth before wider routing.",
-    action: "Compare quick vs standard on success rate, p95 latency, token usage, and scorecards. Keep standard fallback until quick depth error rate is clearly lower.",
+    action: "Compare quick vs standard on success rate, p95 latency, token usage, scorecards, and budget cohorts. Keep standard fallback; treat quick-depth cohort comparisons as low sample size until current quick routing has enough clean outcomes.",
     command: "artifact-review",
     evidence,
   });
 }
 
-export function buildPriorities({ summary, economics }) {
+export function buildPriorities({ summary, economics, rawPreflight = null }) {
   const errorRate = statusErrorRate(summary);
   const multimodalAggregate = summary.multimodal_adjusted ?? summary.multimodal;
   const multimodal = mediaCoverage(multimodalAggregate);
   const rows = [
     reliabilityPriority(summary, errorRate),
     deliveryPriority(summary),
+    rawGovernancePriority(rawPreflight),
+    structuredResponsePriority(summary),
     latencyPriority(summary),
     instrumentationPriority(summary, economics, multimodal, multimodalAggregate),
     economicsPriority(economics),
@@ -693,6 +980,7 @@ export async function runTelemetryPriorities({
   topLimit = 10,
   inputPricePerMillion,
   outputPricePerMillion,
+  rawPreflightRunner = runTelemetryRawPreflight,
 } = {}) {
   assertPositiveInteger(topLimit, "topLimit");
   if (inputPricePerMillion !== undefined) {
@@ -702,26 +990,50 @@ export async function runTelemetryPriorities({
     assertNonnegativeNumber(outputPricePerMillion, "outputPricePerMillion");
   }
 
-  const [summary, economics] = await Promise.all([
+  const analysisTopLimit = Math.max(topLimit, PRIORITY_ANALYSIS_TOP_LIMIT);
+  const [summary, economics, rawPreflightResult] = await Promise.all([
     runTelemetrySummary({
       cwd,
       home,
       scope,
       now,
-      topLimit,
+      topLimit: analysisTopLimit,
     }),
     runTelemetryEconomics({
       cwd,
       home,
       scope,
       now,
-      topLimit,
+      topLimit: analysisTopLimit,
       inputPricePerMillion,
       outputPricePerMillion,
     }),
+    runRawPreflightSafely({
+      runner: rawPreflightRunner,
+      cwd,
+      home,
+      scope,
+      now,
+      batchSize: analysisTopLimit,
+    }),
   ]);
+  const rawPreflight = rawPreflightResult.report;
+  const rawPreflightAvailable = rawPreflightResult.available;
   const multimodal = mediaCoverage(summary.multimodal_adjusted ?? summary.multimodal);
-  const priorities = buildPriorities({ summary, economics }).slice(0, topLimit);
+  const priorities = buildPriorities({ summary, economics, rawPreflight }).slice(0, topLimit);
+  const telemetryPurpose = summary.telemetry_purpose ?? {
+    event_count: summary.event_counts.total,
+    product_adjusted_event_count: summary.event_counts.total,
+    validation_event_count: 0,
+  };
+  const limitations = [
+    "Priorities are aggregate local telemetry heuristics, not a replacement for release-blocking tests or user research.",
+    "Gemini cost and Codex token savings are estimates from captured usage metadata.",
+    "No raw prompt, response text, event ids, batch ids, media file names, or per-event records are included.",
+  ];
+  if (!rawPreflightAvailable) {
+    limitations.push("Raw preflight analysis was unavailable; raw governance priorities may be missing.");
+  }
 
   return {
     scope: summary.scope,
@@ -730,12 +1042,23 @@ export async function runTelemetryPriorities({
     pricing: economics.pricing,
     totals: {
       event_count: summary.event_counts.total,
+      product_adjusted: true,
+      product_adjusted_event_count: telemetryPurpose.product_adjusted_event_count,
+      validation_event_count: telemetryPurpose.validation_event_count,
       success_count: summary.status_counts.success_count,
       error_count: summary.status_counts.error_count,
       error_rate: statusErrorRate(summary),
       pending_count: summary.event_counts.pending,
       failed_count: summary.event_counts.failed,
       quarantine_count: summary.event_counts.quarantine,
+      raw_preflight_available: rawPreflightAvailable,
+      raw_preflight_pending_count: nonnegativeMetric(rawPreflight?.pending?.total_count),
+      raw_preflight_selected_count: nonnegativeMetric(rawPreflight?.batch?.would_send_count),
+      raw_preflight_sensitive_signal_count: rawPreflightRiskSignalCount(rawPreflight),
+      raw_preflight_sensitive_scan_truncated_count: (
+        nonnegativeMetric(rawPreflight?.risk?.credential_scan_truncated_events)
+        + nonnegativeMetric(rawPreflight?.risk?.sensitive_scan_truncated_events)
+      ),
       latency_p95_ms: summary.latency?.p95_ms ?? null,
       usage_coverage_rate: usageCoverage(economics),
       usage_applicable_coverage_rate: usageApplicableCoverage(economics),
@@ -747,18 +1070,38 @@ export async function runTelemetryPriorities({
       artifact_review_quality_event_count: summary.artifact_review_quality?.event_count ?? 0,
       artifact_review_scorecard_event_count: summary.artifact_review_quality?.scorecard_event_count ?? 0,
       artifact_review_scorecard_coverage_rate: artifactReviewScorecardCoverage(summary),
+      artifact_review_scorecard_field_coverage_min: scorecardFieldCoverageMin(summary),
       artifact_review_avg_overall_score: summary.artifact_review_quality?.avg_overall_score ?? null,
       artifact_review_depth_event_count: summary.artifact_review_depths?.event_count ?? 0,
       artifact_review_known_depth_event_count: summary.artifact_review_depths?.known_depth_event_count ?? 0,
+      structured_response_event_count: summary.structured_response?.event_count ?? 0,
+      structured_response_missing_json_envelope_count: (
+        summary.structured_response?.missing_json_envelope_count ?? 0
+      ),
+      structured_response_missing_json_envelope_rate: nullableRatio(
+        summary.structured_response?.missing_json_envelope_count ?? 0,
+        summary.structured_response?.event_count ?? 0,
+        4,
+      ),
+      structured_response_retry_event_count: summary.structured_response?.retry_event_count ?? 0,
+      structured_response_retry_scheduled_count: summary.structured_response?.retry_scheduled_count ?? 0,
+      structured_response_retry_recovered_count: summary.structured_response?.retry_recovered_count ?? 0,
+      structured_response_retry_recovery_rate: (() => {
+        const scheduled = summary.structured_response?.retry_scheduled_count ?? 0;
+        const recovered = summary.structured_response?.retry_recovered_count ?? 0;
+        return scheduled > 0 ? Math.min(1, nullableRatio(recovered, scheduled, 4)) : null;
+      })(),
       gemini_estimated_cost_usd: economics.totals.gemini_estimated_cost_usd,
       codex_tokens_saved_estimate: economics.totals.codex_tokens_saved_estimate,
+      product_adjusted_gemini_estimated_cost_usd: (
+        economics.totals.product_adjusted_gemini_estimated_cost_usd
+      ),
+      product_adjusted_codex_tokens_saved_estimate: (
+        economics.totals.product_adjusted_codex_tokens_saved_estimate
+      ),
     },
     priorities,
-    limitations: [
-      "Priorities are aggregate local telemetry heuristics, not a replacement for release-blocking tests or user research.",
-      "Gemini cost and Codex token savings are estimates from captured usage metadata.",
-      "No raw prompt, response text, event ids, batch ids, media file names, or per-event records are included.",
-    ],
+    limitations,
   };
 }
 
@@ -772,12 +1115,18 @@ function formatPriorityRows(rows) {
 }
 
 export function formatTelemetryPrioritiesText(report) {
+  const rawPreflightLine = report.totals.raw_preflight_available === false
+    ? "Raw preflight risk signals: unavailable"
+    : `Raw preflight risk signals: ${formatNumber(report.totals.raw_preflight_sensitive_signal_count ?? 0)} across ${formatNumber(report.totals.raw_preflight_selected_count ?? 0)} selected pending events`;
   return [
     "Telemetry Development Priorities",
     "",
     `Scope: ${report.scope}`,
     `Storage: ${report.storage_cwd}`,
     `Events: ${formatNumber(report.totals.event_count)} total, ${formatPercent(report.totals.error_rate)} error rate, ${formatNumber(report.totals.pending_count)} pending, ${formatNumber(report.totals.failed_count)} failed, ${formatNumber(report.totals.quarantine_count ?? 0)} quarantined`,
+    rawPreflightLine,
+    `Product-adjusted events: ${formatNumber(report.totals.product_adjusted_event_count ?? report.totals.event_count)} of ${formatNumber(report.totals.event_count)}`,
+    `Validation events excluded from product metrics: ${formatNumber(report.totals.validation_event_count ?? 0)}`,
     `Latency p95: ${report.totals.latency_p95_ms == null ? "n/a" : `${formatNumber(report.totals.latency_p95_ms)} ms`}`,
     `Usage coverage: ${formatPercent(report.totals.usage_coverage_rate)}`,
     `Usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_coverage_rate)}`,
@@ -785,6 +1134,8 @@ export function formatTelemetryPrioritiesText(report) {
     `Suspected test fixture events: ${formatNumber(report.totals.suspected_test_fixture_event_count)}`,
     `Estimated Gemini cost: ${formatUsd(report.totals.gemini_estimated_cost_usd)}`,
     `Estimated Codex tokens saved: ${formatNumber(report.totals.codex_tokens_saved_estimate)}`,
+    `Product-adjusted Gemini cost: ${formatUsd(report.totals.product_adjusted_gemini_estimated_cost_usd ?? 0)}`,
+    `Product-adjusted Codex tokens saved: ${formatNumber(report.totals.product_adjusted_codex_tokens_saved_estimate ?? 0)}`,
     "",
     "Priorities:",
     formatPriorityRows(report.priorities),

@@ -6,6 +6,7 @@ import test from "node:test";
 import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
 import { appendTelemetryEvent } from "../src/telemetry-queue.mjs";
 import {
+  buildStructuredResponseReport,
   formatTelemetryReportText,
   runTelemetryReport,
 } from "../src/telemetry-report.mjs";
@@ -237,6 +238,216 @@ test("runTelemetryReport handles empty telemetry without unsafe claims", async (
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+test("runTelemetryReport exposes product-adjusted analytics when validation events are present", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(5, {
+        command: "artifact-review",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", byte_size: 100, media_kind: "screenshot" }],
+        },
+        metadata: {
+          telemetry_purpose: "production",
+          design_scorecard: {
+            overall_score: 82,
+            implementation_readiness_score: 80,
+          },
+        },
+        economics: {
+          input_tokens: 1000,
+          output_tokens: 100,
+          total_tokens: 1100,
+          codex_tokens_saved_estimate: 1200,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(6, {
+        command: "artifact-review",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", byte_size: 100, media_kind: "screenshot" }],
+        },
+        metadata: {
+          telemetry_purpose: "validation",
+          design_scorecard: {
+            overall_score: 99,
+            implementation_readiness_score: 99,
+          },
+        },
+        economics: {
+          input_tokens: 9000,
+          output_tokens: 900,
+          total_tokens: 9900,
+          codex_tokens_saved_estimate: 10_000,
+        },
+      }),
+    });
+
+    const report = await runTelemetryReport({ cwd, scope: "local" });
+    const text = formatTelemetryReportText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.health.event_count, 2);
+    assert.deepEqual(report.product_analytics, {
+      product_adjusted: true,
+      event_count: 2,
+      product_adjusted_event_count: 1,
+      validation_event_count: 1,
+      note: "Product analytics exclude validation telemetry; health and delivery counts include all events.",
+    });
+    assert.equal(report.multimodal.event_count, 1);
+    assert.equal(report.artifact_review_quality.event_count, 1);
+    assert.equal(report.artifact_review_quality.avg_overall_score, 82);
+    assert.equal(report.economics.codex_tokens_saved_estimate, 11_200);
+    assert.equal(report.economics.product_adjusted_codex_tokens_saved_estimate, 1200);
+    assert.equal(report.economics.product_adjusted_gemini_estimated_cost_usd, 0.0024);
+    assert.equal(report.economics.usage_applicable_adjusted_coverage_rate, 1);
+    assert.match(text, /Product analytics/);
+    assert.match(text, /Product-adjusted events: 1 of 2/);
+    assert.match(text, /Validation events excluded from product metrics: 1/);
+    assert.doesNotMatch(serialized, /evt_report_000005|evt_report_000006|private report prompt|private report response/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryReport exposes aggregate structured response diagnostics safely", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(7, {
+        command: "artifact-review --file /Users/example/private.png",
+        status: "error",
+        error_type: "SyntaxError",
+        response: "{\"partial\":\"private report response with secret-token",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 4096,
+            response_has_json_object_envelope: false,
+            gemini_finish_reason: "MAX_TOKENS",
+          },
+          structured_response_retry: {
+            attempt: 1,
+            will_retry: true,
+            retry_reason: "MAX_TOKENS",
+            next_max_output_tokens: 4096,
+          },
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(8, {
+        command: "artifact-review",
+        response: "{\"ok\":true}",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 128,
+            response_has_json_object_envelope: true,
+            gemini_finish_reason: "STOP",
+          },
+          structured_response_retry: {
+            attempt: 2,
+            will_retry: false,
+            recovered: true,
+            retry_reason: "MAX_TOKENS",
+          },
+        },
+      }),
+    });
+
+    const report = await runTelemetryReport({ cwd, scope: "local", topLimit: 5 });
+    const text = formatTelemetryReportText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.deepEqual(report.structured_response, {
+      event_count: 2,
+      missing_json_envelope_count: 1,
+      missing_json_envelope_rate: 0.5,
+      retry_event_count: 2,
+      retry_scheduled_count: 1,
+      retry_recovered_count: 1,
+      retry_recovery_rate: 1,
+      max_retry_next_max_output_tokens: 4096,
+      avg_response_text_bytes: 2112,
+      max_response_text_bytes: 4096,
+      top_finish_reason: {
+        gemini_finish_reason: "MAX_TOKENS",
+        event_count: 1,
+      },
+      top_command: {
+        command: "artifact-review",
+        event_count: 2,
+        missing_json_envelope_count: 1,
+        avg_response_text_bytes: 2112,
+        max_response_text_bytes: 4096,
+      },
+      top_retry_reason: {
+        retry_reason: "MAX_TOKENS",
+        event_count: 2,
+      },
+      top_retry_command: {
+        command: "artifact-review",
+        retry_event_count: 2,
+        retry_scheduled_count: 1,
+        retry_recovered_count: 1,
+        max_retry_next_max_output_tokens: 4096,
+      },
+    });
+    assert.equal(report.priorities[0].kind, "reliability");
+    assert.match(report.priorities[0].title, /Structured response JSON envelope failures/);
+    assert.match(text, /Structured responses/);
+    assert.match(text, /Missing JSON envelope: 1/);
+    assert.match(text, /Structured JSON retries recovered: 1 of 1 \(100\.0%\)/);
+    assert.match(text, /Top retry reason: MAX_TOKENS/);
+    assert.match(text, /Top retry command: artifact-review/);
+    assert.match(text, /Top finish reason: MAX_TOKENS/);
+    assert.match(text, /Top structured command: artifact-review/);
+    assert.doesNotMatch(serialized, /private report response|secret-token|\/Users\/example|private\.png|evt_report_000007/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("buildStructuredResponseReport tolerates legacy summaries without structured diagnostics", () => {
+  assert.deepEqual(buildStructuredResponseReport({}), {
+    event_count: 0,
+    missing_json_envelope_count: 0,
+    missing_json_envelope_rate: null,
+    retry_event_count: 0,
+    retry_scheduled_count: 0,
+    retry_recovered_count: 0,
+    retry_recovery_rate: null,
+    max_retry_next_max_output_tokens: null,
+    avg_response_text_bytes: null,
+    max_response_text_bytes: null,
+    top_finish_reason: null,
+    top_command: null,
+    top_retry_reason: null,
+    top_retry_command: null,
+  });
 });
 
 test("runTelemetryReport points pending delivery attention at bounded flush diagnostics", async () => {

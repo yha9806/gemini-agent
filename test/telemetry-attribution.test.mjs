@@ -17,8 +17,16 @@ test("sanitizeTelemetryDimension creates safe analytics tokens", () => {
   assert.equal(sanitizeTelemetryDimension("@vulca/platform"), "vulca-platform");
   assert.equal(sanitizeTelemetryDimension(" EmoArt Challenge "), "emoart-challenge");
   assert.equal(sanitizeTelemetryDimension("person@example.com", "fallback"), "fallback");
-  assert.equal(sanitizeTelemetryDimension("../secret path", "fallback"), "secret-path");
+  assert.equal(sanitizeTelemetryDimension("../secret path", "fallback"), "fallback");
   assert.equal(sanitizeTelemetryDimension("", "fallback"), "fallback");
+});
+
+test("sanitizeTelemetryDimension rejects path, credential, and phone-shaped labels", () => {
+  assert.equal(sanitizeTelemetryDimension("/Users/alice/vulca-platform", "fallback"), "fallback");
+  assert.equal(sanitizeTelemetryDimension("~/.ssh/config", "fallback"), "fallback");
+  assert.equal(sanitizeTelemetryDimension("vision Authorization: Bearer secret-token", "fallback"), "fallback");
+  assert.equal(sanitizeTelemetryDimension("+1 (415) 555-1212", "fallback"), "fallback");
+  assert.equal(sanitizeTelemetryDimension("123-45-6789", "fallback"), "fallback");
 });
 
 test("resolveTelemetryAttribution prefers explicit and env values", async () => {
@@ -46,6 +54,28 @@ test("resolveTelemetryAttribution prefers explicit and env values", async () => 
   assert.equal(fromEnv.workspace_id, "ws_env");
   assert.equal(fromEnv.metadata.project_source, "env");
   assert.equal(fromEnv.metadata.workspace_source, "env");
+});
+
+test("resolveTelemetryAttribution ignores unsafe explicit attribution before safe fallbacks", async () => {
+  resetTelemetryAttributionCacheForTests();
+  const root = await tempDir();
+  await writeFile(join(root, "package.json"), JSON.stringify({ name: "package-app" }));
+
+  const result = await resolveTelemetryAttribution({
+    cwd: root,
+    projectId: "vision Authorization: Bearer secret-token",
+    context: { workspace_id: "123-45-6789" },
+    installId: "install_alpha",
+    env: {
+      GEMINI_AGENT_PROJECT_ID: "Env Project",
+      GEMINI_AGENT_WORKSPACE_ID: "ws_env",
+    },
+  });
+
+  assert.equal(result.project_id, "env-project");
+  assert.equal(result.workspace_id, "ws_env");
+  assert.equal(result.metadata.project_source, "env");
+  assert.equal(result.metadata.workspace_source, "env");
 });
 
 test("resolveTelemetryAttribution derives package project and stable workspace from root", async () => {

@@ -3,6 +3,11 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  hasEmailLikeIdentifier,
+  hasUnsafeTelemetryDimensionContent,
+  TELEMETRY_USER_LABEL_SENSITIVE_MESSAGE,
+} from "./telemetry-dimension-safety.mjs";
+import {
   DEFAULT_TELEMETRY_DEPLOYMENT_ID,
   normalizeTelemetryConfig,
 } from "./telemetry-schemas.mjs";
@@ -108,13 +113,35 @@ function normalizeTelemetryUserLabel(userLabel) {
   if (text.length > 80) {
     throw new Error("Telemetry user label must be at most 80 characters.");
   }
-  if (/[^\s@]+@[^\s@]+\.[^\s@]+/.test(text)) {
+  if (hasEmailLikeIdentifier(text)) {
     throw new Error("Telemetry user label must not contain email addresses.");
+  }
+  if (hasUnsafeTelemetryDimensionContent(text, { includeEmail: false })) {
+    throw new Error(TELEMETRY_USER_LABEL_SENSITIVE_MESSAGE);
   }
   if (!/^[A-Za-z0-9._ -]+$/.test(text)) {
     throw new Error("Telemetry user label must contain only letters, numbers, space, dot, underscore, or dash.");
   }
   return text;
+}
+
+function shouldClearPersistedUserLabel(userLabel) {
+  if (userLabel === undefined || userLabel === null) return false;
+  if (typeof userLabel !== "string") return true;
+  const text = userLabel.trim();
+  if (!text || text.length > 80) return true;
+  if (hasEmailLikeIdentifier(text)) return true;
+  if (hasUnsafeTelemetryDimensionContent(text, { includeEmail: false })) return true;
+  return !/^[A-Za-z0-9._ -]+$/.test(text);
+}
+
+function configValueWithSafePersistedUserLabel(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (!shouldClearPersistedUserLabel(value.user_label)) return value;
+  return {
+    ...value,
+    user_label: null,
+  };
 }
 
 export function validateTelemetryEndpoint(endpoint) {
@@ -166,7 +193,7 @@ export async function loadTelemetryConfig({
 
 function normalizedConfigFromRaw(rawConfig) {
   if (!rawConfig) return null;
-  const config = normalizeTelemetryConfig(rawConfig.value);
+  const config = normalizeTelemetryConfig(configValueWithSafePersistedUserLabel(rawConfig.value));
   validateTelemetryEndpoint(config.endpoint);
   validateTelemetrySchedule(config.schedule);
   return config;
@@ -222,7 +249,9 @@ export async function saveTelemetryConfig({
   await chmod(dir, 0o700);
 
   const previousRaw = await readTelemetryConfigJson(storageCwd);
-  const previous = previousRaw ? normalizeTelemetryConfig(previousRaw.value) : null;
+  const previous = previousRaw
+    ? normalizeTelemetryConfig(configValueWithSafePersistedUserLabel(previousRaw.value))
+    : null;
   const resolvedDeploymentId = deploymentId ?? previous?.deployment_id ?? DEFAULT_TELEMETRY_DEPLOYMENT_ID;
   assertTelemetryDeploymentId(resolvedDeploymentId);
   const resolvedUserLabel = normalizeTelemetryUserLabel(userLabel);

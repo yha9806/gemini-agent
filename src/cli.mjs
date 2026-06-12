@@ -59,6 +59,14 @@ import {
   runTelemetryReport,
 } from "./telemetry-report.mjs";
 import {
+  artifactReviewQualityGateToText,
+  runArtifactReviewQualityGate,
+} from "./telemetry-artifact-review-quality-gate.mjs";
+import {
+  artifactReviewCoveragePlanToText,
+  runArtifactReviewCoveragePlan,
+} from "./telemetry-artifact-review-coverage-plan.mjs";
+import {
   formatTelemetryMultimodalRepairMetadataText,
   formatTelemetryMultimodalRepairText,
   runTelemetryMultimodalRepairKind,
@@ -68,6 +76,7 @@ import {
   formatTelemetrySummaryText,
   runTelemetrySummary,
 } from "./telemetry-summary.mjs";
+import { assertTelemetryPurpose } from "./telemetry-purpose.mjs";
 import {
   formatTelemetryRawInventoryText,
   runTelemetryRawInventory,
@@ -149,7 +158,7 @@ function printUsage() {
     "  gemini-agent ask <prompt>",
     "  gemini-agent context-pack [--bootstrap | --stdin | --file <path> ... | --diff | text] [--write-artifact]",
     "  gemini-agent context-pack --doctor [--json] [--max-age-hours <n>]",
-    "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--write-artifact]",
+    "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--telemetry-purpose production|validation] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -169,6 +178,8 @@ function printUsage() {
     "  gemini-agent telemetry economics [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry priorities [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry report [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
+    "  gemini-agent telemetry artifact-review quality-gate [--global] [--json] [--top <n>]",
+    "  gemini-agent telemetry artifact-review coverage-plan [--global] [--json] [--top <n>]",
     "  gemini-agent telemetry multimodal repair-kind --correction-version <id> [--global] [--dry-run|--write] [--limit <n>] [--json]",
     "  gemini-agent telemetry multimodal repair-metadata --correction-version <id> [--global] [--dry-run|--write] [--limit <n>] [--json]",
     "  gemini-agent telemetry doctor [--global] [--json]",
@@ -887,6 +898,58 @@ function parseTelemetryReportOptions(args) {
   return options;
 }
 
+function parseTelemetryArtifactReviewQualityGateOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+    topLimit: 10,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--top") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--top requires a positive integer.");
+      options.topLimit = positiveIntegerOption(value, "--top");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry artifact-review quality-gate argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseTelemetryArtifactReviewCoveragePlanOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+    topLimit: 10,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--top") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--top requires a positive integer.");
+      options.topLimit = positiveIntegerOption(value, "--top");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry artifact-review coverage-plan argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
 function parseTelemetryMultimodalRepairOptions(args, { subcommand = "repair-kind" } = {}) {
   const options = {
     dryRun: true,
@@ -1534,6 +1597,7 @@ function parseArtifactArgs(args) {
   let artifactKind = "image";
   let reviewMode = null;
   let reviewDepth = "standard";
+  let telemetryPurpose = "production";
   let writeArtifact = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -1563,6 +1627,11 @@ function parseArtifactArgs(args) {
       if (!ARTIFACT_REVIEW_DEPTHS.has(depth)) throw new Error("--review-depth must be quick or standard.");
       reviewDepth = depth;
       index += 1;
+    } else if (arg === "--telemetry-purpose") {
+      const purpose = args[index + 1];
+      if (!purpose || purpose.startsWith("--")) throw new Error("--telemetry-purpose must be production or validation.");
+      telemetryPurpose = assertTelemetryPurpose(purpose);
+      index += 1;
     } else if (arg === "--write-artifact") {
       writeArtifact = true;
     } else {
@@ -1574,7 +1643,7 @@ function parseArtifactArgs(args) {
   if (files.length > MAX_ARTIFACT_REVIEW_FILES) {
     throw new Error(`artifact-review supports at most ${MAX_ARTIFACT_REVIEW_FILES} files.`);
   }
-  return { file: files[0], files, artifactKind, reviewMode, reviewDepth, writeArtifact };
+  return { file: files[0], files, artifactKind, reviewMode, reviewDepth, telemetryPurpose, writeArtifact };
 }
 
 async function prevalidateArtifactFile(file, cwd = process.cwd()) {
@@ -1757,7 +1826,7 @@ async function runContextPackCommand(args) {
 }
 
 async function runArtifactReviewCommand(args) {
-  const { file, files, artifactKind, reviewMode, reviewDepth, writeArtifact } = parseArtifactArgs(args);
+  const { file, files, artifactKind, reviewMode, reviewDepth, telemetryPurpose, writeArtifact } = parseArtifactArgs(args);
   const cwd = process.cwd();
   for (const source of files) {
     await prevalidateArtifactFile(source, cwd);
@@ -1779,7 +1848,12 @@ async function runArtifactReviewCommand(args) {
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,
-    telemetry: { cwd, source: "cli", command: "artifact-review" },
+    telemetry: {
+      cwd,
+      source: "cli",
+      command: "artifact-review",
+      metadata: { telemetry_purpose: telemetryPurpose },
+    },
   });
   output.write(artifactReviewToPrettyJson(review));
 }
@@ -2180,6 +2254,36 @@ async function runTelemetryReportCommand(args = []) {
   output.write(formatTelemetryReportText(report));
 }
 
+async function runTelemetryArtifactReviewQualityGateCommand(args = []) {
+  const options = parseTelemetryArtifactReviewQualityGateOptions(args);
+  const gate = await runArtifactReviewQualityGate({
+    cwd: process.cwd(),
+    home: process.env.HOME,
+    scope: telemetryScope(options),
+    topLimit: options.topLimit,
+  });
+  if (options.json) {
+    output.write(`${JSON.stringify(gate, null, 2)}\n`);
+    return;
+  }
+  output.write(`${artifactReviewQualityGateToText(gate)}\n`);
+}
+
+async function runTelemetryArtifactReviewCoveragePlanCommand(args = []) {
+  const options = parseTelemetryArtifactReviewCoveragePlanOptions(args);
+  const report = await runArtifactReviewCoveragePlan({
+    cwd: process.cwd(),
+    home: process.env.HOME,
+    scope: telemetryScope(options),
+    topLimit: options.topLimit,
+  });
+  if (options.json) {
+    output.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  output.write(`${artifactReviewCoveragePlanToText(report)}\n`);
+}
+
 async function runTelemetryMultimodal(args = []) {
   const [subcommand, ...subArgs] = args;
   if (subcommand === "repair-kind") {
@@ -2429,6 +2533,16 @@ async function runTelemetry(args) {
 
   if (subcommand === "report") {
     await runTelemetryReportCommand(subArgs);
+    return;
+  }
+
+  if (subcommand === "artifact-review" && subArgs[0] === "coverage-plan") {
+    await runTelemetryArtifactReviewCoveragePlanCommand(subArgs.slice(1));
+    return;
+  }
+
+  if (subcommand === "artifact-review" && subArgs[0] === "quality-gate") {
+    await runTelemetryArtifactReviewQualityGateCommand(subArgs.slice(1));
     return;
   }
 

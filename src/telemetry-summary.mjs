@@ -3,6 +3,7 @@ import { basename, relative, join, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { normalizeTelemetryCommandAlias } from "./telemetry-command-normalization.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
+import { isValidationTelemetryEvent, safeTelemetryPurpose } from "./telemetry-purpose.mjs";
 import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
 import {
   loadTelemetryState,
@@ -49,6 +50,15 @@ function zeroRawContent() {
     response_events: 0,
     truncated_prompt_events: 0,
     truncated_response_events: 0,
+  };
+}
+
+function zeroTelemetryPurpose() {
+  return {
+    event_count: 0,
+    production_event_count: 0,
+    validation_event_count: 0,
+    product_adjusted_event_count: 0,
   };
 }
 
@@ -124,6 +134,7 @@ function zeroArtifactReviewQuality() {
     success_count: 0,
     error_count: 0,
     scorecard_event_count: 0,
+    scorecard_field_coverage: [],
     avg_overall_score: null,
     avg_visual_hierarchy_score: null,
     avg_clarity_score: null,
@@ -145,6 +156,16 @@ function zeroArtifactReviewDepths() {
 
 function createDesignScoreSums() {
   return Object.fromEntries(DESIGN_SCORE_FIELDS.map(([key]) => [key, { sum: 0, count: 0 }]));
+}
+
+function createArtifactReviewQualityAccumulator() {
+  return {
+    event_count: 0,
+    success_count: 0,
+    error_count: 0,
+    scorecard_event_count: 0,
+    scores: createDesignScoreSums(),
+  };
 }
 
 function zeroContextLoop() {
@@ -177,6 +198,24 @@ function zeroLatencyStages() {
   return {
     stage_count: 0,
     top_stages: [],
+  };
+}
+
+function zeroStructuredResponse() {
+  return {
+    event_count: 0,
+    missing_json_envelope_count: 0,
+    retry_event_count: 0,
+    retry_scheduled_count: 0,
+    retry_recovered_count: 0,
+    retry_recovery_rate: null,
+    max_retry_next_max_output_tokens: null,
+    avg_response_text_bytes: null,
+    max_response_text_bytes: null,
+    top_finish_reasons: [],
+    top_commands: [],
+    top_retry_reasons: [],
+    top_retry_commands: [],
   };
 }
 
@@ -265,6 +304,30 @@ function updateOptionalDimension(map, key, status) {
 function canonicalCommand(value) {
   const sanitized = sanitizeDimension(value);
   return normalizeTelemetryCommandAlias(sanitized.toLowerCase().replaceAll("_", "-"));
+}
+
+const SAFE_STRUCTURED_RESPONSE_COMMAND_PREFIXES = [
+  // Keep this in sync with structured JSON-producing CLI commands; it strips unsafe arguments from public telemetry.
+  "artifact-review-backfill-correction",
+  "artifact-review-backfill",
+  "artifact-review",
+  "context-pack",
+  "diff-review",
+  "patch-precheck",
+  "plan-critique",
+  "research-brief",
+  "palette-split",
+  "ask",
+];
+
+function structuredResponseCommandKey(command) {
+  const canonical = canonicalCommand(command);
+  for (const prefix of SAFE_STRUCTURED_RESPONSE_COMMAND_PREFIXES) {
+    if (canonical === prefix || canonical.startsWith(`${prefix} `) || canonical.startsWith(`${prefix}:`)) {
+      return prefix;
+    }
+  }
+  return /^[a-z0-9][a-z0-9_.-]{0,63}$/.test(canonical) ? canonical : "unknown";
 }
 
 const SAFE_MULTIMODAL_COMMANDS = new Set([
@@ -385,6 +448,156 @@ function topSimpleCounts(map, keyName, limit) {
       [keyName]: key,
       event_count: count,
     }));
+}
+
+function safeStructuredResponseFinishReason(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(text) ? text : "unknown";
+}
+
+function safeStructuredResponseRetryReason(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return ["MAX_TOKENS", "missing_json_envelope"].includes(text) ? text : "unknown";
+}
+
+function createStructuredResponseAggregate() {
+  return {
+    event_count: 0,
+    missing_json_envelope_count: 0,
+    retry_event_count: 0,
+    retry_scheduled_count: 0,
+    retry_recovered_count: 0,
+    max_retry_next_max_output_tokens: null,
+    response_text_bytes_sum: 0,
+    max_response_text_bytes: null,
+    finishReasons: new Map(),
+    commands: new Map(),
+    retryReasons: new Map(),
+    retryCommands: new Map(),
+  };
+}
+
+function addStructuredResponseCommand(map, command, responseTextBytes, hasJsonEnvelope) {
+  const key = structuredResponseCommandKey(command);
+  const item = map.get(key) ?? {
+    key,
+    event_count: 0,
+    missing_json_envelope_count: 0,
+    response_text_bytes_sum: 0,
+    max_response_text_bytes: null,
+  };
+  item.event_count += 1;
+  if (!hasJsonEnvelope) item.missing_json_envelope_count += 1;
+  item.response_text_bytes_sum += responseTextBytes;
+  item.max_response_text_bytes = Math.max(item.max_response_text_bytes ?? 0, responseTextBytes);
+  map.set(key, item);
+}
+
+function addStructuredResponseRetryCommand(map, command, retry) {
+  const key = structuredResponseCommandKey(command);
+  const nextMaxOutputTokens = safeInteger(retry.next_max_output_tokens);
+  const item = map.get(key) ?? {
+    key,
+    retry_event_count: 0,
+    retry_scheduled_count: 0,
+    retry_recovered_count: 0,
+    max_retry_next_max_output_tokens: null,
+  };
+  item.retry_event_count += 1;
+  if (retry.will_retry === true) item.retry_scheduled_count += 1;
+  if (retry.recovered === true) item.retry_recovered_count += 1;
+  if (nextMaxOutputTokens > 0) {
+    item.max_retry_next_max_output_tokens = Math.max(
+      item.max_retry_next_max_output_tokens ?? 0,
+      nextMaxOutputTokens,
+    );
+  }
+  map.set(key, item);
+}
+
+function addStructuredResponse(aggregate, command, metadata) {
+  const diagnostic = metadata?.structured_response;
+  if (!diagnostic || typeof diagnostic !== "object" || Array.isArray(diagnostic)) return;
+  const responseTextBytes = safeInteger(diagnostic.response_text_bytes);
+  const hasJsonEnvelope = diagnostic.response_has_json_object_envelope === true;
+  const finishReason = safeStructuredResponseFinishReason(diagnostic.gemini_finish_reason);
+  aggregate.event_count += 1;
+  if (!hasJsonEnvelope) aggregate.missing_json_envelope_count += 1;
+  aggregate.response_text_bytes_sum += responseTextBytes;
+  aggregate.max_response_text_bytes = Math.max(aggregate.max_response_text_bytes ?? 0, responseTextBytes);
+  updateSimpleCount(aggregate.finishReasons, finishReason);
+  addStructuredResponseCommand(aggregate.commands, command, responseTextBytes, hasJsonEnvelope);
+  const retry = metadata?.structured_response_retry;
+  if (!retry || typeof retry !== "object" || Array.isArray(retry)) return;
+  const retryReason = safeStructuredResponseRetryReason(retry.retry_reason);
+  const nextMaxOutputTokens = safeInteger(retry.next_max_output_tokens);
+  aggregate.retry_event_count += 1;
+  if (retry.will_retry === true) aggregate.retry_scheduled_count += 1;
+  if (retry.recovered === true) aggregate.retry_recovered_count += 1;
+  if (nextMaxOutputTokens > 0) {
+    aggregate.max_retry_next_max_output_tokens = Math.max(
+      aggregate.max_retry_next_max_output_tokens ?? 0,
+      nextMaxOutputTokens,
+    );
+  }
+  updateSimpleCount(aggregate.retryReasons, retryReason);
+  addStructuredResponseRetryCommand(aggregate.retryCommands, command, retry);
+}
+
+function topStructuredResponseCommands(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.event_count - left.event_count
+      || right.missing_json_envelope_count - left.missing_json_envelope_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      command: item.key,
+      event_count: item.event_count,
+      missing_json_envelope_count: item.missing_json_envelope_count,
+      avg_response_text_bytes: roundOne(item.response_text_bytes_sum / item.event_count),
+      max_response_text_bytes: item.max_response_text_bytes,
+    }));
+}
+
+function topStructuredResponseRetryCommands(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.retry_event_count - left.retry_event_count
+      || right.retry_recovered_count - left.retry_recovered_count
+      || right.retry_scheduled_count - left.retry_scheduled_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      command: item.key,
+      retry_event_count: item.retry_event_count,
+      retry_scheduled_count: item.retry_scheduled_count,
+      retry_recovered_count: item.retry_recovered_count,
+      max_retry_next_max_output_tokens: item.max_retry_next_max_output_tokens,
+    }));
+}
+
+function buildStructuredResponseSummary(aggregate, topLimit) {
+  if (aggregate.event_count === 0) return zeroStructuredResponse();
+  return {
+    event_count: aggregate.event_count,
+    missing_json_envelope_count: aggregate.missing_json_envelope_count,
+    retry_event_count: aggregate.retry_event_count,
+    retry_scheduled_count: aggregate.retry_scheduled_count,
+    retry_recovered_count: aggregate.retry_recovered_count,
+    retry_recovery_rate: aggregate.retry_scheduled_count > 0
+      ? Math.min(1, nullableRatio(aggregate.retry_recovered_count, aggregate.retry_scheduled_count))
+      : null,
+    max_retry_next_max_output_tokens: aggregate.max_retry_next_max_output_tokens,
+    avg_response_text_bytes: roundOne(aggregate.response_text_bytes_sum / aggregate.event_count),
+    max_response_text_bytes: aggregate.max_response_text_bytes,
+    top_finish_reasons: topSimpleCounts(aggregate.finishReasons, "gemini_finish_reason", topLimit),
+    top_commands: topStructuredResponseCommands(aggregate.commands, topLimit),
+    top_retry_reasons: topSimpleCounts(aggregate.retryReasons, "retry_reason", topLimit),
+    top_retry_commands: topStructuredResponseRetryCommands(aggregate.retryCommands, topLimit),
+  };
 }
 
 function createLatencyAggregate() {
@@ -951,6 +1164,13 @@ function formatTopRows(items, keyName) {
   )).join("\n");
 }
 
+function formatSimpleRows(items, keyName) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item[keyName]}: ${formatNumber(item.event_count)} events`
+  )).join("\n");
+}
+
 function formatMediaCommandRows(items) {
   if (items.length === 0) return "None";
   return items.map((item, index) => (
@@ -983,6 +1203,13 @@ function formatArtifactReviewBudgetCohortRows(items) {
   if (items.length === 0) return "None";
   return items.map((item, index) => (
     `${index + 1}. ${item.review_depth} / ${item.budget_cohort}: ${formatNumber(item.event_count)} events, ${formatNumber(item.success_count)} success, ${formatNumber(item.error_count)} error, p95 ${item.p95_latency_ms == null ? "n/a" : `${formatNumber(item.p95_latency_ms)} ms`}`
+  )).join("\n");
+}
+
+function formatScorecardFieldCoverageRows(items) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item.field}: ${formatNumber(item.scored_event_count)} of ${formatNumber(item.event_count)} events (${formatPercent(item.coverage_rate)})`
   )).join("\n");
 }
 
@@ -1091,22 +1318,22 @@ function createAccumulator(invalidSampleLimit) {
       foreground_area_pct_count: 0,
     },
     paletteSplitModels: createDimensionMap(),
-    artifactReviewQuality: {
-      event_count: 0,
-      success_count: 0,
-      error_count: 0,
-      scorecard_event_count: 0,
-      scores: createDesignScoreSums(),
-    },
+    artifactReviewQuality: createArtifactReviewQualityAccumulator(),
+    artifactReviewValidationQuality: createArtifactReviewQualityAccumulator(),
     artifactReviewQualityCommands: new Map(),
+    artifactReviewValidationQualityCommands: new Map(),
     artifactReviewDepths: new Map(),
+    artifactReviewValidationDepths: new Map(),
     artifactReviewBudgetCohorts: new Map(),
+    artifactReviewValidationBudgetCohorts: new Map(),
     contextLoop: zeroContextLoop(),
     contextPackModes: new Map(),
     freshInputModes: new Map(),
     contextLoopCommands: new Map(),
     latency: createLatencyAggregate(),
     latencyStages: createLatencyStagesAggregate(),
+    structuredResponse: createStructuredResponseAggregate(),
+    telemetryPurpose: zeroTelemetryPurpose(),
     invalidSamples: [],
   };
 }
@@ -1123,6 +1350,15 @@ function addEvent(accumulator, state, event) {
   accumulator.counts[state] += 1;
   accumulator.counts.total += 1;
   const status = event.status === "success" || event.status === "error" ? event.status : "unknown";
+  const purpose = safeTelemetryPurpose(event?.metadata?.telemetry_purpose);
+  const validation = isValidationTelemetryEvent(event);
+  accumulator.telemetryPurpose.event_count += 1;
+  if (purpose === "validation") {
+    accumulator.telemetryPurpose.validation_event_count += 1;
+  } else {
+    accumulator.telemetryPurpose.production_event_count += 1;
+    accumulator.telemetryPurpose.product_adjusted_event_count += 1;
+  }
   updateStatusCounts(accumulator.statusCounts, status);
   updateDimension(accumulator.projects, event.project_id, status);
   updateOptionalDimension(accumulator.workspaces, event.context?.workspace_id, status);
@@ -1130,12 +1366,18 @@ function addEvent(accumulator, state, event) {
   updateCommandDimension(accumulator.commands, event.command, status);
   updateDimension(accumulator.sources, event.source, status);
   updateDimension(accumulator.models, event.model, status);
-  if (isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
-  addArtifactReviewQualityEvent(accumulator, event, status);
-  addArtifactReviewDepthEvent(accumulator, event, status);
+  if (!validation && isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
+  if (validation) {
+    addArtifactReviewValidationQualityEvent(accumulator, event, status);
+    addArtifactReviewValidationDepthEvent(accumulator, event, status);
+  } else {
+    addArtifactReviewQualityEvent(accumulator, event, status);
+    addArtifactReviewDepthEvent(accumulator, event, status);
+  }
   addContextLoopEvent(accumulator, event);
   addLatency(accumulator.latency, event.command, event.latency_ms);
   addLatencyStages(accumulator.latencyStages, event.command, event.metadata);
+  addStructuredResponse(accumulator.structuredResponse, event.command, event.metadata);
 
   if (event.prompt) accumulator.rawContent.prompt_events += 1;
   if (event.response) accumulator.rawContent.response_events += 1;
@@ -1145,7 +1387,7 @@ function addEvent(accumulator, state, event) {
   const multimodalItems = Array.isArray(event.payload?.multimodal)
     ? event.payload.multimodal
     : [];
-  if (isBackfillCommand(event.command)) {
+  if (!validation && isBackfillCommand(event.command)) {
     updateBackfillManifestSource(
       accumulator.backfillManifestSources,
       event.metadata?.media_manifest_source,
@@ -1154,6 +1396,9 @@ function addEvent(accumulator, state, event) {
     );
   }
   const compactItems = compactMediaItems(multimodalItems);
+  if (validation) {
+    return;
+  }
   if (isCorrectionEvent(event)) {
     addCorrectionEvent(accumulator, event, multimodalItems);
     addAdjustedCorrectionCandidate(accumulator, event, compactItems);
@@ -1296,12 +1541,12 @@ function addUsageToAggregate(usage, economics) {
   usage.total_tokens += safeInteger(totalTokens);
 }
 
-function addArtifactReviewDepthEvent(accumulator, event, status) {
+function addArtifactReviewDepthEventTo({ depths, budgetCohorts }, event, status) {
   const command = artifactReviewQualityCommand(event.command);
   if (!command) return;
   const depth = safeArtifactReviewDepth(event.metadata?.artifact_review_depth);
   const maxOutputTokens = safeMaxOutputTokens(event.metadata?.artifact_review_max_output_tokens);
-  const item = accumulator.artifactReviewDepths.get(depth) ?? createArtifactReviewDepthItem(depth);
+  const item = depths.get(depth) ?? createArtifactReviewDepthItem(depth);
   item.event_count += 1;
   if (status === "success") item.success_count += 1;
   else if (status === "error") item.error_count += 1;
@@ -1321,11 +1566,11 @@ function addArtifactReviewDepthEvent(accumulator, event, status) {
     item.maxOutputTokenSum += maxOutputTokens;
     item.maxOutputTokenCount += 1;
   }
-  accumulator.artifactReviewDepths.set(depth, item);
+  depths.set(depth, item);
 
   const cohort = artifactReviewBudgetCohort(depth, maxOutputTokens);
   const cohortKey = `${depth}\0${cohort.budgetCohort}`;
-  const cohortItem = accumulator.artifactReviewBudgetCohorts.get(cohortKey)
+  const cohortItem = budgetCohorts.get(cohortKey)
     ?? createArtifactReviewBudgetCohortItem(depth, cohort.budgetCohort, cohort.publicMaxOutputTokens);
   cohortItem.event_count += 1;
   if (status === "success") cohortItem.success_count += 1;
@@ -1339,27 +1584,55 @@ function addArtifactReviewDepthEvent(accumulator, event, status) {
     cohortItem.latencyValues.push(event.latency_ms);
   }
   addUsageToAggregate(cohortItem.usage, event.economics);
-  accumulator.artifactReviewBudgetCohorts.set(cohortKey, cohortItem);
+  budgetCohorts.set(cohortKey, cohortItem);
 }
 
-function addArtifactReviewQualityEvent(accumulator, event, status) {
+function addArtifactReviewDepthEvent(accumulator, event, status) {
+  addArtifactReviewDepthEventTo({
+    depths: accumulator.artifactReviewDepths,
+    budgetCohorts: accumulator.artifactReviewBudgetCohorts,
+  }, event, status);
+}
+
+function addArtifactReviewValidationDepthEvent(accumulator, event, status) {
+  addArtifactReviewDepthEventTo({
+    depths: accumulator.artifactReviewValidationDepths,
+    budgetCohorts: accumulator.artifactReviewValidationBudgetCohorts,
+  }, event, status);
+}
+
+function addArtifactReviewQualityEventTo({ quality, commands }, event, status) {
   const command = artifactReviewQualityCommand(event.command);
   if (!command) return;
-  accumulator.artifactReviewQuality.event_count += 1;
-  if (status === "success") accumulator.artifactReviewQuality.success_count += 1;
-  else if (status === "error") accumulator.artifactReviewQuality.error_count += 1;
+  quality.event_count += 1;
+  if (status === "success") quality.success_count += 1;
+  else if (status === "error") quality.error_count += 1;
 
   const scores = designScorecardFromMetadata(event.metadata);
   if (scores) {
-    accumulator.artifactReviewQuality.scorecard_event_count += 1;
-    addDesignScores(accumulator.artifactReviewQuality.scores, scores);
+    quality.scorecard_event_count += 1;
+    addDesignScores(quality.scores, scores);
   }
   updateArtifactReviewQualityCommand(
-    accumulator.artifactReviewQualityCommands,
+    commands,
     command,
     status,
     scores,
   );
+}
+
+function addArtifactReviewQualityEvent(accumulator, event, status) {
+  addArtifactReviewQualityEventTo({
+    quality: accumulator.artifactReviewQuality,
+    commands: accumulator.artifactReviewQualityCommands,
+  }, event, status);
+}
+
+function addArtifactReviewValidationQualityEvent(accumulator, event, status) {
+  addArtifactReviewQualityEventTo({
+    quality: accumulator.artifactReviewValidationQuality,
+    commands: accumulator.artifactReviewValidationQualityCommands,
+  }, event, status);
 }
 
 function addContextLoopEvent(accumulator, event) {
@@ -1633,6 +1906,16 @@ function artifactReviewQualityCommandRows(map, topLimit) {
     }));
 }
 
+function scorecardFieldCoverageRows(scores, eventCount) {
+  if (eventCount <= 0) return [];
+  return DESIGN_SCORE_FIELDS.map(([key]) => ({
+    field: key,
+    scored_event_count: scores[key].count,
+    event_count: eventCount,
+    coverage_rate: nullableRatio(scores[key].count, eventCount, 4),
+  }));
+}
+
 function buildArtifactReviewQualitySummary(accumulator, topLimit) {
   if (accumulator.artifactReviewQuality.event_count === 0) return zeroArtifactReviewQuality();
   return {
@@ -1640,6 +1923,10 @@ function buildArtifactReviewQualitySummary(accumulator, topLimit) {
     success_count: accumulator.artifactReviewQuality.success_count,
     error_count: accumulator.artifactReviewQuality.error_count,
     scorecard_event_count: accumulator.artifactReviewQuality.scorecard_event_count,
+    scorecard_field_coverage: scorecardFieldCoverageRows(
+      accumulator.artifactReviewQuality.scores,
+      accumulator.artifactReviewQuality.event_count,
+    ),
     ...Object.fromEntries(DESIGN_SCORE_FIELDS.map(([key, avgKey]) => [
       avgKey,
       averageDesignScore(accumulator.artifactReviewQuality.scores, key),
@@ -1807,9 +2094,18 @@ export async function runTelemetrySummary({
   };
   const paletteSplit = buildPaletteSplitSummary(accumulator, topLimit);
   const artifactReviewQuality = buildArtifactReviewQualitySummary(accumulator, topLimit);
+  const artifactReviewValidationQuality = buildArtifactReviewQualitySummary({
+    artifactReviewQuality: accumulator.artifactReviewValidationQuality,
+    artifactReviewQualityCommands: accumulator.artifactReviewValidationQualityCommands,
+  }, topLimit);
   const artifactReviewDepths = buildArtifactReviewDepthSummary(accumulator, topLimit);
+  const artifactReviewValidationDepths = buildArtifactReviewDepthSummary({
+    artifactReviewDepths: accumulator.artifactReviewValidationDepths,
+    artifactReviewBudgetCohorts: accumulator.artifactReviewValidationBudgetCohorts,
+  }, topLimit);
   const latency = buildLatencySummary(accumulator.latency, topLimit);
   const latencyStages = buildLatencyStagesSummary(accumulator.latencyStages, topLimit);
+  const structuredResponse = buildStructuredResponseSummary(accumulator.structuredResponse, topLimit);
   const contextLoop = {
     ...accumulator.contextLoop,
     smart_diff_context_pack_bootstrap_rate: nullableRatio(
@@ -1837,6 +2133,7 @@ export async function runTelemetrySummary({
     storage_cwd: context.storageCwd,
     generated_at: now.toISOString(),
     event_counts: accumulator.counts,
+    telemetry_purpose: accumulator.telemetryPurpose,
     status_counts: accumulator.statusCounts,
     queue,
     usage: accumulator.usage,
@@ -1846,9 +2143,12 @@ export async function runTelemetrySummary({
     backfill,
     palette_split: paletteSplit,
     artifact_review_quality: artifactReviewQuality,
+    artifact_review_validation_quality: artifactReviewValidationQuality,
     artifact_review_depths: artifactReviewDepths,
+    artifact_review_validation_depths: artifactReviewValidationDepths,
     latency,
     latency_stages: latencyStages,
+    structured_response: structuredResponse,
     context_loop: contextLoop,
     top_projects: topProjects,
     top_workspaces: topWorkspaces,
@@ -1895,6 +2195,10 @@ export function formatTelemetrySummaryText(summary) {
     `Storage: ${summary.storage_cwd}`,
     `Events: ${summary.event_counts.total} total, ${summary.event_counts.sent} sent, ${summary.event_counts.pending} pending, ${summary.event_counts.failed} failed, ${summary.event_counts.quarantine} quarantined, ${summary.event_counts.invalid} invalid`,
     "",
+    "Telemetry purpose:",
+    `- Product-adjusted events: ${formatNumber(summary.telemetry_purpose?.product_adjusted_event_count ?? summary.event_counts.total)} of ${formatNumber(summary.telemetry_purpose?.event_count ?? summary.event_counts.total)}`,
+    `- Validation events excluded from product metrics: ${formatNumber(summary.telemetry_purpose?.validation_event_count ?? 0)}`,
+    "",
     "Top projects:",
     formatTopRows(summary.top_projects, "project_id"),
     "",
@@ -1924,6 +2228,14 @@ export function formatTelemetrySummaryText(summary) {
     `- Stage samples: ${formatNumber(summary.latency_stages?.stage_count ?? 0)}`,
     "Top latency stages:",
     formatLatencyStageRows(summary.latency_stages?.top_stages ?? []),
+    "",
+    "Structured responses:",
+    `- Events: ${formatNumber(summary.structured_response?.event_count ?? 0)}`,
+    `- Missing JSON envelope: ${formatNumber(summary.structured_response?.missing_json_envelope_count ?? 0)}`,
+    `- Average response bytes: ${summary.structured_response?.avg_response_text_bytes == null ? "n/a" : formatNumber(summary.structured_response.avg_response_text_bytes)}`,
+    `- Max response bytes: ${summary.structured_response?.max_response_text_bytes == null ? "n/a" : formatNumber(summary.structured_response.max_response_text_bytes)}`,
+    "Top structured response finish reasons:",
+    formatSimpleRows(summary.structured_response?.top_finish_reasons ?? [], "gemini_finish_reason"),
     "",
     "Usage:",
     `- Prompt tokens: ${formatNumber(summary.usage.prompt_tokens)}`,
@@ -1970,6 +2282,8 @@ export function formatTelemetrySummaryText(summary) {
     `- Scorecard events: ${formatNumber(summary.artifact_review_quality?.scorecard_event_count ?? 0)}`,
     `- Average overall score: ${summary.artifact_review_quality?.avg_overall_score ?? "n/a"}`,
     `- Average implementation readiness score: ${summary.artifact_review_quality?.avg_implementation_readiness_score ?? "n/a"}`,
+    "Scorecard field coverage:",
+    formatScorecardFieldCoverageRows(summary.artifact_review_quality?.scorecard_field_coverage ?? []),
     "",
     "Artifact review depths:",
     `- Events: ${formatNumber(summary.artifact_review_depths?.event_count ?? 0)}`,

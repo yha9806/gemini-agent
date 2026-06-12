@@ -27,6 +27,27 @@ async function readPendingTelemetryEvents(cwd) {
   )));
 }
 
+function artifactReviewFixture(overrides = {}) {
+  return {
+    kind: "artifact_review",
+    artifact_type: "image",
+    summary: ["summary"],
+    important_details: [],
+    design_or_research_findings: [],
+    implementation_hints_for_codex: [],
+    risks_or_ambiguities: [],
+    questions_for_user: [],
+    limitations: [],
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-05-28T00:00:00Z",
+      sources: [],
+      omitted_sources: [],
+    },
+    ...overrides,
+  };
+}
+
 test("uses stable default model", () => {
   assert.equal(getDefaultModel({}), "gemini-3.5-flash");
   assert.equal(getDefaultModel({ GEMINI_AGENT_MODEL: "gemini-2.5-flash" }), "gemini-3.5-flash");
@@ -282,6 +303,187 @@ test("generateArtifactReview sends multimodal contents", async () => {
   assert.equal(review.artifact_type, "image");
 });
 
+test("generateArtifactReview retries malformed MAX_TOKENS JSON once with larger output budget", async () => {
+  const captures = [];
+  const requests = [];
+  const review = await generateArtifactReview({
+    apiKey: "fake-key",
+    prompt: "review artifact",
+    contents: [
+      { inlineData: { mimeType: "image/png", data: "abcd" } },
+      { text: "review artifact" },
+    ],
+    maxOutputTokens: 2048,
+    telemetry: {
+      cwd: "/tmp/private-artifact-project",
+      source: "cli",
+      command: "artifact-review",
+      contents: [{ source: "private-screen.png", mime_type: "image/png", byte_size: 4 }],
+      capture: async (event) => captures.push(event),
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent(request) {
+          requests.push(request);
+          if (requests.length === 1) {
+            return {
+              text: "{\"kind\":\"artifact_review\"",
+              candidates: [{ finishReason: "MAX_TOKENS" }],
+              usageMetadata: {
+                promptTokenCount: 10,
+                candidatesTokenCount: 20,
+                totalTokenCount: 30,
+              },
+            };
+          }
+          return {
+            text: JSON.stringify(artifactReviewFixture({
+              design_scorecard: {
+                overall_score: 80,
+                visual_hierarchy_score: 81,
+                clarity_score: 82,
+                accessibility_score: 83,
+                consistency_score: 84,
+                implementation_readiness_score: 85,
+                strengths: ["private strength"],
+                issues: ["private issue"],
+                recommended_actions: ["private action"],
+              },
+            })),
+            candidates: [{ finishReason: "STOP" }],
+            usageMetadata: {
+              promptTokenCount: 11,
+              candidatesTokenCount: 21,
+              totalTokenCount: 32,
+            },
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(review.kind, "artifact_review");
+  assert.equal(review.design_scorecard.overall_score, 80);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].config.maxOutputTokens, 2048);
+  assert.equal(requests[1].config.maxOutputTokens, 4096);
+  assert.equal(requests[1].config.responseSchema, GeminiArtifactReviewSchema);
+  assert.deepEqual(requests[1].contents, requests[0].contents);
+  assert.equal(requests[1].config.temperature, requests[0].config.temperature);
+  assert.equal(captures.length, 2);
+  assert.equal(captures[0].status, "error");
+  assert.equal(captures[0].metadata.structured_response.gemini_finish_reason, "MAX_TOKENS");
+  assert.equal(captures[0].metadata.structured_response_retry.attempt, 1);
+  assert.equal(captures[0].metadata.structured_response_retry.will_retry, true);
+  assert.equal(captures[0].metadata.structured_response_retry.next_max_output_tokens, 4096);
+  assert.equal(captures[1].status, "success");
+  assert.equal(captures[1].metadata.structured_response_retry.attempt, 2);
+  assert.equal(captures[1].metadata.structured_response_retry.recovered, true);
+  assert.equal(captures[1].metadata.structured_response_retry.retry_reason, "MAX_TOKENS");
+  assert.doesNotMatch(
+    JSON.stringify(captures.map((event) => event.metadata)),
+    /private-screen|private strength|private issue|private action|\/tmp\/private-artifact-project/,
+  );
+});
+
+test("generateArtifactReview retries missing JSON envelope with bounded fallback budget", async () => {
+  const captures = [];
+  const requests = [];
+  const review = await generateArtifactReview({
+    apiKey: "fake-key",
+    prompt: "review artifact",
+    contents: [{ text: "review artifact" }],
+    telemetry: {
+      command: "artifact-review",
+      capture: async (event) => captures.push(event),
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent(request) {
+          requests.push(request);
+          if (requests.length === 1) {
+            return {
+              text: "This is a private non-json explanation.",
+              candidates: [{ finishReason: "STOP" }],
+            };
+          }
+          return {
+            text: JSON.stringify(artifactReviewFixture()),
+            candidates: [{ finishReason: "STOP" }],
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(review.kind, "artifact_review");
+  assert.equal(requests.length, 2);
+  assert.equal(Object.hasOwn(requests[0].config, "maxOutputTokens"), false);
+  assert.equal(requests[1].config.maxOutputTokens, 8192);
+  assert.equal(captures.length, 2);
+  assert.equal(captures[0].status, "error");
+  assert.equal(captures[0].metadata.structured_response_retry.retry_reason, "missing_json_envelope");
+  assert.equal(captures[0].metadata.structured_response_retry.next_max_output_tokens, 8192);
+  assert.equal(captures[1].status, "success");
+  assert.equal(captures[1].metadata.structured_response_retry.recovered, true);
+  assert.equal(captures[1].metadata.structured_response_retry.retry_reason, "missing_json_envelope");
+  assert.doesNotMatch(JSON.stringify(captures.map((event) => event.metadata)), /private non-json/);
+});
+
+test("generateArtifactReview fails after one structured JSON retry", async () => {
+  const requests = [];
+  await assert.rejects(
+    () => generateArtifactReview({
+      apiKey: "fake-key",
+      prompt: "review artifact",
+      contents: [{ text: "review artifact" }],
+      maxOutputTokens: 4096,
+      makeAi: () => ({
+        models: {
+          async generateContent(request) {
+            requests.push(request);
+            return {
+              text: "{\"kind\":\"artifact_review\"",
+              candidates: [{ finishReason: "MAX_TOKENS" }],
+            };
+          },
+        },
+      }),
+    }),
+    /Expected ',' or '}'|JSON/,
+  );
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].config.maxOutputTokens, 4096);
+  assert.equal(requests[1].config.maxOutputTokens, 8192);
+});
+
+test("generateJson does not retry structured JSON failures by default", async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => generateJson({
+      apiKey: "fake-key",
+      prompt: "build context",
+      responseSchema: GeminiContextPackSchema,
+      normalize: (value) => value,
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            calls += 1;
+            return {
+              text: "not json",
+              candidates: [{ finishReason: "MAX_TOKENS" }],
+            };
+          },
+        },
+      }),
+    }),
+    /Gemini response did not contain a JSON object/,
+  );
+
+  assert.equal(calls, 1);
+});
+
 test("generateArtifactReview reports safe design scorecard telemetry metadata", async () => {
   let seenMetadata = null;
 
@@ -339,6 +541,51 @@ test("generateArtifactReview reports safe design scorecard telemetry metadata", 
     implementation_readiness_score: 78,
   });
   assert.doesNotMatch(JSON.stringify(seenMetadata), /Private/);
+});
+
+test("generateJson records Gemini generation stage without dropping caller latency stages", async () => {
+  let seenMetadata = null;
+
+  await generateReview({
+    apiKey: "fake-key",
+    prompt: "review plan",
+    telemetry: {
+      cwd: "/tmp/latency-project",
+      command: "plan-critique",
+      metadata: {
+        latency_stages_ms: {
+          media_prepare: 5,
+          policy_prompt: 7,
+          pre_gemini_total: 12,
+        },
+      },
+      capture: async (event) => {
+        seenMetadata = event.metadata;
+      },
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent() {
+          return {
+            text: JSON.stringify({
+              verdict: "pass",
+              top_risks: [],
+              missing_tests: [],
+              unsafe_claims: [],
+              suggested_changes: [],
+              notes: [],
+            }),
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(seenMetadata.latency_stages_ms.media_prepare, 5);
+  assert.equal(seenMetadata.latency_stages_ms.policy_prompt, 7);
+  assert.equal(seenMetadata.latency_stages_ms.pre_gemini_total, 12);
+  assert.equal(Number.isSafeInteger(seenMetadata.latency_stages_ms.gemini_generation), true);
+  assert.equal(seenMetadata.latency_stages_ms.gemini_generation >= 0, true);
 });
 
 test("generateJson keeps telemetry contents separate from Gemini request contents", async () => {
@@ -448,11 +695,11 @@ test("generateJson forwards caller telemetry metadata", async () => {
   assert.equal(captures[0].economics.input_tokens, 10);
   assert.equal(captures[0].economics.output_tokens, 2);
   assert.equal(captures[0].economics.total_tokens, 12);
-  assert.deepEqual(captures[0].metadata, {
-    gate: "plan_critique",
-    input_bytes: 42,
-    input_limit_bytes: 131072,
-  });
+  assert.equal(captures[0].metadata.gate, "plan_critique");
+  assert.equal(captures[0].metadata.input_bytes, 42);
+  assert.equal(captures[0].metadata.input_limit_bytes, 131072);
+  assert.equal(Number.isSafeInteger(captures[0].metadata.latency_stages_ms.gemini_generation), true);
+  assert.equal(captures[0].metadata.latency_stages_ms.gemini_generation >= 0, true);
 });
 
 test("generateJson redacts API key from structured generation errors", async () => {
@@ -622,6 +869,7 @@ test("generateJson reports Gemini usage metadata on parse failures", async () =>
           async generateContent() {
             return {
               text: "not json",
+              candidates: [{ finishReason: "MAX_TOKENS" }],
               usageMetadata: {
                 promptTokenCount: 5,
                 candidatesTokenCount: 6,
@@ -641,6 +889,46 @@ test("generateJson reports Gemini usage metadata on parse failures", async () =>
     input_tokens: 5,
     output_tokens: 6,
     total_tokens: 11,
+  });
+  assert.deepEqual(captures[0].metadata.structured_response, {
+    response_text_bytes: 8,
+    response_has_json_object_envelope: false,
+    gemini_finish_reason: "MAX_TOKENS",
+  });
+});
+
+test("generateJson parse failure diagnostics tolerate missing candidates", async () => {
+  const captures = [];
+  await assert.rejects(
+    () => generateJson({
+      apiKey: "fake-key",
+      prompt: "bad json",
+      responseSchema: GeminiContextPackSchema,
+      normalize: (value) => value,
+      telemetry: {
+        command: "context-pack",
+        capture: async (event) => captures.push(event),
+      },
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            return {
+              text: "{\"kind\":\"context_pack\"",
+              candidates: null,
+            };
+          },
+        },
+      }),
+    }),
+    /Expected ',' or '}'|JSON/,
+  );
+
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].status, "error");
+  assert.deepEqual(captures[0].metadata.structured_response, {
+    response_text_bytes: 22,
+    response_has_json_object_envelope: false,
+    gemini_finish_reason: null,
   });
 });
 

@@ -32,6 +32,11 @@ function compactEconomicsCommand(row) {
     gemini_estimated_cost_usd: row.gemini_estimated_cost_usd,
     codex_tokens_saved_estimate: row.codex_tokens_saved_estimate,
     gemini_tokens_per_codex_token_saved: row.gemini_tokens_per_codex_token_saved,
+    product_adjusted_gemini_estimated_cost_usd: row.product_adjusted_gemini_estimated_cost_usd,
+    product_adjusted_codex_tokens_saved_estimate: row.product_adjusted_codex_tokens_saved_estimate,
+    product_adjusted_gemini_tokens_per_codex_token_saved: (
+      row.product_adjusted_gemini_tokens_per_codex_token_saved
+    ),
     usage_applicable_coverage_rate: row.usage_applicable_coverage_rate,
   };
 }
@@ -56,6 +61,78 @@ function compactArtifactReviewQualityCommand(row) {
     event_count: row.event_count,
     scorecard_event_count: row.scorecard_event_count,
     avg_overall_score: row.avg_overall_score,
+  };
+}
+
+function compactStructuredResponseCommand(row) {
+  if (!row) return null;
+  return {
+    command: row.command,
+    event_count: row.event_count,
+    missing_json_envelope_count: row.missing_json_envelope_count,
+    avg_response_text_bytes: row.avg_response_text_bytes,
+    max_response_text_bytes: row.max_response_text_bytes,
+  };
+}
+
+function compactStructuredResponseFinishReason(row) {
+  if (!row) return null;
+  return {
+    gemini_finish_reason: row.gemini_finish_reason,
+    event_count: row.event_count,
+  };
+}
+
+function compactStructuredResponseRetryReason(row) {
+  if (!row) return null;
+  return {
+    retry_reason: row.retry_reason,
+    event_count: row.event_count,
+  };
+}
+
+function compactStructuredResponseRetryCommand(row) {
+  if (!row) return null;
+  return {
+    command: row.command,
+    retry_event_count: row.retry_event_count,
+    retry_scheduled_count: row.retry_scheduled_count,
+    retry_recovered_count: row.retry_recovered_count,
+    max_retry_next_max_output_tokens: row.max_retry_next_max_output_tokens,
+  };
+}
+
+export function buildStructuredResponseReport(summary) {
+  const structured = summary.structured_response ?? {};
+  const eventCount = structured.event_count ?? 0;
+  const missingJsonEnvelopeCount = structured.missing_json_envelope_count ?? 0;
+  const retryScheduledCount = structured.retry_scheduled_count ?? 0;
+  const retryRecoveredCount = structured.retry_recovered_count ?? 0;
+  return {
+    event_count: eventCount,
+    missing_json_envelope_count: missingJsonEnvelopeCount,
+    missing_json_envelope_rate: nullableRatio(missingJsonEnvelopeCount, eventCount, 4),
+    retry_event_count: structured.retry_event_count ?? 0,
+    retry_scheduled_count: retryScheduledCount,
+    retry_recovered_count: retryRecoveredCount,
+    retry_recovery_rate: retryScheduledCount > 0
+      ? Math.min(1, nullableRatio(retryRecoveredCount, retryScheduledCount, 4))
+      : null,
+    max_retry_next_max_output_tokens: structured.max_retry_next_max_output_tokens ?? null,
+    avg_response_text_bytes: structured.avg_response_text_bytes ?? null,
+    max_response_text_bytes: structured.max_response_text_bytes ?? null,
+    top_finish_reason: compactStructuredResponseFinishReason(
+      firstOrNull(structured.top_finish_reasons),
+    ),
+    top_command: compactStructuredResponseCommand(
+      firstOrNull(structured.top_commands),
+    ),
+    top_retry_reason: compactStructuredResponseRetryReason(
+      firstOrNull(structured.top_retry_reasons),
+    ),
+    top_retry_command: compactStructuredResponseRetryCommand(
+      firstOrNull(structured.top_retry_commands),
+    ),
   };
 }
 
@@ -161,6 +238,11 @@ export async function runTelemetryReport({
   ]);
   const priorities = buildPriorities({ summary, economics }).slice(0, topLimit);
   const multimodal = summary.multimodal_adjusted ?? summary.multimodal;
+  const telemetryPurpose = summary.telemetry_purpose ?? {
+    event_count: summary.event_counts.total,
+    product_adjusted_event_count: summary.event_counts.total,
+    validation_event_count: 0,
+  };
 
   return {
     scope: summary.scope,
@@ -177,12 +259,32 @@ export async function runTelemetryReport({
       quarantine_count: summary.event_counts.quarantine,
       invalid_count: summary.event_counts.invalid,
     },
+    product_analytics: {
+      product_adjusted: true,
+      event_count: telemetryPurpose.event_count,
+      product_adjusted_event_count: telemetryPurpose.product_adjusted_event_count,
+      validation_event_count: telemetryPurpose.validation_event_count,
+      note: "Product analytics exclude validation telemetry; health and delivery counts include all events.",
+    },
     economics: {
       usage_applicable_adjusted_coverage_rate: economics.totals.usage_applicable_adjusted_coverage_rate,
       gemini_estimated_cost_usd: economics.totals.gemini_estimated_cost_usd,
       codex_tokens_saved_estimate: economics.totals.codex_tokens_saved_estimate,
       gemini_tokens_per_codex_token_saved: economics.totals.gemini_tokens_per_codex_token_saved,
-      top_command: compactEconomicsCommand(firstOrNull(economics.top_commands)),
+      product_adjusted_gemini_estimated_cost_usd: (
+        economics.totals.product_adjusted_gemini_estimated_cost_usd
+      ),
+      product_adjusted_codex_tokens_saved_estimate: (
+        economics.totals.product_adjusted_codex_tokens_saved_estimate
+      ),
+      product_adjusted_gemini_tokens_per_codex_token_saved: (
+        economics.totals.product_adjusted_gemini_tokens_per_codex_token_saved
+      ),
+      top_command: compactEconomicsCommand(firstOrNull(
+        economics.product_adjusted_top_commands?.length
+          ? economics.product_adjusted_top_commands
+          : economics.top_commands,
+      )),
     },
     context_loop: {
       gate_event_count: economics.context_loop.gate_event_count,
@@ -211,6 +313,7 @@ export async function runTelemetryReport({
         firstOrNull(summary.artifact_review_quality.top_commands),
       ),
     },
+    structured_response: buildStructuredResponseReport(summary),
     attribution: {
       top_projects: compactDimensionRows(summary.top_projects, "project_id"),
       top_workspaces: compactDimensionRows(summary.top_workspaces, "workspace_id"),
@@ -230,6 +333,16 @@ export async function runTelemetryReport({
 function formatTopCommand(item) {
   if (!item) return "None";
   return item.command;
+}
+
+function formatTopFinishReason(item) {
+  if (!item) return "None";
+  return item.gemini_finish_reason;
+}
+
+function formatTopRetryReason(item) {
+  if (!item) return "None";
+  return item.retry_reason;
 }
 
 function formatTopPriority(priorities) {
@@ -260,10 +373,18 @@ export function formatTelemetryReportText(report) {
     `- Error rate: ${formatPercent(report.health.error_rate)}`,
     `- Pending / failed / quarantined / invalid: ${formatNumber(report.health.pending_count)} / ${formatNumber(report.health.failed_count)} / ${formatNumber(report.health.quarantine_count)} / ${formatNumber(report.health.invalid_count)}`,
     "",
+    "Product analytics:",
+    `- Product-adjusted events: ${formatNumber(report.product_analytics.product_adjusted_event_count)} of ${formatNumber(report.product_analytics.event_count)}`,
+    `- Validation events excluded from product metrics: ${formatNumber(report.product_analytics.validation_event_count)}`,
+    `- Note: ${report.product_analytics.note}`,
+    "",
     "Economics:",
     `- Estimated Gemini cost: ${formatUsd(report.economics.gemini_estimated_cost_usd)}`,
     `- Estimated Codex tokens saved: ${formatNumber(report.economics.codex_tokens_saved_estimate)}`,
     `- Gemini tokens per estimated Codex token saved: ${report.economics.gemini_tokens_per_codex_token_saved ?? "n/a"}`,
+    `- Product-adjusted Gemini cost: ${formatUsd(report.economics.product_adjusted_gemini_estimated_cost_usd)}`,
+    `- Product-adjusted Codex tokens saved: ${formatNumber(report.economics.product_adjusted_codex_tokens_saved_estimate)}`,
+    `- Product-adjusted Gemini tokens per estimated Codex token saved: ${report.economics.product_adjusted_gemini_tokens_per_codex_token_saved ?? "n/a"}`,
     `- Adjusted usage-applicable coverage: ${formatPercent(report.economics.usage_applicable_adjusted_coverage_rate)}`,
     `- Top savings command: ${formatTopCommand(report.economics.top_command)}`,
     "",
@@ -287,6 +408,19 @@ export function formatTelemetryReportText(report) {
     `- Average overall score: ${report.artifact_review_quality.avg_overall_score ?? "n/a"}`,
     `- Average implementation readiness score: ${report.artifact_review_quality.avg_implementation_readiness_score ?? "n/a"}`,
     `- Top quality command: ${formatTopCommand(report.artifact_review_quality.top_command)}`,
+    "",
+    "Structured responses:",
+    `- Events: ${formatNumber(report.structured_response.event_count)}`,
+    `- Missing JSON envelope: ${formatNumber(report.structured_response.missing_json_envelope_count)} (${formatPercent(report.structured_response.missing_json_envelope_rate)})`,
+    `- Structured JSON retries recovered: ${formatNumber(report.structured_response.retry_recovered_count)} of ${formatNumber(report.structured_response.retry_scheduled_count)} (${formatPercent(report.structured_response.retry_recovery_rate)})`,
+    `- Retry events: ${formatNumber(report.structured_response.retry_event_count)}`,
+    `- Max retry output budget: ${report.structured_response.max_retry_next_max_output_tokens == null ? "n/a" : formatNumber(report.structured_response.max_retry_next_max_output_tokens)}`,
+    `- Average response bytes: ${report.structured_response.avg_response_text_bytes == null ? "n/a" : formatNumber(report.structured_response.avg_response_text_bytes)}`,
+    `- Max response bytes: ${report.structured_response.max_response_text_bytes == null ? "n/a" : formatNumber(report.structured_response.max_response_text_bytes)}`,
+    `- Top finish reason: ${formatTopFinishReason(report.structured_response.top_finish_reason)}`,
+    `- Top structured command: ${formatTopCommand(report.structured_response.top_command)}`,
+    `- Top retry reason: ${formatTopRetryReason(report.structured_response.top_retry_reason)}`,
+    `- Top retry command: ${formatTopCommand(report.structured_response.top_retry_command)}`,
     "",
     "Attribution:",
     `- Top projects: ${formatDimensionRows(report.attribution.top_projects, "project_id")}`,

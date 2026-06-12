@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { lstat as defaultLstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
+import {
+  hasUnsafeTelemetryDimensionContent,
+} from "./telemetry-dimension-safety.mjs";
 
 const DEFAULT_PROJECT_ID = "gemini-agent";
 const DEFAULT_MAX_DEPTH = 6;
@@ -28,7 +31,9 @@ export function resetTelemetryAttributionCacheForTests() {
 
 export function sanitizeTelemetryDimension(value, fallback = DEFAULT_PROJECT_ID) {
   const text = typeof value === "string" ? value.trim() : "";
-  if (!text || /[^\s@]+@[^\s@]+\.[^\s@]+/.test(text)) return fallback;
+  if (!text || hasUnsafeTelemetryDimensionContent(text, { allowScopedPackage: true })) {
+    return fallback;
+  }
   const normalized = text
     .replace(/^@/, "")
     .replace(/[\\/]+/g, "-")
@@ -44,7 +49,7 @@ export function sanitizeTelemetryDimension(value, fallback = DEFAULT_PROJECT_ID)
 
 function sanitizeWorkspaceId(value) {
   const text = typeof value === "string" ? value.trim() : "";
-  if (!text || /[^\s@]+@[^\s@]+\.[^\s@]+/.test(text)) return "";
+  if (!text || hasUnsafeTelemetryDimensionContent(text)) return "";
   if (!/^[A-Za-z0-9._-]{1,120}$/.test(text)) return "";
   return text;
 }

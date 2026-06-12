@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { normalizeTelemetryCommandAlias } from "./telemetry-command-normalization.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
+import { isValidationTelemetryEvent } from "./telemetry-purpose.mjs";
 import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
 import { telemetryQueueDirs } from "./telemetry-queue.mjs";
 
@@ -44,6 +45,11 @@ function zeroEconomics() {
     output_tokens: 0,
     total_tokens: 0,
     codex_tokens_saved_estimate: 0,
+    product_adjusted_events_with_usage: 0,
+    product_adjusted_input_tokens: 0,
+    product_adjusted_output_tokens: 0,
+    product_adjusted_total_tokens: 0,
+    product_adjusted_codex_tokens_saved_estimate: 0,
     events_with_input_bytes: 0,
     input_bytes_total: 0,
     input_bytes_max: 0,
@@ -140,7 +146,8 @@ function hasUsage(event) {
 }
 
 function usageApplies(event) {
-  return !USAGE_NOT_APPLICABLE_COMMANDS.has(canonicalCommand(event.command));
+  return !isValidationTelemetryEvent(event)
+    && !USAGE_NOT_APPLICABLE_COMMANDS.has(canonicalCommand(event.command));
 }
 
 function textByteLength(value) {
@@ -231,6 +238,13 @@ function addEventEconomics(target, event) {
   target.output_tokens += outputTokens;
   target.total_tokens += totalTokens;
   target.codex_tokens_saved_estimate += savingsEstimate(event, inputTokens);
+  if (applies) {
+    target.product_adjusted_events_with_usage += 1;
+    target.product_adjusted_input_tokens += inputTokens;
+    target.product_adjusted_output_tokens += outputTokens;
+    target.product_adjusted_total_tokens += totalTokens;
+    target.product_adjusted_codex_tokens_saved_estimate += savingsEstimate(event, inputTokens);
+  }
 }
 
 function eventFileForState(state, path) {
@@ -290,9 +304,19 @@ function enrichEconomics(item, pricing) {
       inputPricePerMillion: pricing.input_price_per_million,
       outputPricePerMillion: pricing.output_price_per_million,
     }),
+    product_adjusted_gemini_estimated_cost_usd: costFor({
+      inputTokens: item.product_adjusted_input_tokens,
+      outputTokens: item.product_adjusted_output_tokens,
+      inputPricePerMillion: pricing.input_price_per_million,
+      outputPricePerMillion: pricing.output_price_per_million,
+    }),
     gemini_tokens_per_codex_token_saved: nullableRatio(
       item.total_tokens,
       item.codex_tokens_saved_estimate,
+    ),
+    product_adjusted_gemini_tokens_per_codex_token_saved: nullableRatio(
+      item.product_adjusted_total_tokens,
+      item.product_adjusted_codex_tokens_saved_estimate,
     ),
     input_bytes_avg: nullableAverage(item.input_bytes_total, item.events_with_input_bytes),
     input_limit_hit_rate: nullableRatio(
@@ -372,6 +396,18 @@ function topCommands(commandRows, limit) {
     .sort((left, right) => (
       right.codex_tokens_saved_estimate - left.codex_tokens_saved_estimate
       || right.total_tokens - left.total_tokens
+      || left.command.localeCompare(right.command)
+    ))
+    .slice(0, limit);
+}
+
+function productAdjustedTopCommands(commandRows, limit) {
+  return [...commandRows]
+    .filter((item) => item.product_adjusted_events_with_usage > 0)
+    .sort((left, right) => (
+      right.product_adjusted_codex_tokens_saved_estimate
+        - left.product_adjusted_codex_tokens_saved_estimate
+      || right.product_adjusted_total_tokens - left.product_adjusted_total_tokens
       || left.command.localeCompare(right.command)
     ))
     .slice(0, limit);
@@ -532,6 +568,7 @@ export async function runTelemetryEconomics({
   const enrichedTotals = enrichEconomics(totals, pricing);
   const enrichedCommandRows = [...commands.values()].map((item) => enrichEconomics(item, pricing));
   const commandRows = topCommands(enrichedCommandRows, topLimit);
+  const productAdjustedCommandRows = productAdjustedTopCommands(enrichedCommandRows, topLimit);
   const usageGapRows = usageGapCommands(enrichedCommandRows, enrichedTotals, topLimit);
   const gateInputRows = gateInputCommands(enrichedCommandRows, topLimit);
   const contextLoop = {
@@ -559,6 +596,7 @@ export async function runTelemetryEconomics({
     pricing,
     totals: enrichedTotals,
     top_commands: commandRows,
+    product_adjusted_top_commands: productAdjustedCommandRows,
     usage_gap_commands: usageGapRows,
     gate_input_commands: gateInputRows,
     context_loop: contextLoop,
@@ -646,6 +684,9 @@ export function formatTelemetryEconomicsText(report) {
     `- Estimated Gemini cost: ${formatUsd(report.totals.gemini_estimated_cost_usd)}`,
     `- Estimated Codex tokens saved: ${formatNumber(report.totals.codex_tokens_saved_estimate)}`,
     `- Gemini tokens per estimated Codex token saved: ${report.totals.gemini_tokens_per_codex_token_saved ?? "n/a"}`,
+    `- Product-adjusted Gemini cost: ${formatUsd(report.totals.product_adjusted_gemini_estimated_cost_usd)}`,
+    `- Product-adjusted Codex tokens saved: ${formatNumber(report.totals.product_adjusted_codex_tokens_saved_estimate)}`,
+    `- Product-adjusted Gemini tokens per estimated Codex token saved: ${report.totals.product_adjusted_gemini_tokens_per_codex_token_saved ?? "n/a"}`,
     `- Gate input byte events: ${formatNumber(report.totals.events_with_input_bytes)}`,
     `- Gate input total bytes: ${formatNumber(report.totals.input_bytes_total)}`,
     `- Gate input avg bytes: ${report.totals.input_bytes_avg === null ? "n/a" : formatNumber(report.totals.input_bytes_avg)}`,
