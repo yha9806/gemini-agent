@@ -1573,9 +1573,15 @@ function addUsageToAggregate(usage, economics) {
   usage.total_tokens += safeInteger(totalTokens);
 }
 
+function isScheduledStructuredRetryAttempt(event) {
+  return event?.status === "error"
+    && event?.metadata?.structured_response_retry?.will_retry === true;
+}
+
 function addArtifactReviewDepthEventTo({ depths, budgetCohorts }, event, status) {
   const command = artifactReviewQualityCommand(event.command);
   if (!command) return;
+  if (isScheduledStructuredRetryAttempt(event)) return;
   const depth = safeArtifactReviewDepth(event.metadata?.artifact_review_depth);
   const maxOutputTokens = safeMaxOutputTokens(event.metadata?.artifact_review_max_output_tokens);
   const item = depths.get(depth) ?? createArtifactReviewDepthItem(depth);
@@ -1636,6 +1642,7 @@ function addArtifactReviewValidationDepthEvent(accumulator, event, status) {
 function addArtifactReviewQualityEventTo({ quality, commands }, event, status) {
   const command = artifactReviewQualityCommand(event.command);
   if (!command) return;
+  if (isScheduledStructuredRetryAttempt(event)) return;
   quality.event_count += 1;
   if (status === "success") quality.success_count += 1;
   else if (status === "error") quality.error_count += 1;

@@ -1700,6 +1700,109 @@ test("runTelemetrySummary compares artifact-review depth latency, reliability, u
   assert.doesNotMatch(serialized, /\/Users\/example|secret-token|Authorization: Bearer|private\.png/);
 });
 
+test("runTelemetrySummary excludes scheduled artifact-review retry attempts from depth outcome rates", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(49, {
+      command: "artifact-review",
+      status: "error",
+      error_type: "SyntaxError",
+      latency_ms: 12_000,
+      metadata: {
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+        structured_response: {
+          response_has_json_object_envelope: false,
+          gemini_finish_reason: "MAX_TOKENS",
+        },
+        structured_response_retry: {
+          retry_reason: "MAX_TOKENS",
+          will_retry: true,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(50, {
+      command: "artifact-review",
+      latency_ms: 10_000,
+      metadata: {
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+        design_scorecard: {
+          overall_score: 80,
+          implementation_readiness_score: 74,
+        },
+        structured_response: {
+          response_has_json_object_envelope: true,
+          gemini_finish_reason: "STOP",
+        },
+        structured_response_retry: {
+          retry_reason: "MAX_TOKENS",
+          will_retry: false,
+          recovered: true,
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  assert.equal(summary.artifact_review_quality.event_count, 1);
+  assert.equal(summary.artifact_review_quality.success_count, 1);
+  assert.equal(summary.artifact_review_quality.error_count, 0);
+  assert.equal(summary.artifact_review_quality.scorecard_event_count, 1);
+  assert.deepEqual(summary.artifact_review_depths.top_depths, [
+    {
+      review_depth: "quick",
+      event_count: 1,
+      success_count: 1,
+      error_count: 0,
+      unknown_count: 0,
+      scorecard_event_count: 1,
+      avg_overall_score: 80,
+      avg_implementation_readiness_score: 74,
+      p50_latency_ms: 10000,
+      p95_latency_ms: 10000,
+      max_latency_ms: 10000,
+      prompt_tokens: 0,
+      response_tokens: 0,
+      total_tokens: 0,
+      events_missing_usage: 1,
+      avg_max_output_tokens: 2048,
+    },
+  ]);
+  assert.deepEqual(summary.artifact_review_depths.top_budget_cohorts, [
+    {
+      review_depth: "quick",
+      budget_cohort: "2048",
+      max_output_tokens: 2048,
+      event_count: 1,
+      success_count: 1,
+      error_count: 0,
+      unknown_count: 0,
+      scorecard_event_count: 1,
+      avg_overall_score: 80,
+      avg_implementation_readiness_score: 74,
+      p50_latency_ms: 10000,
+      p95_latency_ms: 10000,
+      max_latency_ms: 10000,
+      prompt_tokens: 0,
+      response_tokens: 0,
+      total_tokens: 0,
+      events_missing_usage: 1,
+    },
+  ]);
+});
+
 test("runTelemetrySummary excludes validation artifact reviews from product quality and depth metrics", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({
