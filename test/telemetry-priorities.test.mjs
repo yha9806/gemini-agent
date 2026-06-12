@@ -409,6 +409,63 @@ test("runTelemetryPriorities uses latency stage attribution for slow multimodal 
   }
 });
 
+test("runTelemetryPriorities uses captured Gemini generation latency stage when available", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const latencies = [10_000, 11_000, 12_000, 13_000, 14_000];
+    const generationLatencies = [9900, 10_900, 11_900, 12_900, 13_900];
+    for (const [index, latency] of latencies.entries()) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(120 + index, {
+          command: "artifact-review",
+          prompt: `private generated latency prompt ${index}`,
+          response: `private generated latency response ${index}`,
+          latency_ms: latency,
+          metadata: {
+            latency_stages_ms: {
+              gemini_generation: generationLatencies[index],
+            },
+          },
+          economics: {
+            input_tokens: 1000,
+            output_tokens: 100,
+            total_tokens: 1100,
+            codex_tokens_saved_estimate: 1500,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.priorities[0].kind, "latency");
+    assert.equal(report.priorities[0].command, "artifact-review");
+    assert.equal(
+      report.priorities[0].action,
+      "Focus on Gemini generation latency for artifact-review; captured generation stage accounts for most observed p95.",
+    );
+    assert.ok(report.priorities[0].evidence.some((item) => item === "gemini_generation p95: 13,900 ms"));
+    assert.match(text, /gemini_generation p95: 13,900 ms/);
+    assert.doesNotMatch(serialized, /private generated latency prompt|private generated latency response/);
+    assert.doesNotMatch(serialized, /evt_priority_000120/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities matches legacy artifact-review latency with current stage attribution", async () => {
   const cwd = await temporaryWorkspace();
   try {

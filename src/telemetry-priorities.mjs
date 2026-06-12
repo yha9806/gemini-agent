@@ -103,7 +103,32 @@ function latencyStageForCommand(summary, stage, command) {
   };
 }
 
+function geminiGenerationLatencyContext(summary, candidate, p95) {
+  const generation = latencyStageForCommand(summary, "gemini_generation", candidate.command);
+  if (!generation || p95 <= 0) return null;
+  if (nonnegativeMetric(generation.command.event_count) < MIN_LATENCY_STAGE_EVENTS) return null;
+  const generationP95 = nonnegativeMetric(generation.command.p95_ms);
+  if (generationP95 <= 0) return null;
+  const share = nullableRatio(generationP95, p95, 4);
+  const evidence = [`gemini_generation p95: ${formatNumber(generationP95)} ms`];
+  if (share !== null) {
+    evidence.push(`gemini_generation share of p95 latency: ${formatPercent(share)}`);
+  }
+  if (share !== null && share >= 0.8) {
+    return {
+      action: `Focus on Gemini generation latency for ${candidate.command}; captured generation stage accounts for most observed p95.`,
+      evidence,
+    };
+  }
+  return {
+    action: `Profile ${candidate.command} latency stages before routing more Codex work through this path.`,
+    evidence,
+  };
+}
+
 function latencyStageContext(summary, candidate, p95) {
+  const generationContext = geminiGenerationLatencyContext(summary, candidate, p95);
+  if (generationContext) return generationContext;
   const preGemini = latencyStageForCommand(summary, "pre_gemini_total", candidate.command);
   if (!preGemini || p95 <= 0) {
     return {

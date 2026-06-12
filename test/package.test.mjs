@@ -92,10 +92,10 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /Large raw `diff-review --diff` calls with an existing context pack suggest `diff-review --smart-diff`/);
   assert.match(readme, /Telemetry summary and economics aggregate context-pack preflight warning counts, smart-diff auto-bootstrap counts\/rates, and context reuse rates without exposing raw gate input/);
   assert.match(readme, /Telemetry summary reports aggregate latency p50\/p95\/p99 by command/);
-  assert.match(readme, /Telemetry summary aggregates safe artifact-review latency stage attribution without exposing raw prompts, responses, event ids, paths, or media file names/);
-  assert.match(readme, /Telemetry priorities use latency stage attribution to distinguish pre-Gemini artifact-review work from Gemini generation latency/);
+  assert.match(readme, /Telemetry summary aggregates safe latency stage attribution, including captured `gemini_generation` time and artifact-review `pre_gemini_total`/);
+  assert.match(readme, /Telemetry priorities use latency stage attribution to distinguish captured Gemini generation latency from pre-Gemini artifact-review work/);
   assert.match(readme, /Telemetry summary, economics, and priorities normalize legacy `gemini-\*` command aliases into current command names/);
-  assert.match(readme, /Latency priorities only use stage attribution when `pre_gemini_total` has at least 5 command-level samples/);
+  assert.match(readme, /Latency priorities only use stage attribution when `gemini_generation` or `pre_gemini_total` has at least 5 command-level samples/);
   assert.match(readme, /Latency priorities initially require at least 5 samples and command p95 >= 10,000 ms/);
   assert.match(readme, /Global active Codex policy tells sessions to use `diff-review --smart-diff` for current branch review/);
   assert.match(readme, /manually regenerate stale or unrelated packs/);

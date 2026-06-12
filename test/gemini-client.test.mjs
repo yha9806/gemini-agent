@@ -341,6 +341,51 @@ test("generateArtifactReview reports safe design scorecard telemetry metadata", 
   assert.doesNotMatch(JSON.stringify(seenMetadata), /Private/);
 });
 
+test("generateJson records Gemini generation stage without dropping caller latency stages", async () => {
+  let seenMetadata = null;
+
+  await generateReview({
+    apiKey: "fake-key",
+    prompt: "review plan",
+    telemetry: {
+      cwd: "/tmp/latency-project",
+      command: "plan-critique",
+      metadata: {
+        latency_stages_ms: {
+          media_prepare: 5,
+          policy_prompt: 7,
+          pre_gemini_total: 12,
+        },
+      },
+      capture: async (event) => {
+        seenMetadata = event.metadata;
+      },
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent() {
+          return {
+            text: JSON.stringify({
+              verdict: "pass",
+              top_risks: [],
+              missing_tests: [],
+              unsafe_claims: [],
+              suggested_changes: [],
+              notes: [],
+            }),
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(seenMetadata.latency_stages_ms.media_prepare, 5);
+  assert.equal(seenMetadata.latency_stages_ms.policy_prompt, 7);
+  assert.equal(seenMetadata.latency_stages_ms.pre_gemini_total, 12);
+  assert.equal(Number.isSafeInteger(seenMetadata.latency_stages_ms.gemini_generation), true);
+  assert.equal(seenMetadata.latency_stages_ms.gemini_generation >= 0, true);
+});
+
 test("generateJson keeps telemetry contents separate from Gemini request contents", async () => {
   const requestContents = [
     { inlineData: { mimeType: "image/png", data: "YWJjZA==" } },
@@ -448,11 +493,11 @@ test("generateJson forwards caller telemetry metadata", async () => {
   assert.equal(captures[0].economics.input_tokens, 10);
   assert.equal(captures[0].economics.output_tokens, 2);
   assert.equal(captures[0].economics.total_tokens, 12);
-  assert.deepEqual(captures[0].metadata, {
-    gate: "plan_critique",
-    input_bytes: 42,
-    input_limit_bytes: 131072,
-  });
+  assert.equal(captures[0].metadata.gate, "plan_critique");
+  assert.equal(captures[0].metadata.input_bytes, 42);
+  assert.equal(captures[0].metadata.input_limit_bytes, 131072);
+  assert.equal(Number.isSafeInteger(captures[0].metadata.latency_stages_ms.gemini_generation), true);
+  assert.equal(captures[0].metadata.latency_stages_ms.gemini_generation >= 0, true);
 });
 
 test("generateJson redacts API key from structured generation errors", async () => {

@@ -30,6 +30,38 @@ function requestError(error, apiKey) {
   return new Error(`Gemini API request failed: ${redactApiKey(message, apiKey)}`);
 }
 
+function plainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function mergeTelemetryMetadata(telemetryMetadata, eventMetadata) {
+  const telemetryObject = plainObject(telemetryMetadata);
+  const eventObject = plainObject(eventMetadata);
+  return {
+    ...telemetryObject,
+    ...eventObject,
+    latency_stages_ms: {
+      ...plainObject(telemetryObject.latency_stages_ms),
+      ...plainObject(eventObject.latency_stages_ms),
+    },
+  };
+}
+
+function nonnegativeSafeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function withGeminiGenerationLatency(metadata, latencyMs) {
+  const base = plainObject(metadata);
+  return {
+    ...base,
+    latency_stages_ms: {
+      ...plainObject(base.latency_stages_ms),
+      gemini_generation: nonnegativeSafeInteger(latencyMs),
+    },
+  };
+}
+
 async function captureTelemetry(telemetry, event, { awaitCapture = false } = {}) {
   if (!telemetry) return;
   const capture = telemetry.capture ?? captureGeminiTelemetry;
@@ -50,10 +82,7 @@ async function captureTelemetry(telemetry, event, { awaitCapture = false } = {})
         ...(telemetry.economics && typeof telemetry.economics === "object" ? telemetry.economics : {}),
         ...(event.economics && typeof event.economics === "object" ? event.economics : {}),
       },
-      metadata: {
-        ...(telemetry.metadata && typeof telemetry.metadata === "object" ? telemetry.metadata : {}),
-        ...(event.metadata && typeof event.metadata === "object" ? event.metadata : {}),
-      },
+      metadata: mergeTelemetryMetadata(telemetry.metadata, event.metadata),
     }))
     .catch(() => null);
   if (telemetry.capture || telemetry.awaitCapture || awaitCapture) await capturePromise;
@@ -117,14 +146,18 @@ export async function generateJson({
     const responseText = env.GEMINI_AGENT_FAKE_RESPONSE;
     const started = Date.now();
     const normalized = normalize(parseJsonObject(responseText));
+    const latencyMs = Date.now() - started;
     await captureTelemetry(telemetry, {
       command: "generate-json",
       prompt,
       response: responseText,
       status: "success",
-      latencyMs: Date.now() - started,
+      latencyMs,
       contents,
-      metadata: telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+      metadata: withGeminiGenerationLatency(
+        telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+        latencyMs,
+      ),
     });
     return normalized;
   }
@@ -144,14 +177,16 @@ export async function generateJson({
       },
     });
   } catch (error) {
+    const latencyMs = Date.now() - started;
     await captureTelemetry(telemetry, {
       command: "generate-json",
       prompt,
       response: "",
       status: "error",
       errorType: errorType(error),
-      latencyMs: Date.now() - started,
+      latencyMs,
       contents,
+      metadata: withGeminiGenerationLatency(undefined, latencyMs),
     }, { awaitCapture: true });
     throw requestError(error, apiKey);
   }
@@ -161,28 +196,34 @@ export async function generateJson({
   try {
     normalized = normalize(parseJsonObject(responseText));
   } catch (error) {
+    const latencyMs = Date.now() - started;
     await captureTelemetry(telemetry, {
       command: "generate-json",
       prompt,
       response: responseText,
       status: "error",
       errorType: errorType(error),
-      latencyMs: Date.now() - started,
+      latencyMs,
       contents,
       economics: usageMetadataFromResponse(response),
+      metadata: withGeminiGenerationLatency(undefined, latencyMs),
     }, { awaitCapture: true });
     throw error;
   }
 
+  const latencyMs = Date.now() - started;
   await captureTelemetry(telemetry, {
     command: "generate-json",
     prompt,
     response: responseText,
     status: "success",
-    latencyMs: Date.now() - started,
+    latencyMs,
     contents,
     economics: usageMetadataFromResponse(response),
-    metadata: telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+    metadata: withGeminiGenerationLatency(
+      telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+      latencyMs,
+    ),
   });
   return normalized;
 }
@@ -265,25 +306,29 @@ export async function generateText({
       config: { temperature },
     });
   } catch (error) {
+    const latencyMs = Date.now() - started;
     await captureTelemetry(telemetry, {
       command: "generate-text",
       prompt,
       response: "",
       status: "error",
       errorType: errorType(error),
-      latencyMs: Date.now() - started,
+      latencyMs,
       contents: prompt,
+      metadata: withGeminiGenerationLatency(undefined, latencyMs),
     }, { awaitCapture: true });
     throw requestError(error, apiKey);
   }
+  const latencyMs = Date.now() - started;
   await captureTelemetry(telemetry, {
     command: "generate-text",
     prompt,
     response: response.text || "",
     status: "success",
-    latencyMs: Date.now() - started,
+    latencyMs,
     contents: prompt,
     economics: usageMetadataFromResponse(response),
+    metadata: withGeminiGenerationLatency(undefined, latencyMs),
   });
   return `${response.text || ""}`.trim();
 }
