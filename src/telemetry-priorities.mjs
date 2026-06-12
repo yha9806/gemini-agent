@@ -628,6 +628,8 @@ function multimodalPriority(summary, multimodalCoverage) {
 
 const QUICK_DEPTH_MIN_EVENTS = 5;
 const QUICK_DEPTH_MAX_ERROR_RATE = 0.2;
+const QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES = 10;
+const PRIORITY_ANALYSIS_TOP_LIMIT = 50;
 
 function artifactReviewDepthRow(summary, depth) {
   const rows = Array.isArray(summary.artifact_review_depths?.top_depths)
@@ -657,11 +659,39 @@ function artifactReviewBudgetCohortEvidence(summary, depth, label, limit = 3) {
     ));
 }
 
+function knownOutcomeCount(row) {
+  return nonnegativeMetric(row?.success_count) + nonnegativeMetric(row?.error_count);
+}
+
 function knownErrorRate(row) {
   if (!row) return null;
-  return nullableRatio(nonnegativeMetric(row.error_count), (
-    nonnegativeMetric(row.success_count) + nonnegativeMetric(row.error_count)
-  ), 4);
+  return nullableRatio(nonnegativeMetric(row.error_count), knownOutcomeCount(row), 4);
+}
+
+function worstArtifactReviewBudgetCohortEvidence(summary, depth) {
+  const worst = artifactReviewBudgetCohorts(summary, depth)
+    .map((item) => ({
+      item,
+      knownOutcomes: knownOutcomeCount(item),
+      errorRate: knownErrorRate(item),
+    }))
+    .filter((item) => item.knownOutcomes > 0 && item.errorRate !== null)
+    .sort((left, right) => (
+      right.errorRate - left.errorRate
+      || nonnegativeMetric(right.item.error_count) - nonnegativeMetric(left.item.error_count)
+      || right.knownOutcomes - left.knownOutcomes
+      || `${left.item.budget_cohort ?? "unknown"}`.localeCompare(`${right.item.budget_cohort ?? "unknown"}`)
+    ))[0] ?? null;
+  if (!worst) return null;
+  return `Worst ${depth} budget cohort: ${worst.item.budget_cohort ?? "unknown"} at ${formatPercent(worst.errorRate)} error rate (${formatNumber(worst.knownOutcomes)} events, ${formatNumber(nonnegativeMetric(worst.item.error_count))} error)`;
+}
+
+function hasLowConfidenceBudgetCohort(summary, depth) {
+  return artifactReviewBudgetCohorts(summary, depth)
+    .some((item) => {
+      const outcomes = knownOutcomeCount(item);
+      return outcomes > 0 && outcomes < QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES;
+    });
 }
 
 function artifactReviewDepthPriority(summary) {
@@ -684,12 +714,17 @@ function artifactReviewDepthPriority(summary) {
     evidence.push(`Quick depth total tokens: ${formatNumber(nonnegativeMetric(quick.total_tokens))}`);
   }
   evidence.push(...artifactReviewBudgetCohortEvidence(summary, "quick", "Quick"));
+  const worstQuickCohort = worstArtifactReviewBudgetCohortEvidence(summary, "quick");
+  if (worstQuickCohort) evidence.push(worstQuickCohort);
+  if (hasLowConfidenceBudgetCohort(summary, "quick")) {
+    evidence.push(`Quick budget cohort samples are low-confidence until each active cohort has at least ${formatNumber(QUICK_DEPTH_COHORT_CONFIDENCE_MIN_OUTCOMES)} known outcomes`);
+  }
   return priority({
     kind: "multimodal",
     severity: "medium",
     score: 87,
     title: "Validate artifact-review quick depth before wider routing.",
-    action: "Compare quick vs standard on success rate, p95 latency, token usage, and scorecards. Keep standard fallback until quick depth error rate is clearly lower.",
+    action: "Compare quick vs standard on success rate, p95 latency, token usage, scorecards, and budget cohorts. Keep standard fallback; treat quick-depth cohort comparisons as low sample size until current quick routing has enough clean outcomes.",
     command: "artifact-review",
     evidence,
   });
@@ -737,20 +772,21 @@ export async function runTelemetryPriorities({
     assertNonnegativeNumber(outputPricePerMillion, "outputPricePerMillion");
   }
 
+  const analysisTopLimit = Math.max(topLimit, PRIORITY_ANALYSIS_TOP_LIMIT);
   const [summary, economics] = await Promise.all([
     runTelemetrySummary({
       cwd,
       home,
       scope,
       now,
-      topLimit,
+      topLimit: analysisTopLimit,
     }),
     runTelemetryEconomics({
       cwd,
       home,
       scope,
       now,
-      topLimit,
+      topLimit: analysisTopLimit,
       inputPricePerMillion,
       outputPricePerMillion,
     }),

@@ -629,15 +629,111 @@ test("runTelemetryPriorities flags quick artifact-review depth when reliability 
     assert.ok(depthPriority);
     assert.equal(depthPriority.command, "artifact-review");
     assert.match(depthPriority.action, /Keep standard fallback/);
+    assert.match(depthPriority.action, /low sample size/i);
     assert.ok(depthPriority.evidence.some((item) => item === "Quick depth events: 5"));
     assert.ok(depthPriority.evidence.some((item) => item === "Quick depth error rate: 20.0%"));
     assert.ok(depthPriority.evidence.some((item) => item === "Quick depth p95 latency: 9,000 ms"));
     assert.ok(depthPriority.evidence.some((item) => item === "Standard depth p95 latency: 7,002 ms"));
     assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 2048: 3 events, 0 error"));
     assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 768: 2 events, 1 error"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Worst quick budget cohort: 768 at 50.0% error rate (2 events, 1 error)"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort samples are low-confidence until each active cohort has at least 10 known outcomes"));
     assert.match(text, /quick depth/i);
     assert.doesNotMatch(serialized, /private quick depth prompt|private quick depth response/);
     assert.doesNotMatch(serialized, /evt_priority_000170/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities keeps quick budget cohort diagnostics when returned priority limit is small", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    for (let index = 0; index < 3; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(190 + index, {
+          command: "artifact-review",
+          latency_ms: 5000 + index,
+          prompt: `private quick current cohort prompt ${index}`,
+          response: `private quick current cohort response ${index}`,
+          metadata: {
+            artifact_review_depth: "quick",
+            artifact_review_max_output_tokens: 2048,
+          },
+          economics: {
+            input_tokens: 900,
+            output_tokens: 150,
+            total_tokens: 1050,
+            codex_tokens_saved_estimate: 1200,
+          },
+        }),
+      });
+    }
+    for (let index = 0; index < 2; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(200 + index, {
+          command: "artifact-review",
+          status: "error",
+          error_type: "ParseError",
+          latency_ms: 8000 + index,
+          prompt: `private quick old cohort prompt ${index}`,
+          response: `private quick old cohort response ${index}`,
+          metadata: {
+            artifact_review_depth: "quick",
+            artifact_review_max_output_tokens: 768,
+          },
+          economics: {
+            input_tokens: 900,
+            output_tokens: 150,
+            total_tokens: 1050,
+            codex_tokens_saved_estimate: 1200,
+          },
+        }),
+      });
+    }
+    for (let index = 0; index < 4; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(210 + index, {
+          command: "artifact-review",
+          latency_ms: 6000 + index,
+          metadata: {
+            artifact_review_depth: "standard",
+          },
+          economics: {
+            input_tokens: 1600,
+            output_tokens: 450,
+            total_tokens: 2050,
+            codex_tokens_saved_estimate: 1200,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 2,
+    });
+    const serialized = JSON.stringify(report);
+    const depthPriority = report.priorities.find((item) => (
+      item.kind === "multimodal"
+      && /quick depth/i.test(item.title)
+    ));
+
+    assert.equal(report.priorities.length, 2);
+    assert.ok(depthPriority);
+    assert.ok(depthPriority.evidence.some((item) => item === "Worst quick budget cohort: 768 at 100.0% error rate (2 events, 2 error)"));
+    assert.ok(depthPriority.evidence.some((item) => item === "Quick budget cohort 768: 2 events, 2 error"));
+    assert.doesNotMatch(serialized, /private quick current cohort|private quick old cohort/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
