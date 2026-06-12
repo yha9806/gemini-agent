@@ -764,6 +764,106 @@ test("runTelemetrySummary exposes missing-json-envelope retry counters per comma
   ]);
 });
 
+test("runTelemetrySummary exposes production final structured response diagnostics", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(92, {
+      command: "artifact-review",
+      status: "error",
+      error_type: "SyntaxError",
+      metadata: {
+        telemetry_purpose: "validation",
+        structured_response: {
+          response_text_bytes: 15,
+          response_has_json_object_envelope: false,
+          gemini_finish_reason: "MAX_TOKENS",
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(93, {
+      command: "artifact-review",
+      status: "error",
+      error_type: "SyntaxError",
+      metadata: {
+        telemetry_purpose: "production",
+        structured_response: {
+          response_text_bytes: 15,
+          response_has_json_object_envelope: false,
+          gemini_finish_reason: "MAX_TOKENS",
+        },
+        structured_response_retry: {
+          attempt: 1,
+          will_retry: true,
+          recovered: false,
+          retry_reason: "MAX_TOKENS",
+          next_max_output_tokens: 4096,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(94, {
+      command: "artifact-review",
+      metadata: {
+        telemetry_purpose: "production",
+        structured_response: {
+          response_text_bytes: 11,
+          response_has_json_object_envelope: true,
+          gemini_finish_reason: "STOP",
+        },
+        structured_response_retry: {
+          attempt: 2,
+          will_retry: false,
+          recovered: true,
+          retry_reason: "MAX_TOKENS",
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({
+    cwd,
+    scope: "local",
+    topLimit: 1,
+    requiredStructuredResponseCommands: ["artifact-review"],
+  });
+
+  assert.equal(summary.structured_response.missing_json_envelope_count, 2);
+  assert.deepEqual(summary.production_structured_response.top_commands, [
+    {
+      command: "artifact-review",
+      event_count: 1,
+      missing_json_envelope_count: 0,
+      avg_response_text_bytes: 11,
+      max_response_text_bytes: 11,
+    },
+  ]);
+  assert.deepEqual(summary.production_structured_response.top_retry_commands, [
+    {
+      command: "artifact-review",
+      retry_event_count: 2,
+      retry_scheduled_count: 1,
+      retry_recovered_count: 1,
+      missing_json_envelope_retry_event_count: 0,
+      missing_json_envelope_retry_scheduled_count: 0,
+      missing_json_envelope_retry_recovered_count: 0,
+      max_retry_next_max_output_tokens: 4096,
+    },
+  ]);
+});
+
 test("runTelemetrySummary aggregates pending sent failed quarantine dimensions and usage", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({

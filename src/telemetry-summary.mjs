@@ -553,6 +553,24 @@ function addStructuredResponse(aggregate, command, metadata) {
   addStructuredResponseRetryCommand(aggregate.retryCommands, command, retry);
 }
 
+function addStructuredResponseRetryOnly(aggregate, command, metadata) {
+  const retry = metadata?.structured_response_retry;
+  if (!retry || typeof retry !== "object" || Array.isArray(retry)) return;
+  const retryReason = safeStructuredResponseRetryReason(retry.retry_reason);
+  const nextMaxOutputTokens = safeInteger(retry.next_max_output_tokens);
+  aggregate.retry_event_count += 1;
+  if (retry.will_retry === true) aggregate.retry_scheduled_count += 1;
+  if (retry.recovered === true) aggregate.retry_recovered_count += 1;
+  if (nextMaxOutputTokens > 0) {
+    aggregate.max_retry_next_max_output_tokens = Math.max(
+      aggregate.max_retry_next_max_output_tokens ?? 0,
+      nextMaxOutputTokens,
+    );
+  }
+  updateSimpleCount(aggregate.retryReasons, retryReason);
+  addStructuredResponseRetryCommand(aggregate.retryCommands, command, retry);
+}
+
 function requiredStructuredResponseCommandKeys(commands = []) {
   if (!Array.isArray(commands)) return [];
   return [...new Set(commands.map(structuredResponseCommandKey).filter((key) => key !== "unknown"))];
@@ -612,7 +630,7 @@ function topStructuredResponseRetryCommands(map, limit, requiredCommands = []) {
 }
 
 function buildStructuredResponseSummary(aggregate, topLimit, requiredCommands = []) {
-  if (aggregate.event_count === 0) return zeroStructuredResponse();
+  if (aggregate.event_count === 0 && aggregate.retry_event_count === 0) return zeroStructuredResponse();
   return {
     event_count: aggregate.event_count,
     missing_json_envelope_count: aggregate.missing_json_envelope_count,
@@ -623,7 +641,9 @@ function buildStructuredResponseSummary(aggregate, topLimit, requiredCommands = 
       ? Math.min(1, nullableRatio(aggregate.retry_recovered_count, aggregate.retry_scheduled_count))
       : null,
     max_retry_next_max_output_tokens: aggregate.max_retry_next_max_output_tokens,
-    avg_response_text_bytes: roundOne(aggregate.response_text_bytes_sum / aggregate.event_count),
+    avg_response_text_bytes: aggregate.event_count > 0
+      ? roundOne(aggregate.response_text_bytes_sum / aggregate.event_count)
+      : null,
     max_response_text_bytes: aggregate.max_response_text_bytes,
     top_finish_reasons: topSimpleCounts(aggregate.finishReasons, "gemini_finish_reason", topLimit),
     top_commands: topStructuredResponseCommands(aggregate.commands, topLimit, requiredCommands),
@@ -1365,6 +1385,7 @@ function createAccumulator(invalidSampleLimit) {
     latency: createLatencyAggregate(),
     latencyStages: createLatencyStagesAggregate(),
     structuredResponse: createStructuredResponseAggregate(),
+    productionStructuredResponse: createStructuredResponseAggregate(),
     telemetryPurpose: zeroTelemetryPurpose(),
     invalidSamples: [],
   };
@@ -1410,6 +1431,13 @@ function addEvent(accumulator, state, event) {
   addLatency(accumulator.latency, event.command, event.latency_ms);
   addLatencyStages(accumulator.latencyStages, event.command, event.metadata);
   addStructuredResponse(accumulator.structuredResponse, event.command, event.metadata);
+  if (!validation) {
+    if (isScheduledStructuredRetryAttempt(event)) {
+      addStructuredResponseRetryOnly(accumulator.productionStructuredResponse, event.command, event.metadata);
+    } else {
+      addStructuredResponse(accumulator.productionStructuredResponse, event.command, event.metadata);
+    }
+  }
 
   if (event.prompt) accumulator.rawContent.prompt_events += 1;
   if (event.response) accumulator.rawContent.response_events += 1;
@@ -2150,6 +2178,11 @@ export async function runTelemetrySummary({
     topLimit,
     requiredStructuredResponseCommandKeys(requiredStructuredResponseCommands),
   );
+  const productionStructuredResponse = buildStructuredResponseSummary(
+    accumulator.productionStructuredResponse,
+    topLimit,
+    requiredStructuredResponseCommandKeys(requiredStructuredResponseCommands),
+  );
   const contextLoop = {
     ...accumulator.contextLoop,
     smart_diff_context_pack_bootstrap_rate: nullableRatio(
@@ -2193,6 +2226,7 @@ export async function runTelemetrySummary({
     latency,
     latency_stages: latencyStages,
     structured_response: structuredResponse,
+    production_structured_response: productionStructuredResponse,
     context_loop: contextLoop,
     top_projects: topProjects,
     top_workspaces: topWorkspaces,
