@@ -480,6 +480,80 @@ test("readiness plan requires endpoint diagnostics to be present before limited 
 
   assert.equal(report.readiness.status, "collect_more_samples");
   assert.ok(report.readiness.reasons.includes("telemetry_endpoint_unhealthy"));
+  assert.ok(report.next_actions.includes("Run telemetry doctor and restore healthy endpoint diagnostics before limited routing."));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
+test("readiness plan requires explicit healthy doctor evidence before limited routing", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: {
+      endpoint_check: { ok: true, status: 200 },
+      queue: {
+        pending: { count: 0 },
+        inflight: { count: 0 },
+        failed: { count: 0 },
+        quarantine: { count: 0 },
+      },
+    },
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.ok(report.readiness.reasons.includes("telemetry_doctor_incomplete"));
+  assert.ok(report.next_actions.includes("Run telemetry doctor to refresh complete delivery diagnostics before limited routing."));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
+test("readiness plan requires complete raw preflight evidence before limited routing", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: { ok: true },
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.raw_governance.preflight_available, false);
+  assert.ok(report.readiness.reasons.includes("raw_preflight_incomplete"));
+  assert.ok(report.next_actions.includes("Run raw telemetry preflight with pending, batch, and risk summaries before limited routing."));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
@@ -519,6 +593,7 @@ test("readiness plan requires raw delivery to have no in-flight events", () => {
   assert.equal(report.readiness.status, "collect_more_samples");
   assert.equal(report.raw_governance.inflight_count, 1);
   assert.ok(report.readiness.reasons.includes("raw_inflight_events_present"));
+  assert.ok(report.next_actions.includes("Wait for in-flight raw telemetry delivery to settle before limited routing."));
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 

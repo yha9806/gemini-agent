@@ -93,6 +93,26 @@ function safeDoctorAction(value) {
   return SAFE_DOCTOR_ACTIONS.has(text) ? text : null;
 }
 
+function plainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function doctorComplete(doctor) {
+  return plainObject(doctor) && (doctor.ok === true || doctor.ok === false);
+}
+
+function rawPreflightComplete(rawPreflight) {
+  return plainObject(rawPreflight)
+    && rawPreflight.ok === true
+    && plainObject(rawPreflight.pending)
+    && plainObject(rawPreflight.batch)
+    && plainObject(rawPreflight.risk);
+}
+
+function rawPreflightIncomplete(rawPreflight) {
+  return plainObject(rawPreflight) && rawPreflight.ok === true && !rawPreflightComplete(rawPreflight);
+}
+
 function cloneScorecard(section = {}) {
   const weakest = section?.weakest_field && typeof section.weakest_field === "object"
     ? {
@@ -227,11 +247,11 @@ function sensitiveSignalCount(risk = {}) {
 }
 
 function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
-  const queue = doctor?.queue && typeof doctor.queue === "object" ? doctor.queue : {};
-  const delivery = doctor?.delivery && typeof doctor.delivery === "object" ? doctor.delivery : {};
-  const pending = rawPreflight?.pending && typeof rawPreflight.pending === "object" ? rawPreflight.pending : {};
-  const batch = rawPreflight?.batch && typeof rawPreflight.batch === "object" ? rawPreflight.batch : {};
-  const risk = rawPreflight?.risk && typeof rawPreflight.risk === "object" ? rawPreflight.risk : {};
+  const queue = plainObject(doctor?.queue) ? doctor.queue : {};
+  const delivery = plainObject(doctor?.delivery) ? doctor.delivery : {};
+  const pending = plainObject(rawPreflight?.pending) ? rawPreflight.pending : {};
+  const batch = plainObject(rawPreflight?.batch) ? rawPreflight.batch : {};
+  const risk = plainObject(rawPreflight?.risk) ? rawPreflight.risk : {};
   const selectedCount = Math.max(
     nonnegativeInteger(batch.would_send_count),
     nonnegativeInteger(risk.file_count),
@@ -249,7 +269,8 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
     failed_count: nonnegativeInteger(queue.failed?.count ?? delivery.failed_events),
     quarantine_count: nonnegativeInteger(queue.quarantine?.count ?? delivery.quarantine_events),
     small_flush_safe: doctor?.small_flush_safe === true,
-    preflight_available: rawPreflight?.ok === true,
+    preflight_available: rawPreflightComplete(rawPreflight),
+    preflight_incomplete: rawPreflightIncomplete(rawPreflight),
     preflight_selected_count: selectedCount,
     sensitive_signal_count: sensitiveSignalCount(risk),
     recommended_action: safeDoctorAction(doctor?.recommended_action ?? delivery.recommended_action),
@@ -257,10 +278,8 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
 }
 
 function endpointDiagnosticsHealthy(doctor) {
-  return doctor !== null
-    && typeof doctor === "object"
-    && doctor.endpoint_check !== null
-    && typeof doctor.endpoint_check === "object"
+  return plainObject(doctor)
+    && plainObject(doctor.endpoint_check)
     && doctor.endpoint_check.ok === true;
 }
 
@@ -289,10 +308,14 @@ function buildReadinessReasons({
   if (doctor && doctor.ok === false) blocked.push("telemetry_delivery_unhealthy");
 
   if (doctor === null) collect.push("telemetry_doctor_unavailable");
+  if (doctor !== null && !doctorComplete(doctor)) collect.push("telemetry_doctor_incomplete");
   if (doctor !== null && !endpointDiagnosticsHealthy(doctor)) {
     collect.push("telemetry_endpoint_unhealthy");
   }
-  if (!raw.preflight_available) collect.push("raw_preflight_unavailable");
+  if (raw.preflight_incomplete) collect.push("raw_preflight_incomplete");
+  if (!raw.preflight_available && !raw.preflight_incomplete) {
+    collect.push("raw_preflight_unavailable");
+  }
   if (quick.low_confidence || quick.additional_events_needed > 0) {
     collect.push("active_quick_low_sample");
   }
@@ -341,7 +364,7 @@ function statusFor({ blocked, production, quick, latency, structured, raw, docto
     && raw.quarantine_count === 0
     && raw.preflight_available
     && (raw.pending_count === 0 || raw.sensitive_signal_count === 0);
-  const deliveryReady = doctor !== null && doctor.ok !== false && endpointDiagnosticsHealthy(doctor);
+  const deliveryReady = doctorComplete(doctor) && doctor.ok === true && endpointDiagnosticsHealthy(doctor);
   if (scorecardReady && quickReady && latencyReady && structuredReady && rawReady && deliveryReady) {
     return "ready_for_limited_routing";
   }
@@ -361,7 +384,7 @@ function routingRecommendation({ status, quick }) {
   };
 }
 
-function nextActionsFor({ status, quick, structured, raw, latency, production }) {
+function nextActionsFor({ status, reasons, quick, structured, raw, latency, production }) {
   const actions = [];
   const cohort = quick.active_budget_cohorts[0]?.budget_cohort ?? ACTIVE_QUICK_DEFAULT_BUDGET;
   if (status === "ready_for_limited_routing") {
@@ -382,6 +405,24 @@ function nextActionsFor({ status, quick, structured, raw, latency, production })
   }
   if (structured.missing_json_envelope_count > structured.retry_recovered_count) {
     actions.push("Verify artifact-review structured JSON retry recovery before wider routing.");
+  }
+  if (
+    reasons.includes("telemetry_doctor_unavailable")
+    || reasons.includes("telemetry_doctor_incomplete")
+  ) {
+    actions.push("Run telemetry doctor to refresh complete delivery diagnostics before limited routing.");
+  }
+  if (reasons.includes("telemetry_endpoint_unhealthy")) {
+    actions.push("Run telemetry doctor and restore healthy endpoint diagnostics before limited routing.");
+  }
+  if (
+    reasons.includes("raw_preflight_unavailable")
+    || reasons.includes("raw_preflight_incomplete")
+  ) {
+    actions.push("Run raw telemetry preflight with pending, batch, and risk summaries before limited routing.");
+  }
+  if (reasons.includes("raw_inflight_events_present")) {
+    actions.push("Wait for in-flight raw telemetry delivery to settle before limited routing.");
   }
   if (raw.pending_count > 0 || raw.failed_count > 0 || raw.quarantine_count > 0) {
     actions.push("Run raw telemetry preflight, then use reveal/export/delete/prune or small-batch flush workflows before broad routing.");
@@ -442,7 +483,7 @@ export function buildArtifactReviewReadinessPlan({
     latency_guard: latency,
     raw_governance: raw,
     routing_recommendation: routingRecommendation({ status, quick }),
-    next_actions: nextActionsFor({ status, quick, structured, raw, latency, production }),
+    next_actions: nextActionsFor({ status, reasons, quick, structured, raw, latency, production }),
     limitations: LIMITATIONS,
   };
 }
