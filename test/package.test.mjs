@@ -102,6 +102,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /Telemetry summary and economics aggregate context-pack preflight warning counts, smart-diff auto-bootstrap counts\/rates, and context reuse rates without exposing raw gate input/);
   assert.match(readme, /Telemetry summary reports aggregate latency p50\/p95\/p99 by command/);
   assert.match(readme, /Telemetry summary aggregates safe latency stage attribution, including captured `gemini_generation` time and artifact-review `pre_gemini_total`/);
+  assert.match(readme, /Telemetry summary aggregates safe structured-response diagnostics/);
   assert.match(readme, /Telemetry priorities use latency stage attribution to distinguish captured Gemini generation latency from pre-Gemini artifact-review work/);
   assert.match(readme, /Telemetry summary, economics, and priorities normalize legacy `gemini-\*` command aliases into current command names/);
   assert.match(readme, /Latency priorities only use stage attribution when `gemini_generation` or `pre_gemini_total` has at least 5 command-level samples/);

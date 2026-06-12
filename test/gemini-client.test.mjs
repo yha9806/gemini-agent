@@ -667,6 +667,7 @@ test("generateJson reports Gemini usage metadata on parse failures", async () =>
           async generateContent() {
             return {
               text: "not json",
+              candidates: [{ finishReason: "MAX_TOKENS" }],
               usageMetadata: {
                 promptTokenCount: 5,
                 candidatesTokenCount: 6,
@@ -686,6 +687,46 @@ test("generateJson reports Gemini usage metadata on parse failures", async () =>
     input_tokens: 5,
     output_tokens: 6,
     total_tokens: 11,
+  });
+  assert.deepEqual(captures[0].metadata.structured_response, {
+    response_text_bytes: 8,
+    response_has_json_object_envelope: false,
+    gemini_finish_reason: "MAX_TOKENS",
+  });
+});
+
+test("generateJson parse failure diagnostics tolerate missing candidates", async () => {
+  const captures = [];
+  await assert.rejects(
+    () => generateJson({
+      apiKey: "fake-key",
+      prompt: "bad json",
+      responseSchema: GeminiContextPackSchema,
+      normalize: (value) => value,
+      telemetry: {
+        command: "context-pack",
+        capture: async (event) => captures.push(event),
+      },
+      makeAi: () => ({
+        models: {
+          async generateContent() {
+            return {
+              text: "{\"kind\":\"context_pack\"",
+              candidates: null,
+            };
+          },
+        },
+      }),
+    }),
+    /Expected ',' or '}'|JSON/,
+  );
+
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].status, "error");
+  assert.deepEqual(captures[0].metadata.structured_response, {
+    response_text_bytes: 22,
+    response_has_json_object_envelope: false,
+    gemini_finish_reason: null,
   });
 });
 

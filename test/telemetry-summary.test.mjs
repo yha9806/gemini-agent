@@ -416,6 +416,101 @@ test("runTelemetrySummary aggregates safe latency stage attribution", async () =
   assert.doesNotMatch(serialized, /evt_000076|\/Users\/example|badStage|negative_value|float_value|string_value/);
 });
 
+test("runTelemetrySummary aggregates safe structured response diagnostics", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(80, {
+      command: "artifact-review",
+      prompt: "private structured prompt /Users/example Authorization: Bearer secret-token",
+      response: "{\"partial\":\"private structured response",
+      status: "error",
+      error_type: "SyntaxError",
+      metadata: {
+        structured_response: {
+          response_text_bytes: 1024,
+          response_has_json_object_envelope: false,
+          gemini_finish_reason: "MAX_TOKENS",
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(81, {
+      command: "diff_review",
+      response: "{\"ok\":true}",
+      metadata: {
+        structured_response: {
+          response_text_bytes: 11,
+          response_has_json_object_envelope: true,
+          gemini_finish_reason: "STOP",
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(82, {
+      command: "artifact-review",
+      response: "{}",
+      metadata: {
+        structured_response: {
+          response_text_bytes: 2,
+          response_has_json_object_envelope: true,
+          gemini_finish_reason: "/Users/example/private",
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({
+    cwd,
+    scope: "local",
+    topLimit: 5,
+  });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = `${JSON.stringify(summary)}\n${text}`;
+
+  assert.deepEqual(summary.structured_response, {
+    event_count: 3,
+    missing_json_envelope_count: 1,
+    avg_response_text_bytes: 345.7,
+    max_response_text_bytes: 1024,
+    top_finish_reasons: [
+      { gemini_finish_reason: "MAX_TOKENS", event_count: 1 },
+      { gemini_finish_reason: "STOP", event_count: 1 },
+      { gemini_finish_reason: "unknown", event_count: 1 },
+    ],
+    top_commands: [
+      {
+        command: "artifact-review",
+        event_count: 2,
+        missing_json_envelope_count: 1,
+        avg_response_text_bytes: 513,
+        max_response_text_bytes: 1024,
+      },
+      {
+        command: "diff-review",
+        event_count: 1,
+        missing_json_envelope_count: 0,
+        avg_response_text_bytes: 11,
+        max_response_text_bytes: 11,
+      },
+    ],
+  });
+  assert.match(text, /Structured responses:/);
+  assert.match(text, /Missing JSON envelope: 1/);
+  assert.doesNotMatch(serialized, /private structured prompt|private structured response|Authorization|Bearer|secret-token|\/Users\/example|evt_000080/);
+});
+
 test("runTelemetrySummary aggregates pending sent failed quarantine dimensions and usage", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({

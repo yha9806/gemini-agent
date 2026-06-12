@@ -101,6 +101,7 @@ Global Gemini review gate for Codex.
 - `telemetry backfill-artifacts` carries only allowlisted numeric/null artifact-review design scorecard fields into metadata, dropping strengths, issues, recommended actions, and unknown scorecard keys.
 - Telemetry summary reports aggregate latency p50/p95/p99 by command so slow Gemini routes can be diagnosed without exposing raw prompts, responses, event ids, paths, or media file names.
 - Telemetry summary aggregates safe latency stage attribution, including captured `gemini_generation` time and artifact-review `pre_gemini_total`, without exposing raw prompts, responses, event ids, paths, or media file names.
+- Telemetry summary aggregates safe structured-response diagnostics, including response byte counts, JSON-envelope misses, and Gemini finish reasons, without exposing raw prompts, raw responses, event ids, paths, or media file names.
 - Telemetry summary and economics aggregate context-pack preflight warning counts, smart-diff auto-bootstrap counts/rates, and context reuse rates without exposing raw gate input.
 - Telemetry summary, economics, and priorities normalize legacy `gemini-*` command aliases into current command names so historical MCP/raw-v1 events and current CLI events share one semantic route.
 - `telemetry raw inventory` reports local raw telemetry counts, bytes, truncation counts, multimodal counts, and credential-like aggregate signals; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.

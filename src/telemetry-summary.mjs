@@ -191,6 +191,17 @@ function zeroLatencyStages() {
   };
 }
 
+function zeroStructuredResponse() {
+  return {
+    event_count: 0,
+    missing_json_envelope_count: 0,
+    avg_response_text_bytes: null,
+    max_response_text_bytes: null,
+    top_finish_reasons: [],
+    top_commands: [],
+  };
+}
+
 function zeroStatusCounts() {
   return {
     event_count: 0,
@@ -396,6 +407,81 @@ function topSimpleCounts(map, keyName, limit) {
       [keyName]: key,
       event_count: count,
     }));
+}
+
+function safeStructuredResponseFinishReason(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(text) ? text : "unknown";
+}
+
+function createStructuredResponseAggregate() {
+  return {
+    event_count: 0,
+    missing_json_envelope_count: 0,
+    response_text_bytes_sum: 0,
+    max_response_text_bytes: null,
+    finishReasons: new Map(),
+    commands: new Map(),
+  };
+}
+
+function addStructuredResponseCommand(map, command, responseTextBytes, hasJsonEnvelope) {
+  const key = canonicalCommand(command);
+  const item = map.get(key) ?? {
+    key,
+    event_count: 0,
+    missing_json_envelope_count: 0,
+    response_text_bytes_sum: 0,
+    max_response_text_bytes: null,
+  };
+  item.event_count += 1;
+  if (!hasJsonEnvelope) item.missing_json_envelope_count += 1;
+  item.response_text_bytes_sum += responseTextBytes;
+  item.max_response_text_bytes = Math.max(item.max_response_text_bytes ?? 0, responseTextBytes);
+  map.set(key, item);
+}
+
+function addStructuredResponse(aggregate, command, metadata) {
+  const diagnostic = metadata?.structured_response;
+  if (!diagnostic || typeof diagnostic !== "object" || Array.isArray(diagnostic)) return;
+  const responseTextBytes = safeInteger(diagnostic.response_text_bytes);
+  const hasJsonEnvelope = diagnostic.response_has_json_object_envelope === true;
+  const finishReason = safeStructuredResponseFinishReason(diagnostic.gemini_finish_reason);
+  aggregate.event_count += 1;
+  if (!hasJsonEnvelope) aggregate.missing_json_envelope_count += 1;
+  aggregate.response_text_bytes_sum += responseTextBytes;
+  aggregate.max_response_text_bytes = Math.max(aggregate.max_response_text_bytes ?? 0, responseTextBytes);
+  updateSimpleCount(aggregate.finishReasons, finishReason);
+  addStructuredResponseCommand(aggregate.commands, command, responseTextBytes, hasJsonEnvelope);
+}
+
+function topStructuredResponseCommands(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.event_count - left.event_count
+      || right.missing_json_envelope_count - left.missing_json_envelope_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      command: item.key,
+      event_count: item.event_count,
+      missing_json_envelope_count: item.missing_json_envelope_count,
+      avg_response_text_bytes: roundOne(item.response_text_bytes_sum / item.event_count),
+      max_response_text_bytes: item.max_response_text_bytes,
+    }));
+}
+
+function buildStructuredResponseSummary(aggregate, topLimit) {
+  if (aggregate.event_count === 0) return zeroStructuredResponse();
+  return {
+    event_count: aggregate.event_count,
+    missing_json_envelope_count: aggregate.missing_json_envelope_count,
+    avg_response_text_bytes: roundOne(aggregate.response_text_bytes_sum / aggregate.event_count),
+    max_response_text_bytes: aggregate.max_response_text_bytes,
+    top_finish_reasons: topSimpleCounts(aggregate.finishReasons, "gemini_finish_reason", topLimit),
+    top_commands: topStructuredResponseCommands(aggregate.commands, topLimit),
+  };
 }
 
 function createLatencyAggregate() {
@@ -962,6 +1048,13 @@ function formatTopRows(items, keyName) {
   )).join("\n");
 }
 
+function formatSimpleRows(items, keyName) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item[keyName]}: ${formatNumber(item.event_count)} events`
+  )).join("\n");
+}
+
 function formatMediaCommandRows(items) {
   if (items.length === 0) return "None";
   return items.map((item, index) => (
@@ -1125,6 +1218,7 @@ function createAccumulator(invalidSampleLimit) {
     contextLoopCommands: new Map(),
     latency: createLatencyAggregate(),
     latencyStages: createLatencyStagesAggregate(),
+    structuredResponse: createStructuredResponseAggregate(),
     telemetryPurpose: zeroTelemetryPurpose(),
     invalidSamples: [],
   };
@@ -1166,6 +1260,7 @@ function addEvent(accumulator, state, event) {
   addContextLoopEvent(accumulator, event);
   addLatency(accumulator.latency, event.command, event.latency_ms);
   addLatencyStages(accumulator.latencyStages, event.command, event.metadata);
+  addStructuredResponse(accumulator.structuredResponse, event.command, event.metadata);
 
   if (event.prompt) accumulator.rawContent.prompt_events += 1;
   if (event.response) accumulator.rawContent.response_events += 1;
@@ -1857,6 +1952,7 @@ export async function runTelemetrySummary({
   const artifactReviewDepths = buildArtifactReviewDepthSummary(accumulator, topLimit);
   const latency = buildLatencySummary(accumulator.latency, topLimit);
   const latencyStages = buildLatencyStagesSummary(accumulator.latencyStages, topLimit);
+  const structuredResponse = buildStructuredResponseSummary(accumulator.structuredResponse, topLimit);
   const contextLoop = {
     ...accumulator.contextLoop,
     smart_diff_context_pack_bootstrap_rate: nullableRatio(
@@ -1897,6 +1993,7 @@ export async function runTelemetrySummary({
     artifact_review_depths: artifactReviewDepths,
     latency,
     latency_stages: latencyStages,
+    structured_response: structuredResponse,
     context_loop: contextLoop,
     top_projects: topProjects,
     top_workspaces: topWorkspaces,
@@ -1976,6 +2073,14 @@ export function formatTelemetrySummaryText(summary) {
     `- Stage samples: ${formatNumber(summary.latency_stages?.stage_count ?? 0)}`,
     "Top latency stages:",
     formatLatencyStageRows(summary.latency_stages?.top_stages ?? []),
+    "",
+    "Structured responses:",
+    `- Events: ${formatNumber(summary.structured_response?.event_count ?? 0)}`,
+    `- Missing JSON envelope: ${formatNumber(summary.structured_response?.missing_json_envelope_count ?? 0)}`,
+    `- Average response bytes: ${summary.structured_response?.avg_response_text_bytes == null ? "n/a" : formatNumber(summary.structured_response.avg_response_text_bytes)}`,
+    `- Max response bytes: ${summary.structured_response?.max_response_text_bytes == null ? "n/a" : formatNumber(summary.structured_response.max_response_text_bytes)}`,
+    "Top structured response finish reasons:",
+    formatSimpleRows(summary.structured_response?.top_finish_reasons ?? [], "gemini_finish_reason"),
     "",
     "Usage:",
     `- Prompt tokens: ${formatNumber(summary.usage.prompt_tokens)}`,

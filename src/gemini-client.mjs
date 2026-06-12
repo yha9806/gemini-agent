@@ -62,6 +62,31 @@ function withGeminiGenerationLatency(metadata, latencyMs) {
   };
 }
 
+function safeFinishReason(response) {
+  const reason = response?.candidates?.[0]?.finishReason
+    ?? response?.candidates?.[0]?.finish_reason
+    ?? null;
+  if (typeof reason !== "string") return null;
+  const trimmed = reason.trim();
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(trimmed) ? trimmed : null;
+}
+
+function structuredResponseMetadata(response, responseText) {
+  const text = typeof responseText === "string" ? responseText : "";
+  const trimmed = text.trim();
+  return {
+    structured_response: {
+      response_text_bytes: Buffer.byteLength(text, "utf8"),
+      response_has_json_object_envelope: trimmed.startsWith("{") && trimmed.endsWith("}"),
+      gemini_finish_reason: safeFinishReason(response),
+    },
+  };
+}
+
+function withStructuredResponseMetadata(metadata, response, responseText) {
+  return mergeTelemetryMetadata(metadata, structuredResponseMetadata(response, responseText));
+}
+
 async function captureTelemetry(telemetry, event, { awaitCapture = false } = {}) {
   if (!telemetry) return;
   const capture = telemetry.capture ?? captureGeminiTelemetry;
@@ -206,7 +231,10 @@ export async function generateJson({
       latencyMs,
       contents,
       economics: usageMetadataFromResponse(response),
-      metadata: withGeminiGenerationLatency(undefined, latencyMs),
+      metadata: withGeminiGenerationLatency(
+        withStructuredResponseMetadata(undefined, response, responseText),
+        latencyMs,
+      ),
     }, { awaitCapture: true });
     throw error;
   }
@@ -221,7 +249,11 @@ export async function generateJson({
     contents,
     economics: usageMetadataFromResponse(response),
     metadata: withGeminiGenerationLatency(
-      telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+      withStructuredResponseMetadata(
+        telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+        response,
+        responseText,
+      ),
       latencyMs,
     ),
   });
