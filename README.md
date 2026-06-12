@@ -40,6 +40,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry priorities --global --json
 ./bin/gemini-agent telemetry report --global
 ./bin/gemini-agent telemetry report --global --json
+./bin/gemini-agent telemetry artifact-review quality-gate --global --json
 ./bin/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run
 ./bin/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --write --json
 ./bin/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run
@@ -116,6 +117,7 @@ Global Gemini review gate for Codex.
 - `telemetry priorities` combines aggregate economics, reliability, delivery, latency, instrumentation, and multimodal metadata signals into a development priority list; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - Telemetry priorities use latency stage attribution to distinguish captured Gemini generation latency from pre-Gemini artifact-review work without exposing raw prompts, responses, event ids, paths, or media file names.
 - Telemetry priorities use artifact-review design scorecard coverage, per-field score coverage, and average score to choose between scorecard capture work, design-quality calibration, and broader visual workflow expansion.
+- `telemetry artifact-review quality-gate` reports aggregate quick-depth readiness, risky budget cohorts, and design scorecard coverage without exposing raw prompts, raw responses, event ids, paths, or media file names.
 - Latency priorities only use stage attribution when `gemini_generation` or `pre_gemini_total` has at least 5 command-level samples, avoiding overconfident conclusions from smoke-test or sparse stage data.
 - Latency priorities initially require at least 5 samples and command p95 >= 10,000 ms before recommending profiling a slow Gemini route.
 - `telemetry report` combines aggregate health, economics, context reuse, attribution, multimodal adoption, and top development priority into a product decision snapshot; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.

@@ -58,6 +58,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry economics --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry report --global$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry report --global --json$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry artifact-review quality-gate --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --diff$/m);
@@ -81,6 +82,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /The telemetry receiver `\/metrics` and `\/dashboard` endpoints expose product-adjusted analytics/);
   assert.match(readme, /`telemetry backfill-artifacts` carries only allowlisted numeric\/null artifact-review design scorecard fields/);
   assert.match(readme, /Telemetry priorities use artifact-review design scorecard coverage, per-field score coverage, and average score/);
+  assert.match(readme, /`telemetry artifact-review quality-gate` reports aggregate quick-depth readiness/);
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /`diff-review --diff` reads the current git diff directly/);
   assert.match(readme, /`diff-review --smart-diff` reviews the current git diff with the project-root context pack/);

@@ -37,7 +37,7 @@ import {
   buildArtifactReviewQualityGate,
 } from "../src/telemetry-artifact-review-quality-gate.mjs";
 
-const PRIVATE_TEXT = "private prompt /Users/example Authorization: Bearer secret-token evt_private media.png";
+const PRIVATE_TEXT = "private prompt /private/example Authorization: Bearer secret-token evt_private media.png";
 
 function summary(overrides = {}) {
   return {
@@ -88,7 +88,6 @@ test("buildArtifactReviewQualityGate returns caution for empty telemetry without
     "readiness",
     "scope",
     "scorecard",
-    "storage_cwd",
   ].sort());
 
   const serialized = JSON.stringify(gate);
@@ -367,7 +366,7 @@ test("telemetry artifact-review quality-gate prints safe human output", async ()
     cwd: dir,
     event: telemetryEvent(9200, {
       command: "artifact-review",
-      prompt: "private prompt /Users/example Authorization: Bearer secret-token",
+      prompt: "private prompt /private/example Authorization: Bearer secret-token",
       response: "private response media.png",
       latency_ms: 12217,
       usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
@@ -408,8 +407,8 @@ test("telemetry artifact-review quality-gate --json supports global scope", asyn
     "readiness",
     "scope",
     "scorecard",
-    "storage_cwd",
   ].sort());
+  assert.doesNotMatch(stdout, new RegExp(home.replaceAll("/", "\\/")));
 });
 
 test("telemetry artifact-review quality-gate rejects invalid arguments", async () => {

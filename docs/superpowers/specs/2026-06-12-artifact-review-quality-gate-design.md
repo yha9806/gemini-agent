@@ -69,7 +69,6 @@ These thresholds are deterministic defaults, not hard product truth. They can la
 {
   "ok": true,
   "scope": "global",
-  "storage_cwd": "/path",
   "generated_at": "2026-06-12T00:00:00.000Z",
   "command": "artifact-review",
   "readiness": {
@@ -195,7 +194,7 @@ The gate only reports whether wider routing is advisable; Codex or a later routi
 
 ## Acceptance Criteria
 
-- `gemini-agent telemetry artifact-review quality-gate --global --json` returns a stable aggregate quality decision for `artifact-review`.
+- `gemini-agent telemetry artifact-review quality-gate --global --json` returns a stable aggregate quality decision for `artifact-review` without exposing the telemetry storage path.
 - The command is useful when current telemetry shows low quick-depth sample size, failing budget cohorts, or weak scorecard coverage.
 - Output is aggregate-only and governed by a strict whitelist.
 - Existing telemetry summary, priorities, economics, and report behavior remains compatible.
