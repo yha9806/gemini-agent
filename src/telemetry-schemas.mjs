@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  hasEmailLikeIdentifier,
+  hasUnsafeTelemetryDimensionContent,
+  TELEMETRY_USER_LABEL_SENSITIVE_MESSAGE,
+} from "./telemetry-dimension-safety.mjs";
 
 export const TELEMETRY_SCHEMA_VERSION = 1;
 export const RAW_TELEMETRY_SCHEMA_VERSION = "raw-v1";
@@ -24,8 +29,11 @@ const TelemetryUserLabel = z.string()
   .min(1)
   .max(80)
   .regex(/^[A-Za-z0-9._ -]+$/, "Expected telemetry user label with letters, numbers, space, dot, underscore, or dash.")
-  .refine((value) => !/[^\s@]+@[^\s@]+\.[^\s@]+/.test(value), {
+  .refine((value) => !hasEmailLikeIdentifier(value), {
     message: "Telemetry user label must not contain email addresses.",
+  })
+  .refine((value) => !hasUnsafeTelemetryDimensionContent(value, { includeEmail: false }), {
+    message: TELEMETRY_USER_LABEL_SENSITIVE_MESSAGE,
   });
 
 export const TelemetryConfigZodSchema = z.strictObject({

@@ -215,6 +215,48 @@ test("saveTelemetryConfig rejects unsafe telemetry user labels", async () => {
   assert.equal(await loadTelemetryConfig({ cwd: dir }), null);
 });
 
+test("saveTelemetryConfig rejects path, credential, and phone-shaped user labels", async () => {
+  const dir = await temporaryWorkspace();
+  for (const userLabel of [
+    "/Users/alice/vulca",
+    "vision Authorization: Bearer secret-token",
+    "+1 (415) 555-1212",
+    "123-45-6789",
+  ]) {
+    await assert.rejects(
+      () => saveTelemetryConfig({
+        cwd: dir,
+        endpoint: "http://127.0.0.1:8787/ingest",
+        tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+        userLabel,
+      }),
+      /Telemetry user label must not contain paths, credentials, or phone-like identifiers/,
+    );
+  }
+  assert.equal(await loadTelemetryConfig({ cwd: dir }), null);
+});
+
+test("loadTelemetryConfig clears persisted unsafe telemetry user labels", async () => {
+  const dir = await temporaryWorkspace();
+  const configPath = join(dir, CONFIG_RELATIVE_PATH);
+  await mkdir(join(dir, ".gemini-agent/telemetry"), { recursive: true });
+  await writeFile(configPath, `${JSON.stringify({
+    enabled: true,
+    level: "raw",
+    endpoint: "http://127.0.0.1:8787/ingest",
+    token_env: "GEMINI_AGENT_TELEMETRY_TOKEN",
+    deployment_id: "local",
+    install_id: "install_alpha",
+    user_label: "123-45-6789",
+    schedule: "daily@09:00",
+    created_at: "2026-05-29T09:00:00.000Z",
+    updated_at: "2026-05-29T09:00:00.000Z",
+  }, null, 2)}\n`);
+
+  const config = await loadTelemetryConfig({ cwd: dir });
+  assert.equal(config.user_label, null);
+});
+
 test("saveTelemetryConfig can clear a preserved telemetry user label", async () => {
   const dir = await temporaryWorkspace();
   const firstConfig = await saveTelemetryConfig({
