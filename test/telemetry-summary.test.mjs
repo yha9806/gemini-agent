@@ -538,6 +538,9 @@ test("runTelemetrySummary aggregates safe structured response diagnostics", asyn
         retry_event_count: 2,
         retry_scheduled_count: 1,
         retry_recovered_count: 1,
+        missing_json_envelope_retry_event_count: 0,
+        missing_json_envelope_retry_scheduled_count: 0,
+        missing_json_envelope_retry_recovered_count: 0,
         max_retry_next_max_output_tokens: 4096,
       },
       {
@@ -545,6 +548,9 @@ test("runTelemetrySummary aggregates safe structured response diagnostics", asyn
         retry_event_count: 1,
         retry_scheduled_count: 0,
         retry_recovered_count: 1,
+        missing_json_envelope_retry_event_count: 0,
+        missing_json_envelope_retry_scheduled_count: 0,
+        missing_json_envelope_retry_recovered_count: 0,
         max_retry_next_max_output_tokens: null,
       },
     ],
@@ -656,9 +662,106 @@ test("runTelemetrySummary preserves requiredStructuredResponseCommands outside t
     retry_event_count: 1,
     retry_scheduled_count: 1,
     retry_recovered_count: 0,
+    missing_json_envelope_retry_event_count: 0,
+    missing_json_envelope_retry_scheduled_count: 0,
+    missing_json_envelope_retry_recovered_count: 0,
     max_retry_next_max_output_tokens: 4096,
   });
   assert.equal(JSON.stringify(preserved).includes("/Users/example/private"), false);
+});
+
+test("runTelemetrySummary exposes missing-json-envelope retry counters per command", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(89, {
+      command: "artifact-review",
+      response: "{\"partial\":true",
+      status: "error",
+      error_type: "SyntaxError",
+      metadata: {
+        structured_response: {
+          response_text_bytes: 15,
+          response_has_json_object_envelope: false,
+          gemini_finish_reason: "MAX_TOKENS",
+        },
+        structured_response_retry: {
+          attempt: 1,
+          will_retry: true,
+          recovered: false,
+          retry_reason: "missing_json_envelope",
+          next_max_output_tokens: 4096,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(90, {
+      command: "artifact-review",
+      response: "{\"ok\":true}",
+      metadata: {
+        structured_response: {
+          response_text_bytes: 11,
+          response_has_json_object_envelope: true,
+          gemini_finish_reason: "STOP",
+        },
+        structured_response_retry: {
+          attempt: 2,
+          will_retry: false,
+          recovered: true,
+          retry_reason: "missing_json_envelope",
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(91, {
+      command: "artifact-review",
+      response: "{\"ok\":true}",
+      metadata: {
+        structured_response: {
+          response_text_bytes: 11,
+          response_has_json_object_envelope: true,
+          gemini_finish_reason: "STOP",
+        },
+        structured_response_retry: {
+          attempt: 1,
+          will_retry: false,
+          recovered: true,
+          retry_reason: "MAX_TOKENS",
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({
+    cwd,
+    scope: "local",
+    topLimit: 1,
+    requiredStructuredResponseCommands: ["artifact-review"],
+  });
+
+  assert.deepEqual(summary.structured_response.top_retry_commands, [
+    {
+      command: "artifact-review",
+      retry_event_count: 3,
+      retry_scheduled_count: 1,
+      retry_recovered_count: 2,
+      missing_json_envelope_retry_event_count: 2,
+      missing_json_envelope_retry_scheduled_count: 1,
+      missing_json_envelope_retry_recovered_count: 1,
+      max_retry_next_max_output_tokens: 4096,
+    },
+  ]);
 });
 
 test("runTelemetrySummary aggregates pending sent failed quarantine dimensions and usage", async () => {

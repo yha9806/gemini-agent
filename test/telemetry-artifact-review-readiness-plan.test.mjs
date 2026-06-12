@@ -513,6 +513,97 @@ test("readiness plan does not use unrelated retry recovery for artifact-review J
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
+test("readiness plan does not use max-token retry recovery for JSON envelope risk", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 1,
+        missing_json_envelope_count: 1,
+        missing_json_envelope_rate: 1,
+        retry_event_count: 1,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 1,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 1,
+            missing_json_envelope_count: 1,
+            missing_json_envelope_rate: 1,
+          },
+        ],
+        top_retry_commands: [
+          {
+            command: "artifact-review",
+            retry_event_count: 1,
+            retry_scheduled_count: 0,
+            retry_recovered_count: 1,
+            missing_json_envelope_retry_event_count: 0,
+            missing_json_envelope_retry_scheduled_count: 0,
+            missing_json_envelope_retry_recovered_count: 0,
+          },
+        ],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.structured_response.retry_recovered_count, 1);
+  assert.equal(report.structured_response.missing_json_envelope_retry_recovered_count, 0);
+  assert.equal(report.structured_response.diagnosis, "unrecovered_json_envelope");
+  assert.equal(report.structured_response.recovery_action, "verify_artifact_review_json_retry_recovery");
+  assert.ok(report.readiness.reasons.includes("structured_response_unrecovered_json_envelope"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
+test("readiness plan accepts recovered JSON envelope retries for artifact-review", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 1,
+        missing_json_envelope_count: 1,
+        missing_json_envelope_rate: 1,
+        retry_event_count: 1,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 1,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 1,
+            missing_json_envelope_count: 1,
+            missing_json_envelope_rate: 1,
+          },
+        ],
+        top_retry_commands: [
+          {
+            command: "artifact-review",
+            retry_event_count: 1,
+            retry_scheduled_count: 0,
+            retry_recovered_count: 1,
+            missing_json_envelope_retry_event_count: 1,
+            missing_json_envelope_retry_scheduled_count: 0,
+            missing_json_envelope_retry_recovered_count: 1,
+          },
+        ],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.readiness.status, "ready_for_limited_routing");
+  assert.equal(report.structured_response.missing_json_envelope_retry_recovered_count, 1);
+  assert.equal(report.structured_response.diagnosis, "none");
+  assert.equal(report.structured_response.recovery_action, "none");
+  assert.equal(report.readiness.reasons.includes("structured_response_unrecovered_json_envelope"), false);
+  assert.equal(report.routing_recommendation.limited_routing_allowed, true);
+});
+
 test("readiness plan ignores non-artifact-review structured JSON envelope failures", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary({

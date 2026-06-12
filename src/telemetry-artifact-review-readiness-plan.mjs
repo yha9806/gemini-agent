@@ -272,7 +272,10 @@ function structuredResponseSection(summary = {}) {
   const retryEventCount = nonnegativeInteger(artifactRetryRow?.retry_event_count);
   const retryScheduledCount = nonnegativeInteger(artifactRetryRow?.retry_scheduled_count);
   const retryRecoveredCount = nonnegativeInteger(artifactRetryRow?.retry_recovered_count);
-  const unrecoveredJsonEnvelope = missingCount > retryRecoveredCount;
+  const missingJsonEnvelopeRetryRecoveredCount = nonnegativeInteger(
+    artifactRetryRow?.missing_json_envelope_retry_recovered_count,
+  );
+  const unrecoveredJsonEnvelope = missingCount > missingJsonEnvelopeRetryRecoveredCount;
   return {
     event_count: eventCount,
     missing_json_envelope_count: missingCount,
@@ -282,6 +285,13 @@ function structuredResponseSection(summary = {}) {
     retry_event_count: retryEventCount,
     retry_scheduled_count: retryScheduledCount,
     retry_recovered_count: retryRecoveredCount,
+    missing_json_envelope_retry_event_count: nonnegativeInteger(
+      artifactRetryRow?.missing_json_envelope_retry_event_count,
+    ),
+    missing_json_envelope_retry_scheduled_count: nonnegativeInteger(
+      artifactRetryRow?.missing_json_envelope_retry_scheduled_count,
+    ),
+    missing_json_envelope_retry_recovered_count: missingJsonEnvelopeRetryRecoveredCount,
     retry_recovery_rate: artifactRetryRow
       ? nullableNumber(artifactRetryRow.retry_recovery_rate)
         ?? (retryScheduledCount > 0 ? Math.min(1, ratio(retryRecoveredCount, retryScheduledCount)) : null)
@@ -405,7 +415,7 @@ function buildReadinessReasons({
     collect.push("production_scorecard_field_coverage_low");
   }
   if (latency.near_budget) collect.push("generation_latency_near_budget");
-  if (structured.missing_json_envelope_count > structured.retry_recovered_count) {
+  if (structured.missing_json_envelope_count > structured.missing_json_envelope_retry_recovered_count) {
     collect.push("structured_response_unrecovered_json_envelope");
   }
   if (raw.pending_count > 0 && raw.sensitive_signal_count > 0) {
@@ -437,7 +447,9 @@ function statusFor({ blocked, production, quick, latency, structured, raw, docto
     && quick.active_error_rate !== null
     && quick.active_error_rate < ACTIVE_QUICK_MAX_ERROR_RATE;
   const latencyReady = latency.status === "within_budget" && latency.near_budget === false;
-  const structuredReady = structured.missing_json_envelope_count <= structured.retry_recovered_count;
+  const structuredReady = (
+    structured.missing_json_envelope_count <= structured.missing_json_envelope_retry_recovered_count
+  );
   const rawReady = raw.failed_count === 0
     && raw.inflight_count === 0
     && raw.quarantine_count === 0
@@ -487,7 +499,7 @@ function nextActionsFor({ status, reasons, quick, structured, raw, latency, prod
   if (production.coverage_rate === null || production.coverage_rate < SCORECARD_TARGET_COVERAGE) {
     actions.push("Require numeric design scorecards on new production artifact-review runs.");
   }
-  if (structured.missing_json_envelope_count > structured.retry_recovered_count) {
+  if (structured.missing_json_envelope_count > structured.missing_json_envelope_retry_recovered_count) {
     actions.push("Verify artifact-review structured JSON retry recovery before wider routing.");
   }
   if (

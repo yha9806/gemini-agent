@@ -495,17 +495,26 @@ function addStructuredResponseCommand(map, command, responseTextBytes, hasJsonEn
 
 function addStructuredResponseRetryCommand(map, command, retry) {
   const key = structuredResponseCommandKey(command);
+  const retryReason = safeStructuredResponseRetryReason(retry.retry_reason);
   const nextMaxOutputTokens = safeInteger(retry.next_max_output_tokens);
   const item = map.get(key) ?? {
     key,
     retry_event_count: 0,
     retry_scheduled_count: 0,
     retry_recovered_count: 0,
+    missing_json_envelope_retry_event_count: 0,
+    missing_json_envelope_retry_scheduled_count: 0,
+    missing_json_envelope_retry_recovered_count: 0,
     max_retry_next_max_output_tokens: null,
   };
   item.retry_event_count += 1;
   if (retry.will_retry === true) item.retry_scheduled_count += 1;
   if (retry.recovered === true) item.retry_recovered_count += 1;
+  if (retryReason === "missing_json_envelope") {
+    item.missing_json_envelope_retry_event_count += 1;
+    if (retry.will_retry === true) item.missing_json_envelope_retry_scheduled_count += 1;
+    if (retry.recovered === true) item.missing_json_envelope_retry_recovered_count += 1;
+  }
   if (nextMaxOutputTokens > 0) {
     item.max_retry_next_max_output_tokens = Math.max(
       item.max_retry_next_max_output_tokens ?? 0,
@@ -595,6 +604,9 @@ function topStructuredResponseRetryCommands(map, limit, requiredCommands = []) {
       retry_event_count: item.retry_event_count,
       retry_scheduled_count: item.retry_scheduled_count,
       retry_recovered_count: item.retry_recovered_count,
+      missing_json_envelope_retry_event_count: item.missing_json_envelope_retry_event_count,
+      missing_json_envelope_retry_scheduled_count: item.missing_json_envelope_retry_scheduled_count,
+      missing_json_envelope_retry_recovered_count: item.missing_json_envelope_retry_recovered_count,
       max_retry_next_max_output_tokens: item.max_retry_next_max_output_tokens,
     }));
 }
