@@ -44,7 +44,7 @@ import {
   runArtifactReviewReadinessPlan,
 } from "../src/telemetry-artifact-review-readiness-plan.mjs";
 
-const PRIVATE_TEXT = "raw prompt /Users/example Authorization: Bearer secret-token evt_private private.png batch_private";
+const PRIVATE_TEXT = "raw prompt /home/example Authorization: Bearer secret-token evt_private private.png batch_private";
 
 function scorecard({
   eventCount = 0,
@@ -178,7 +178,7 @@ function doctor(overrides = {}) {
       endpoint_valid: { ok: true },
     },
     endpoint_check: { ok: true, status: 200 },
-    storage_cwd: "/Users/example",
+    storage_cwd: "/home/example",
     ...overrides,
   };
 }
@@ -231,7 +231,7 @@ test("readiness plan returns collect_more_samples for current A2-shaped data", (
   assert.ok(report.readiness.reasons.includes("structured_response_unrecovered_json_envelope"));
   assert.ok(report.readiness.reasons.includes("raw_pending_sensitive_signals"));
   assert.ok(report.readiness.reasons.includes("generation_latency_near_budget"));
-  assert.doesNotMatch(JSON.stringify(report), /raw prompt|Authorization|Bearer|evt_private|private\.png|batch_private|\/Users\/example/);
+  assert.doesNotMatch(JSON.stringify(report), /raw prompt|Authorization|Bearer|evt_private|private\.png|batch_private|\/home\/example/);
 });
 
 test("readiness plan blocks unsafe active quick reliability", () => {
@@ -394,7 +394,7 @@ test("readiness plan text uses aggregate fields only", () => {
   assert.match(text, /Limited routing: no/);
   assert.match(text, /Production sampling: yes/);
   assert.match(text, /collect 6 more quick 2048 samples/);
-  assert.doesNotMatch(text, /raw prompt|Authorization|Bearer|evt_private|private\.png|batch_private|\/Users\/example/);
+  assert.doesNotMatch(text, /raw prompt|Authorization|Bearer|evt_private|private\.png|batch_private|\/home\/example/);
 });
 
 test("runArtifactReviewReadinessPlan degrades when endpoint diagnostics fail", async () => {
@@ -927,7 +927,7 @@ test("telemetry artifact-review readiness-plan outputs aggregate JSON", async ()
       event: telemetryEvent(601, {
         command: "artifact-review",
         status: "success",
-        prompt: "private prompt /Users/example Authorization: Bearer secret-token",
+        prompt: "private prompt /home/example Authorization: Bearer secret-token",
         response: "private response media.png",
         latency_ms: 12000,
         metadata: {
@@ -970,7 +970,7 @@ test("telemetry artifact-review readiness-plan outputs aggregate JSON", async ()
       "structured_response",
       "validation_scorecard",
     ].sort());
-    assert.doesNotMatch(stdout, /private prompt|private response|\/Users\/example|secret-token|media\.png|evt_cli_601/);
+    assert.doesNotMatch(stdout, /private prompt|private response|\/home\/example|secret-token|media\.png|evt_cli_601/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
