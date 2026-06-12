@@ -665,6 +665,9 @@ function buildReadinessReasons({
   if (raw.failed_count > 0) blocked.push("raw_failed_events_present");
   if (raw.quarantine_count > 0) blocked.push("raw_quarantine_events_present");
   if (doctor && doctor.ok === false) blocked.push("telemetry_delivery_unhealthy");
+  if (raw.pending_count > 0 && raw.sensitive_signal_count > 0) {
+    blocked.push("raw_pending_sensitive_signals");
+  }
 
   if (quick.low_confidence || quick.additional_events_needed > 0) collect.push("active_quick_low_sample");
   if (production.coverage_rate === null || production.coverage_rate < SCORECARD_TARGET_COVERAGE) {
@@ -677,7 +680,6 @@ function buildReadinessReasons({
   if (structured.missing_json_envelope_count > structured.retry_recovered_count) {
     collect.push("structured_response_unrecovered_json_envelope");
   }
-  if (raw.pending_count > 0 && raw.sensitive_signal_count > 0) collect.push("raw_pending_sensitive_signals");
   if (
     validation.coverage_rate !== null
     && production.coverage_rate !== null
@@ -1238,7 +1240,7 @@ Expected:
 
 - JSON parses successfully.
 - `command` is `artifact-review`.
-- `readiness.status` is `collect_more_samples` with the current global data.
+- `readiness.status` is a conservative aggregate decision for the current global data; `blocked` is valid when endpoint, raw-governance, latency, structured-response, or other hard gates are unhealthy.
 - `routing_recommendation.limited_routing_allowed` is `false`.
 - Output does not include raw prompts, raw responses, local paths, event ids, media file names, or credential-shaped strings.
 
