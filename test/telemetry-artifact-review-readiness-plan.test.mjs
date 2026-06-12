@@ -1251,6 +1251,48 @@ test("readiness plan text uses aggregate fields only", () => {
   assert.doesNotMatch(text, /raw prompt\b|Authorization|Bearer|evt_private|private\.png|batch_private|\/home\/example/);
 });
 
+test("readiness plan text labels JSON-envelope recovery specifically", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 1,
+        missing_json_envelope_count: 1,
+        missing_json_envelope_rate: 1,
+        retry_event_count: 1,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 1,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 1,
+            missing_json_envelope_count: 1,
+            missing_json_envelope_rate: 1,
+          },
+        ],
+        top_retry_commands: [
+          {
+            command: "artifact-review",
+            retry_event_count: 1,
+            retry_scheduled_count: 0,
+            retry_recovered_count: 1,
+            missing_json_envelope_retry_event_count: 0,
+            missing_json_envelope_retry_scheduled_count: 0,
+            missing_json_envelope_retry_recovered_count: 0,
+          },
+        ],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight(),
+  });
+  const text = artifactReviewReadinessPlanToText(report);
+
+  assert.match(text, /Structured response: 1 missing JSON-envelope events, 0 JSON-envelope recovered/);
+  assert.doesNotMatch(text, /Structured response: 1 missing JSON-envelope events, 1 recovered/);
+});
+
 test("runArtifactReviewReadinessPlan degrades when endpoint diagnostics fail", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-readiness-runner-"));
   try {

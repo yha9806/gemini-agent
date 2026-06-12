@@ -656,7 +656,7 @@ export function artifactReviewReadinessPlanToText(report) {
     `- Limited routing: ${routing.limited_routing_allowed ? "yes" : "no"}`,
     `- Production sampling: ${routing.production_sampling_allowed ? "yes" : "no"}${routing.additional_quick_samples_needed > 0 ? `, collect ${formatNumber(routing.additional_quick_samples_needed)} more quick ${cohort} samples` : ""}`,
     `- Production scorecard coverage: ${formatPercent(report.production_scorecard.coverage_rate)} (${formatNumber(report.production_scorecard.scorecard_event_count)} of ${formatNumber(report.production_scorecard.event_count)})`,
-    `- Structured response: ${formatNumber(report.structured_response.missing_json_envelope_count)} missing JSON-envelope events, ${formatNumber(report.structured_response.retry_recovered_count)} recovered`,
+    `- Structured response: ${formatNumber(report.structured_response.missing_json_envelope_count)} missing JSON-envelope events, ${formatNumber(report.structured_response.missing_json_envelope_retry_recovered_count)} JSON-envelope recovered`,
     `- Raw governance: ${formatNumber(report.raw_governance.pending_count)} pending, ${formatNumber(report.raw_governance.inflight_count)} in-flight, ${formatNumber(report.raw_governance.failed_count)} failed, ${formatNumber(report.raw_governance.quarantine_count)} quarantined`,
     `- Latency: ${report.latency_guard.status}, p95 ${report.latency_guard.p95_ms === null ? "n/a" : `${formatNumber(report.latency_guard.p95_ms)} ms`}, budget ${formatNumber(report.latency_guard.budget_ms)} ms${report.latency_guard.near_budget ? ", near budget" : ""}`,
   ];
