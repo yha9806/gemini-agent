@@ -176,6 +176,142 @@ test("runTelemetryPriorities ranks delivery diagnostics when queued delivery is 
   }
 });
 
+test("runTelemetryPriorities surfaces raw governance when pending raw preflight has sensitive risk", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(30, {
+        command: "artifact-review",
+        prompt: "Authorization: Bearer priority-secret\ncontact person@example.com in /Users/alice/private-project",
+        response: "call +1 (415) 555-1212",
+      }),
+    });
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+      now: new Date("2026-06-10T10:00:00.000Z"),
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const rawGovernance = report.priorities.find((item) => item.kind === "raw_governance");
+
+    assert.ok(rawGovernance);
+    assert.equal(rawGovernance.severity, "high");
+    assert.match(rawGovernance.title, /Raw telemetry upload risk/);
+    assert.match(rawGovernance.action, /raw preflight/);
+    assert.equal(report.totals.raw_preflight_pending_count, 1);
+    assert.equal(report.totals.raw_preflight_selected_count, 1);
+    assert.equal(report.totals.raw_preflight_sensitive_signal_count, 4);
+    assert.ok(rawGovernance.evidence.some((item) => item === "Pending raw events/files: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Selected preflight events: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Credential-like prompt events: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Email-like prompt events: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Path-like prompt events: 1"));
+    assert.ok(rawGovernance.evidence.some((item) => item === "Phone-like response events: 1"));
+    assert.match(text, /Raw telemetry upload risk/);
+    assert.doesNotMatch(serialized, /priority-secret|person@example\.com|Users\/alice|415|555|evt_priority_000030/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities keeps delivery ahead of raw governance when both apply", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(35, {
+        prompt: "contact person@example.com",
+        response: "safe response",
+      }),
+    });
+    const batch = await claimTelemetryBatch({
+      cwd,
+      batchSize: 1,
+      now: new Date("2026-06-10T10:00:00.000Z"),
+    });
+    await failTelemetryBatch({
+      cwd,
+      batchId: batch.batchId,
+      retryable: true,
+      reason: "receiver_error",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(36, {
+        prompt: "new pending raw risk /Users/alice/private-project",
+        response: "safe response",
+      }),
+    });
+
+    const report = await runTelemetryPriorities({ cwd, scope: "local", topLimit: 5 });
+
+    assert.equal(report.priorities[0].kind, "delivery");
+    assert.ok(report.priorities.some((item) => item.kind === "raw_governance"));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities degrades when raw preflight analysis fails", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    for (let index = 40; index <= 43; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(index, {
+          command: "diff-review",
+          status: index <= 41 ? "error" : "success",
+          error_type: index <= 41 ? "APIError" : null,
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({
+      cwd,
+      scope: "local",
+      topLimit: 5,
+      rawPreflightRunner: async () => {
+        throw new Error("raw preflight failed for /Users/alice/private secret-token");
+      },
+    });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.ok(report.priorities.some((item) => item.kind === "reliability"));
+    assert.equal(report.totals.raw_preflight_available, false);
+    assert.equal(report.totals.raw_preflight_pending_count, 0);
+    assert.equal(report.totals.raw_preflight_selected_count, 0);
+    assert.equal(report.totals.raw_preflight_sensitive_signal_count, 0);
+    assert.ok(report.limitations.some((item) => /Raw preflight analysis was unavailable/.test(item)));
+    assert.match(text, /Raw preflight risk signals: unavailable/);
+    assert.doesNotMatch(serialized, /alice|private|secret-token|raw preflight failed/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities ranks quarantined delivery diagnostics before expansion work", async () => {
   const cwd = await temporaryWorkspace();
   try {

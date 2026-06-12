@@ -1,4 +1,5 @@
 import { runTelemetryEconomics } from "./telemetry-economics.mjs";
+import { runTelemetryRawPreflight } from "./telemetry-raw-preflight.mjs";
 import { runTelemetrySummary } from "./telemetry-summary.mjs";
 
 function assertPositiveInteger(value, name) {
@@ -281,6 +282,77 @@ function deliveryPriority(summary) {
       `Failed events: ${formatNumber(failed)}`,
       `Pending events: ${formatNumber(pending)}`,
       `Last failure reason: ${reason ?? "unknown"}`,
+    ],
+  });
+}
+
+function rawPreflightRiskSignalCount(rawPreflight) {
+  const risk = rawPreflight?.risk ?? {};
+  return [
+    "credential_like_prompt_events",
+    "credential_like_response_events",
+    "email_like_prompt_events",
+    "email_like_response_events",
+    "path_like_prompt_events",
+    "path_like_response_events",
+    "phone_like_prompt_events",
+    "phone_like_response_events",
+  ].reduce((total, key) => total + nonnegativeMetric(risk[key]), 0);
+}
+
+async function runRawPreflightSafely({ runner = runTelemetryRawPreflight, ...options }) {
+  try {
+    const report = await runner(options);
+    if (!report || typeof report !== "object") {
+      return { available: false, report: null };
+    }
+    return { available: true, report };
+  } catch {
+    return { available: false, report: null };
+  }
+}
+
+function rawPreflightEvidenceItem(risk, key, label) {
+  const value = nonnegativeMetric(risk?.[key]);
+  return value > 0 ? [`${label}: ${formatNumber(value)}`] : [];
+}
+
+function rawGovernancePriority(rawPreflight) {
+  const pending = nonnegativeMetric(rawPreflight?.pending?.total_count);
+  const selected = nonnegativeMetric(rawPreflight?.batch?.would_send_count);
+  if (!rawPreflight || pending <= 0 || selected <= 0) return null;
+  const risk = rawPreflight.risk ?? {};
+  const signalCount = rawPreflightRiskSignalCount(rawPreflight);
+  const credentialSignals = (
+    nonnegativeMetric(risk.credential_like_prompt_events)
+    + nonnegativeMetric(risk.credential_like_response_events)
+  );
+  const truncatedScans = (
+    nonnegativeMetric(risk.credential_scan_truncated_events)
+    + nonnegativeMetric(risk.sensitive_scan_truncated_events)
+  );
+  if (signalCount <= 0 && truncatedScans <= 0) return null;
+  const severity = credentialSignals > 0 || signalCount >= 3 ? "high" : "medium";
+  return priority({
+    kind: "raw_governance",
+    severity,
+    score: severity === "high" ? 93 : 86,
+    title: "Raw telemetry upload risk needs governance before broad flushing.",
+    action: "Run telemetry raw preflight --json, review aggregate risk counts, then use local raw reveal/export/delete/prune workflows before broad flushes when sensitive categories are present.",
+    evidence: [
+      `Pending raw events/files: ${formatNumber(pending)}`,
+      `Selected preflight events: ${formatNumber(selected)}`,
+      `Sensitive risk signals: ${formatNumber(signalCount)}`,
+      ...rawPreflightEvidenceItem(risk, "credential_like_prompt_events", "Credential-like prompt events"),
+      ...rawPreflightEvidenceItem(risk, "credential_like_response_events", "Credential-like response events"),
+      ...rawPreflightEvidenceItem(risk, "email_like_prompt_events", "Email-like prompt events"),
+      ...rawPreflightEvidenceItem(risk, "email_like_response_events", "Email-like response events"),
+      ...rawPreflightEvidenceItem(risk, "path_like_prompt_events", "Path-like prompt events"),
+      ...rawPreflightEvidenceItem(risk, "path_like_response_events", "Path-like response events"),
+      ...rawPreflightEvidenceItem(risk, "phone_like_prompt_events", "Phone-like prompt events"),
+      ...rawPreflightEvidenceItem(risk, "phone_like_response_events", "Phone-like response events"),
+      ...rawPreflightEvidenceItem(risk, "credential_scan_truncated_events", "Credential scan truncated events"),
+      ...rawPreflightEvidenceItem(risk, "sensitive_scan_truncated_events", "Sensitive scan truncated events"),
     ],
   });
 }
@@ -761,13 +833,14 @@ function artifactReviewDepthPriority(summary) {
   });
 }
 
-export function buildPriorities({ summary, economics }) {
+export function buildPriorities({ summary, economics, rawPreflight = null }) {
   const errorRate = statusErrorRate(summary);
   const multimodalAggregate = summary.multimodal_adjusted ?? summary.multimodal;
   const multimodal = mediaCoverage(multimodalAggregate);
   const rows = [
     reliabilityPriority(summary, errorRate),
     deliveryPriority(summary),
+    rawGovernancePriority(rawPreflight),
     latencyPriority(summary),
     instrumentationPriority(summary, economics, multimodal, multimodalAggregate),
     economicsPriority(economics),
@@ -794,6 +867,7 @@ export async function runTelemetryPriorities({
   topLimit = 10,
   inputPricePerMillion,
   outputPricePerMillion,
+  rawPreflightRunner = runTelemetryRawPreflight,
 } = {}) {
   assertPositiveInteger(topLimit, "topLimit");
   if (inputPricePerMillion !== undefined) {
@@ -804,7 +878,7 @@ export async function runTelemetryPriorities({
   }
 
   const analysisTopLimit = Math.max(topLimit, PRIORITY_ANALYSIS_TOP_LIMIT);
-  const [summary, economics] = await Promise.all([
+  const [summary, economics, rawPreflightResult] = await Promise.all([
     runTelemetrySummary({
       cwd,
       home,
@@ -821,14 +895,32 @@ export async function runTelemetryPriorities({
       inputPricePerMillion,
       outputPricePerMillion,
     }),
+    runRawPreflightSafely({
+      runner: rawPreflightRunner,
+      cwd,
+      home,
+      scope,
+      now,
+      batchSize: analysisTopLimit,
+    }),
   ]);
+  const rawPreflight = rawPreflightResult.report;
+  const rawPreflightAvailable = rawPreflightResult.available;
   const multimodal = mediaCoverage(summary.multimodal_adjusted ?? summary.multimodal);
-  const priorities = buildPriorities({ summary, economics }).slice(0, topLimit);
+  const priorities = buildPriorities({ summary, economics, rawPreflight }).slice(0, topLimit);
   const telemetryPurpose = summary.telemetry_purpose ?? {
     event_count: summary.event_counts.total,
     product_adjusted_event_count: summary.event_counts.total,
     validation_event_count: 0,
   };
+  const limitations = [
+    "Priorities are aggregate local telemetry heuristics, not a replacement for release-blocking tests or user research.",
+    "Gemini cost and Codex token savings are estimates from captured usage metadata.",
+    "No raw prompt, response text, event ids, batch ids, media file names, or per-event records are included.",
+  ];
+  if (!rawPreflightAvailable) {
+    limitations.push("Raw preflight analysis was unavailable; raw governance priorities may be missing.");
+  }
 
   return {
     scope: summary.scope,
@@ -846,6 +938,14 @@ export async function runTelemetryPriorities({
       pending_count: summary.event_counts.pending,
       failed_count: summary.event_counts.failed,
       quarantine_count: summary.event_counts.quarantine,
+      raw_preflight_available: rawPreflightAvailable,
+      raw_preflight_pending_count: nonnegativeMetric(rawPreflight?.pending?.total_count),
+      raw_preflight_selected_count: nonnegativeMetric(rawPreflight?.batch?.would_send_count),
+      raw_preflight_sensitive_signal_count: rawPreflightRiskSignalCount(rawPreflight),
+      raw_preflight_sensitive_scan_truncated_count: (
+        nonnegativeMetric(rawPreflight?.risk?.credential_scan_truncated_events)
+        + nonnegativeMetric(rawPreflight?.risk?.sensitive_scan_truncated_events)
+      ),
       latency_p95_ms: summary.latency?.p95_ms ?? null,
       usage_coverage_rate: usageCoverage(economics),
       usage_applicable_coverage_rate: usageApplicableCoverage(economics),
@@ -871,11 +971,7 @@ export async function runTelemetryPriorities({
       ),
     },
     priorities,
-    limitations: [
-      "Priorities are aggregate local telemetry heuristics, not a replacement for release-blocking tests or user research.",
-      "Gemini cost and Codex token savings are estimates from captured usage metadata.",
-      "No raw prompt, response text, event ids, batch ids, media file names, or per-event records are included.",
-    ],
+    limitations,
   };
 }
 
@@ -889,12 +985,16 @@ function formatPriorityRows(rows) {
 }
 
 export function formatTelemetryPrioritiesText(report) {
+  const rawPreflightLine = report.totals.raw_preflight_available === false
+    ? "Raw preflight risk signals: unavailable"
+    : `Raw preflight risk signals: ${formatNumber(report.totals.raw_preflight_sensitive_signal_count ?? 0)} across ${formatNumber(report.totals.raw_preflight_selected_count ?? 0)} selected pending events`;
   return [
     "Telemetry Development Priorities",
     "",
     `Scope: ${report.scope}`,
     `Storage: ${report.storage_cwd}`,
     `Events: ${formatNumber(report.totals.event_count)} total, ${formatPercent(report.totals.error_rate)} error rate, ${formatNumber(report.totals.pending_count)} pending, ${formatNumber(report.totals.failed_count)} failed, ${formatNumber(report.totals.quarantine_count ?? 0)} quarantined`,
+    rawPreflightLine,
     `Product-adjusted events: ${formatNumber(report.totals.product_adjusted_event_count ?? report.totals.event_count)} of ${formatNumber(report.totals.event_count)}`,
     `Validation events excluded from product metrics: ${formatNumber(report.totals.validation_event_count ?? 0)}`,
     `Latency p95: ${report.totals.latency_p95_ms == null ? "n/a" : `${formatNumber(report.totals.latency_p95_ms)} ms`}`,

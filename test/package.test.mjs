@@ -82,6 +82,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /The telemetry receiver `\/metrics` and `\/dashboard` endpoints expose product-adjusted analytics/);
   assert.match(readme, /`telemetry backfill-artifacts` carries only allowlisted numeric\/null artifact-review design scorecard fields/);
   assert.match(readme, /Telemetry priorities use artifact-review design scorecard coverage, per-field score coverage, and average score/);
+  assert.match(readme, /pending raw preflight governance/);
   assert.match(readme, /`telemetry artifact-review quality-gate` reports aggregate quick-depth readiness/);
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /`diff-review --diff` reads the current git diff directly/);
