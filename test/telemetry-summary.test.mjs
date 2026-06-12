@@ -1564,6 +1564,92 @@ test("runTelemetrySummary excludes validation artifact reviews from product qual
   assert.doesNotMatch(serialized, /evt_000052|evt_000053/);
 });
 
+test("runTelemetrySummary exposes validation artifact-review aggregates separately", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(57, {
+      command: "artifact-review",
+      status: "success",
+      latency_ms: 10_000,
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 1000, media_kind: "design" }],
+      },
+      economics: { input_tokens: 2000, output_tokens: 300, total_tokens: 2300 },
+      metadata: {
+        telemetry_purpose: "production",
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+        design_scorecard: {
+          overall_score: 80,
+          visual_hierarchy_score: 81,
+          clarity_score: 82,
+          accessibility_score: 83,
+          consistency_score: 84,
+          implementation_readiness_score: 85,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(58, {
+      command: "artifact-review",
+      status: "success",
+      latency_ms: 11_000,
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 1000, media_kind: "design" }],
+      },
+      economics: { input_tokens: 2100, output_tokens: 320, total_tokens: 2420 },
+      metadata: {
+        telemetry_purpose: "validation",
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+        design_scorecard: {
+          overall_score: 95,
+          visual_hierarchy_score: 94,
+          clarity_score: 93,
+          accessibility_score: 92,
+          consistency_score: 91,
+          implementation_readiness_score: 90,
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const serialized = JSON.stringify(summary);
+
+  assert.equal(summary.artifact_review_quality.event_count, 1);
+  assert.equal(summary.artifact_review_quality.scorecard_event_count, 1);
+  assert.equal(summary.artifact_review_quality.avg_overall_score, 80);
+  assert.equal(summary.artifact_review_depths.event_count, 1);
+  assert.equal(summary.artifact_review_depths.top_budget_cohorts[0].budget_cohort, "2048");
+
+  assert.equal(summary.artifact_review_validation_quality.event_count, 1);
+  assert.equal(summary.artifact_review_validation_quality.scorecard_event_count, 1);
+  assert.equal(summary.artifact_review_validation_quality.avg_overall_score, 95);
+  assert.equal(summary.artifact_review_validation_quality.avg_implementation_readiness_score, 90);
+  assert.equal(summary.artifact_review_validation_quality.scorecard_field_coverage[0].coverage_rate, 1);
+  assert.equal(summary.artifact_review_validation_depths.event_count, 1);
+  assert.equal(summary.artifact_review_validation_depths.top_depths[0].review_depth, "quick");
+  assert.equal(summary.artifact_review_validation_depths.top_budget_cohorts[0].budget_cohort, "2048");
+  assert.equal(summary.artifact_review_validation_depths.top_budget_cohorts[0].avg_overall_score, 95);
+
+  assert.doesNotMatch(serialized, /evt_000057|evt_000058|\/Users\/example|Authorization: Bearer|private-design/);
+});
+
 test("runTelemetrySummary aggregates telemetry purpose counts safely", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({
