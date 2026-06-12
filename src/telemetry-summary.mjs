@@ -544,14 +544,33 @@ function addStructuredResponse(aggregate, command, metadata) {
   addStructuredResponseRetryCommand(aggregate.retryCommands, command, retry);
 }
 
-function topStructuredResponseCommands(map, limit) {
-  return [...map.values()]
+function requiredStructuredResponseCommandKeys(commands = []) {
+  if (!Array.isArray(commands)) return [];
+  return [...new Set(commands.map(structuredResponseCommandKey).filter((key) => key !== "unknown"))];
+}
+
+function appendRequiredStructuredResponseRows(rows, map, requiredCommands) {
+  const selected = [...rows];
+  const selectedKeys = new Set(selected.map((item) => item.key));
+  for (const command of requiredCommands) {
+    if (selectedKeys.has(command)) continue;
+    const item = map.get(command);
+    if (!item) continue;
+    selected.push(item);
+    selectedKeys.add(command);
+  }
+  return selected;
+}
+
+function topStructuredResponseCommands(map, limit, requiredCommands = []) {
+  const rows = [...map.values()]
     .sort((left, right) => (
       right.event_count - left.event_count
       || right.missing_json_envelope_count - left.missing_json_envelope_count
       || left.key.localeCompare(right.key)
     ))
-    .slice(0, limit)
+    .slice(0, limit);
+  return appendRequiredStructuredResponseRows(rows, map, requiredCommands)
     .map((item) => ({
       command: item.key,
       event_count: item.event_count,
@@ -561,15 +580,16 @@ function topStructuredResponseCommands(map, limit) {
     }));
 }
 
-function topStructuredResponseRetryCommands(map, limit) {
-  return [...map.values()]
+function topStructuredResponseRetryCommands(map, limit, requiredCommands = []) {
+  const rows = [...map.values()]
     .sort((left, right) => (
       right.retry_event_count - left.retry_event_count
       || right.retry_recovered_count - left.retry_recovered_count
       || right.retry_scheduled_count - left.retry_scheduled_count
       || left.key.localeCompare(right.key)
     ))
-    .slice(0, limit)
+    .slice(0, limit);
+  return appendRequiredStructuredResponseRows(rows, map, requiredCommands)
     .map((item) => ({
       command: item.key,
       retry_event_count: item.retry_event_count,
@@ -579,7 +599,7 @@ function topStructuredResponseRetryCommands(map, limit) {
     }));
 }
 
-function buildStructuredResponseSummary(aggregate, topLimit) {
+function buildStructuredResponseSummary(aggregate, topLimit, requiredCommands = []) {
   if (aggregate.event_count === 0) return zeroStructuredResponse();
   return {
     event_count: aggregate.event_count,
@@ -594,9 +614,9 @@ function buildStructuredResponseSummary(aggregate, topLimit) {
     avg_response_text_bytes: roundOne(aggregate.response_text_bytes_sum / aggregate.event_count),
     max_response_text_bytes: aggregate.max_response_text_bytes,
     top_finish_reasons: topSimpleCounts(aggregate.finishReasons, "gemini_finish_reason", topLimit),
-    top_commands: topStructuredResponseCommands(aggregate.commands, topLimit),
+    top_commands: topStructuredResponseCommands(aggregate.commands, topLimit, requiredCommands),
     top_retry_reasons: topSimpleCounts(aggregate.retryReasons, "retry_reason", topLimit),
-    top_retry_commands: topStructuredResponseRetryCommands(aggregate.retryCommands, topLimit),
+    top_retry_commands: topStructuredResponseRetryCommands(aggregate.retryCommands, topLimit, requiredCommands),
   };
 }
 
@@ -2041,6 +2061,7 @@ export async function runTelemetrySummary({
   now = new Date(),
   topLimit = 10,
   invalidSampleLimit = 20,
+  requiredStructuredResponseCommands = [],
 } = {}) {
   if (!Number.isInteger(topLimit) || topLimit <= 0) {
     throw new RangeError("topLimit must be a positive integer.");
@@ -2105,7 +2126,11 @@ export async function runTelemetrySummary({
   }, topLimit);
   const latency = buildLatencySummary(accumulator.latency, topLimit);
   const latencyStages = buildLatencyStagesSummary(accumulator.latencyStages, topLimit);
-  const structuredResponse = buildStructuredResponseSummary(accumulator.structuredResponse, topLimit);
+  const structuredResponse = buildStructuredResponseSummary(
+    accumulator.structuredResponse,
+    topLimit,
+    requiredStructuredResponseCommandKeys(requiredStructuredResponseCommands),
+  );
   const contextLoop = {
     ...accumulator.contextLoop,
     smart_diff_context_pack_bootstrap_rate: nullableRatio(

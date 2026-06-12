@@ -5,12 +5,61 @@ import { join } from "node:path";
 import test from "node:test";
 import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
 import {
+  appendTelemetryEvent,
+  claimTelemetryBatch,
+  completeTelemetryBatch,
+} from "../src/telemetry-queue.mjs";
+import {
   artifactReviewReadinessPlanToText,
   buildArtifactReviewReadinessPlan,
   runArtifactReviewReadinessPlan,
 } from "../src/telemetry-artifact-review-readiness-plan.mjs";
 
 const PRIVATE_TEXT = "raw prompt /home/example Authorization: Bearer secret-token evt_private private.png batch_private";
+
+function telemetryEvent(index, overrides = {}) {
+  const suffix = `${index}`.padStart(6, "0");
+  return {
+    schema_version: 1,
+    event_id: `evt_${suffix}`,
+    trace_id: `trace_${suffix}`,
+    deployment_id: "dep_test",
+    project_id: "gemini-agent",
+    source: "cli",
+    command: "ask",
+    model: "gemini-3.5-flash",
+    prompt: `prompt ${suffix}`,
+    response: `response ${suffix}`,
+    status: "success",
+    error_type: null,
+    latency_ms: 12000,
+    created_at: "2026-06-12T00:00:00.000Z",
+    payload: { prompt_truncated: false, response_truncated: false, multimodal: [] },
+    context: {
+      cwd: null,
+      session_id: null,
+      run_id: null,
+      task_id: null,
+      parent_codex_session: null,
+    },
+    outcome: {
+      task_outcome: "unknown",
+      user_acceptance: "unknown",
+      accepted_files: [],
+      modified_after_review: null,
+      followup_required: null,
+    },
+    economics: {
+      codex_tokens_saved_estimate: null,
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      latency_bucket: null,
+      cost_bucket: null,
+    },
+    ...overrides,
+  };
+}
 
 function scorecard({
   eventCount = 0,
@@ -1136,6 +1185,86 @@ test("runArtifactReviewReadinessPlan degrades when endpoint diagnostics fail", a
     assert.equal(report.raw_governance.failed_count, 0);
     assert.equal(report.routing_recommendation.limited_routing_allowed, false);
     assert.equal(JSON.stringify(report).includes(cwd), false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runArtifactReviewReadinessPlan preserves artifact-review structured failures outside summary top limit", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-readiness-runner-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+      deploymentId: "gemini-agent-main",
+    });
+
+    for (const index of [100, 101]) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(index, {
+          command: "diff-review",
+          response: "{\"ok\":true}",
+          metadata: {
+            structured_response: {
+              response_text_bytes: 11,
+              response_has_json_object_envelope: true,
+              gemini_finish_reason: "STOP",
+            },
+          },
+        }),
+      });
+    }
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(102, {
+        command: "artifact-review",
+        response: "{\"partial\":true",
+        status: "error",
+        error_type: "SyntaxError",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 15,
+            response_has_json_object_envelope: false,
+            gemini_finish_reason: "MAX_TOKENS",
+          },
+          structured_response_retry: {
+            attempt: 1,
+            will_retry: true,
+            recovered: false,
+            retry_reason: "MAX_TOKENS",
+            next_max_output_tokens: 4096,
+          },
+        },
+      }),
+    });
+
+    const batch = await claimTelemetryBatch({
+      cwd,
+      batchSize: 3,
+      now: new Date("2026-06-12T00:01:00.000Z"),
+    });
+    await completeTelemetryBatch({
+      cwd,
+      batchId: batch.batchId,
+      now: new Date("2026-06-12T00:02:00.000Z"),
+    });
+
+    const report = await runArtifactReviewReadinessPlan({
+      cwd,
+      scope: "local",
+      topLimit: 1,
+      env: { GEMINI_AGENT_TELEMETRY_TOKEN: "local-token" },
+      fetchImpl: async () => ({ ok: true, status: 200 }),
+      now: new Date("2026-06-12T00:03:00.000Z"),
+    });
+
+    assert.notEqual(report.readiness.status, "ready_for_limited_routing");
+    assert.equal(report.structured_response.affected_command, "artifact-review");
+    assert.equal(report.structured_response.missing_json_envelope_count, 1);
+    assert.equal(report.structured_response.diagnosis, "unrecovered_json_envelope");
+    assert.ok(report.readiness.reasons.includes("structured_response_unrecovered_json_envelope"));
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

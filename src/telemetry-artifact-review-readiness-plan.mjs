@@ -593,7 +593,14 @@ export async function runArtifactReviewReadinessPlan({
   fetchImpl = fetch,
   doctorTimeoutMs = 750,
 } = {}) {
-  const summary = await runTelemetrySummary({ cwd, home, scope, now, topLimit });
+  const summary = await runTelemetrySummary({
+    cwd,
+    home,
+    scope,
+    now,
+    topLimit,
+    requiredStructuredResponseCommands: ["artifact-review"],
+  });
   const qualityGate = buildArtifactReviewQualityGate(summary);
   const coveragePlan = buildArtifactReviewCoveragePlan(summary, qualityGate);
   let doctor = null;

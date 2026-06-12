@@ -554,6 +554,113 @@ test("runTelemetrySummary aggregates safe structured response diagnostics", asyn
   assert.doesNotMatch(serialized, /private structured prompt|private structured response|Authorization|Bearer|secret-token|\/Users\/example|evt_000080/);
 });
 
+test("runTelemetrySummary preserves requiredStructuredResponseCommands outside top limit", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  for (const index of [83, 84, 85]) {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(index, {
+        command: "diff-review",
+        response: "{\"ok\":true}",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 11,
+            response_has_json_object_envelope: true,
+            gemini_finish_reason: "STOP",
+          },
+        },
+      }),
+    });
+  }
+  for (const index of [86, 87]) {
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(index, {
+        command: "context-pack",
+        response: "{\"ok\":true}",
+        metadata: {
+          structured_response: {
+            response_text_bytes: 11,
+            response_has_json_object_envelope: true,
+            gemini_finish_reason: "STOP",
+          },
+          structured_response_retry: {
+            attempt: 1,
+            will_retry: false,
+            recovered: true,
+            retry_reason: "MAX_TOKENS",
+          },
+        },
+      }),
+    });
+  }
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(88, {
+      command: "gemini-artifact-review",
+      response: "{\"partial\":true",
+      status: "error",
+      error_type: "SyntaxError",
+      metadata: {
+        structured_response: {
+          response_text_bytes: 15,
+          response_has_json_object_envelope: false,
+          gemini_finish_reason: "MAX_TOKENS",
+        },
+        structured_response_retry: {
+          attempt: 1,
+          will_retry: true,
+          recovered: false,
+          retry_reason: "MAX_TOKENS",
+          next_max_output_tokens: 4096,
+        },
+      },
+    }),
+  });
+
+  const capped = await runTelemetrySummary({ cwd, scope: "local", topLimit: 1 });
+  assert.deepEqual(capped.structured_response.top_commands.map((row) => row.command), ["diff-review"]);
+  assert.deepEqual(capped.structured_response.top_retry_commands.map((row) => row.command), ["context-pack"]);
+
+  const preserved = await runTelemetrySummary({
+    cwd,
+    scope: "local",
+    topLimit: 1,
+    requiredStructuredResponseCommands: ["artifact_review", "gemini-artifact-review", "/Users/example/private"],
+  });
+
+  assert.deepEqual(preserved.structured_response.top_commands.map((row) => row.command), [
+    "diff-review",
+    "artifact-review",
+  ]);
+  assert.deepEqual(preserved.structured_response.top_retry_commands.map((row) => row.command), [
+    "context-pack",
+    "artifact-review",
+  ]);
+  assert.deepEqual(preserved.structured_response.top_commands[1], {
+    command: "artifact-review",
+    event_count: 1,
+    missing_json_envelope_count: 1,
+    avg_response_text_bytes: 15,
+    max_response_text_bytes: 15,
+  });
+  assert.deepEqual(preserved.structured_response.top_retry_commands[1], {
+    command: "artifact-review",
+    retry_event_count: 1,
+    retry_scheduled_count: 1,
+    retry_recovered_count: 0,
+    max_retry_next_max_output_tokens: 4096,
+  });
+  assert.equal(JSON.stringify(preserved).includes("/Users/example/private"), false);
+});
+
 test("runTelemetrySummary aggregates pending sent failed quarantine dimensions and usage", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({
