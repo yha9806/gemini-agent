@@ -1323,6 +1323,38 @@ test("runArtifactReviewReadinessPlan degrades when endpoint diagnostics fail", a
   }
 });
 
+test("runArtifactReviewReadinessPlan allows slow healthy endpoint diagnostics by default", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-readiness-slow-doctor-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: "GEMINI_AGENT_TELEMETRY_TOKEN",
+      deploymentId: "gemini-agent-main",
+    });
+
+    const report = await runArtifactReviewReadinessPlan({
+      cwd,
+      env: { GEMINI_AGENT_TELEMETRY_TOKEN: "local-token" },
+      fetchImpl: async (url, { signal }) => new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          resolve({ ok: true, status: 200, url });
+        }, 900);
+        signal.addEventListener("abort", () => {
+          clearTimeout(timeout);
+          reject(signal.reason ?? new Error("aborted"));
+        }, { once: true });
+      }),
+      now: new Date("2026-06-12T00:00:00.000Z"),
+    });
+
+    assert.equal(report.ok, true);
+    assert.equal(report.readiness.reasons.includes("telemetry_endpoint_unhealthy"), false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runArtifactReviewReadinessPlan preserves artifact-review structured failures outside summary top limit", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-readiness-runner-"));
   try {

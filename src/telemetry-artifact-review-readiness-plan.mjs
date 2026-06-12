@@ -603,7 +603,7 @@ export async function runArtifactReviewReadinessPlan({
   topLimit = 10,
   env = process.env,
   fetchImpl = fetch,
-  doctorTimeoutMs = 750,
+  doctorTimeoutMs = 3000,
 } = {}) {
   const summary = await runTelemetrySummary({
     cwd,
