@@ -360,6 +360,63 @@ test("runTelemetryEconomics separates usage-applicable runtime events from synth
   }
 });
 
+test("runTelemetryEconomics reports product-adjusted token economics excluding validation", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(26, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 10,
+          total_tokens: 110,
+          codex_tokens_saved_estimate: 120,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(27, {
+        command: "artifact-review",
+        economics: {
+          input_tokens: 10_000,
+          output_tokens: 1_000,
+          total_tokens: 11_000,
+          codex_tokens_saved_estimate: 20_000,
+        },
+        metadata: {
+          telemetry_purpose: "validation",
+        },
+      }),
+    });
+
+    const report = await runTelemetryEconomics({ cwd, scope: "local", topLimit: 1 });
+    const text = formatTelemetryEconomicsText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.totals.input_tokens, 10_100);
+    assert.equal(report.totals.codex_tokens_saved_estimate, 20_120);
+    assert.equal(report.totals.product_adjusted_input_tokens, 100);
+    assert.equal(report.totals.product_adjusted_output_tokens, 10);
+    assert.equal(report.totals.product_adjusted_total_tokens, 110);
+    assert.equal(report.totals.product_adjusted_codex_tokens_saved_estimate, 120);
+    assert.equal(report.totals.product_adjusted_gemini_estimated_cost_usd, 0.00024);
+    assert.equal(report.product_adjusted_top_commands[0].command, "diff-review");
+    assert.equal(report.product_adjusted_top_commands[0].product_adjusted_codex_tokens_saved_estimate, 120);
+    assert.match(text, /Product-adjusted Gemini cost/);
+    assert.doesNotMatch(serialized, /evt_000026|evt_000027|private economics prompt|private economics response/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryEconomics reports aggregate usage metadata gaps safely", async () => {
   const cwd = await temporaryWorkspace();
   try {

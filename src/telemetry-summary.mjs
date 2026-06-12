@@ -3,7 +3,7 @@ import { basename, relative, join, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { normalizeTelemetryCommandAlias } from "./telemetry-command-normalization.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
-import { isValidationTelemetryEvent } from "./telemetry-purpose.mjs";
+import { isValidationTelemetryEvent, safeTelemetryPurpose } from "./telemetry-purpose.mjs";
 import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
 import {
   loadTelemetryState,
@@ -50,6 +50,15 @@ function zeroRawContent() {
     response_events: 0,
     truncated_prompt_events: 0,
     truncated_response_events: 0,
+  };
+}
+
+function zeroTelemetryPurpose() {
+  return {
+    event_count: 0,
+    production_event_count: 0,
+    validation_event_count: 0,
+    product_adjusted_event_count: 0,
   };
 }
 
@@ -1116,6 +1125,7 @@ function createAccumulator(invalidSampleLimit) {
     contextLoopCommands: new Map(),
     latency: createLatencyAggregate(),
     latencyStages: createLatencyStagesAggregate(),
+    telemetryPurpose: zeroTelemetryPurpose(),
     invalidSamples: [],
   };
 }
@@ -1132,7 +1142,15 @@ function addEvent(accumulator, state, event) {
   accumulator.counts[state] += 1;
   accumulator.counts.total += 1;
   const status = event.status === "success" || event.status === "error" ? event.status : "unknown";
+  const purpose = safeTelemetryPurpose(event?.metadata?.telemetry_purpose);
   const validation = isValidationTelemetryEvent(event);
+  accumulator.telemetryPurpose.event_count += 1;
+  if (purpose === "validation") {
+    accumulator.telemetryPurpose.validation_event_count += 1;
+  } else {
+    accumulator.telemetryPurpose.production_event_count += 1;
+    accumulator.telemetryPurpose.product_adjusted_event_count += 1;
+  }
   updateStatusCounts(accumulator.statusCounts, status);
   updateDimension(accumulator.projects, event.project_id, status);
   updateOptionalDimension(accumulator.workspaces, event.context?.workspace_id, status);
@@ -1866,6 +1884,7 @@ export async function runTelemetrySummary({
     storage_cwd: context.storageCwd,
     generated_at: now.toISOString(),
     event_counts: accumulator.counts,
+    telemetry_purpose: accumulator.telemetryPurpose,
     status_counts: accumulator.statusCounts,
     queue,
     usage: accumulator.usage,
@@ -1923,6 +1942,10 @@ export function formatTelemetrySummaryText(summary) {
     `Scope: ${summary.scope}`,
     `Storage: ${summary.storage_cwd}`,
     `Events: ${summary.event_counts.total} total, ${summary.event_counts.sent} sent, ${summary.event_counts.pending} pending, ${summary.event_counts.failed} failed, ${summary.event_counts.quarantine} quarantined, ${summary.event_counts.invalid} invalid`,
+    "",
+    "Telemetry purpose:",
+    `- Product-adjusted events: ${formatNumber(summary.telemetry_purpose?.product_adjusted_event_count ?? summary.event_counts.total)} of ${formatNumber(summary.telemetry_purpose?.event_count ?? summary.event_counts.total)}`,
+    `- Validation events excluded from product metrics: ${formatNumber(summary.telemetry_purpose?.validation_event_count ?? 0)}`,
     "",
     "Top projects:",
     formatTopRows(summary.top_projects, "project_id"),

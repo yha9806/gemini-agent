@@ -32,6 +32,11 @@ function compactEconomicsCommand(row) {
     gemini_estimated_cost_usd: row.gemini_estimated_cost_usd,
     codex_tokens_saved_estimate: row.codex_tokens_saved_estimate,
     gemini_tokens_per_codex_token_saved: row.gemini_tokens_per_codex_token_saved,
+    product_adjusted_gemini_estimated_cost_usd: row.product_adjusted_gemini_estimated_cost_usd,
+    product_adjusted_codex_tokens_saved_estimate: row.product_adjusted_codex_tokens_saved_estimate,
+    product_adjusted_gemini_tokens_per_codex_token_saved: (
+      row.product_adjusted_gemini_tokens_per_codex_token_saved
+    ),
     usage_applicable_coverage_rate: row.usage_applicable_coverage_rate,
   };
 }
@@ -161,6 +166,11 @@ export async function runTelemetryReport({
   ]);
   const priorities = buildPriorities({ summary, economics }).slice(0, topLimit);
   const multimodal = summary.multimodal_adjusted ?? summary.multimodal;
+  const telemetryPurpose = summary.telemetry_purpose ?? {
+    event_count: summary.event_counts.total,
+    product_adjusted_event_count: summary.event_counts.total,
+    validation_event_count: 0,
+  };
 
   return {
     scope: summary.scope,
@@ -177,12 +187,32 @@ export async function runTelemetryReport({
       quarantine_count: summary.event_counts.quarantine,
       invalid_count: summary.event_counts.invalid,
     },
+    product_analytics: {
+      product_adjusted: true,
+      event_count: telemetryPurpose.event_count,
+      product_adjusted_event_count: telemetryPurpose.product_adjusted_event_count,
+      validation_event_count: telemetryPurpose.validation_event_count,
+      note: "Product analytics exclude validation telemetry; health and delivery counts include all events.",
+    },
     economics: {
       usage_applicable_adjusted_coverage_rate: economics.totals.usage_applicable_adjusted_coverage_rate,
       gemini_estimated_cost_usd: economics.totals.gemini_estimated_cost_usd,
       codex_tokens_saved_estimate: economics.totals.codex_tokens_saved_estimate,
       gemini_tokens_per_codex_token_saved: economics.totals.gemini_tokens_per_codex_token_saved,
-      top_command: compactEconomicsCommand(firstOrNull(economics.top_commands)),
+      product_adjusted_gemini_estimated_cost_usd: (
+        economics.totals.product_adjusted_gemini_estimated_cost_usd
+      ),
+      product_adjusted_codex_tokens_saved_estimate: (
+        economics.totals.product_adjusted_codex_tokens_saved_estimate
+      ),
+      product_adjusted_gemini_tokens_per_codex_token_saved: (
+        economics.totals.product_adjusted_gemini_tokens_per_codex_token_saved
+      ),
+      top_command: compactEconomicsCommand(firstOrNull(
+        economics.product_adjusted_top_commands?.length
+          ? economics.product_adjusted_top_commands
+          : economics.top_commands,
+      )),
     },
     context_loop: {
       gate_event_count: economics.context_loop.gate_event_count,
@@ -260,10 +290,18 @@ export function formatTelemetryReportText(report) {
     `- Error rate: ${formatPercent(report.health.error_rate)}`,
     `- Pending / failed / quarantined / invalid: ${formatNumber(report.health.pending_count)} / ${formatNumber(report.health.failed_count)} / ${formatNumber(report.health.quarantine_count)} / ${formatNumber(report.health.invalid_count)}`,
     "",
+    "Product analytics:",
+    `- Product-adjusted events: ${formatNumber(report.product_analytics.product_adjusted_event_count)} of ${formatNumber(report.product_analytics.event_count)}`,
+    `- Validation events excluded from product metrics: ${formatNumber(report.product_analytics.validation_event_count)}`,
+    `- Note: ${report.product_analytics.note}`,
+    "",
     "Economics:",
     `- Estimated Gemini cost: ${formatUsd(report.economics.gemini_estimated_cost_usd)}`,
     `- Estimated Codex tokens saved: ${formatNumber(report.economics.codex_tokens_saved_estimate)}`,
     `- Gemini tokens per estimated Codex token saved: ${report.economics.gemini_tokens_per_codex_token_saved ?? "n/a"}`,
+    `- Product-adjusted Gemini cost: ${formatUsd(report.economics.product_adjusted_gemini_estimated_cost_usd)}`,
+    `- Product-adjusted Codex tokens saved: ${formatNumber(report.economics.product_adjusted_codex_tokens_saved_estimate)}`,
+    `- Product-adjusted Gemini tokens per estimated Codex token saved: ${report.economics.product_adjusted_gemini_tokens_per_codex_token_saved ?? "n/a"}`,
     `- Adjusted usage-applicable coverage: ${formatPercent(report.economics.usage_applicable_adjusted_coverage_rate)}`,
     `- Top savings command: ${formatTopCommand(report.economics.top_command)}`,
     "",

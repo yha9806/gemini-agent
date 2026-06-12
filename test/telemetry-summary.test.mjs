@@ -1426,6 +1426,58 @@ test("runTelemetrySummary excludes validation artifact reviews from product qual
   assert.doesNotMatch(serialized, /evt_000052|evt_000053/);
 });
 
+test("runTelemetrySummary aggregates telemetry purpose counts safely", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(54, {
+      command: "diff-review",
+      metadata: {},
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(55, {
+      command: "artifact-review",
+      metadata: {
+        telemetry_purpose: "validation",
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(56, {
+      command: "plan-critique",
+      metadata: {
+        telemetry_purpose: "canary /Users/example/private Authorization: Bearer secret-token",
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = `${JSON.stringify(summary)}\n${text}`;
+
+  assert.deepEqual(summary.telemetry_purpose, {
+    event_count: 3,
+    production_event_count: 2,
+    validation_event_count: 1,
+    product_adjusted_event_count: 2,
+  });
+  assert.match(text, /Telemetry purpose/);
+  assert.match(text, /Product-adjusted events: 2/);
+  assert.match(text, /Validation events excluded from product metrics: 1/);
+  assert.doesNotMatch(serialized, /evt_000054|evt_000055|evt_000056/);
+  assert.doesNotMatch(serialized, /\/Users\/example|secret-token|Authorization: Bearer|canary/);
+});
+
 test("runTelemetrySummary reports correction overlays without polluting original multimodal totals", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({

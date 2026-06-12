@@ -239,6 +239,92 @@ test("runTelemetryReport handles empty telemetry without unsafe claims", async (
   }
 });
 
+test("runTelemetryReport exposes product-adjusted analytics when validation events are present", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(5, {
+        command: "artifact-review",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", byte_size: 100, media_kind: "screenshot" }],
+        },
+        metadata: {
+          telemetry_purpose: "production",
+          design_scorecard: {
+            overall_score: 82,
+            implementation_readiness_score: 80,
+          },
+        },
+        economics: {
+          input_tokens: 1000,
+          output_tokens: 100,
+          total_tokens: 1100,
+          codex_tokens_saved_estimate: 1200,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(6, {
+        command: "artifact-review",
+        payload: {
+          prompt_truncated: false,
+          response_truncated: false,
+          multimodal: [{ mime_type: "image/png", byte_size: 100, media_kind: "screenshot" }],
+        },
+        metadata: {
+          telemetry_purpose: "validation",
+          design_scorecard: {
+            overall_score: 99,
+            implementation_readiness_score: 99,
+          },
+        },
+        economics: {
+          input_tokens: 9000,
+          output_tokens: 900,
+          total_tokens: 9900,
+          codex_tokens_saved_estimate: 10_000,
+        },
+      }),
+    });
+
+    const report = await runTelemetryReport({ cwd, scope: "local" });
+    const text = formatTelemetryReportText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.health.event_count, 2);
+    assert.deepEqual(report.product_analytics, {
+      product_adjusted: true,
+      event_count: 2,
+      product_adjusted_event_count: 1,
+      validation_event_count: 1,
+      note: "Product analytics exclude validation telemetry; health and delivery counts include all events.",
+    });
+    assert.equal(report.multimodal.event_count, 1);
+    assert.equal(report.artifact_review_quality.event_count, 1);
+    assert.equal(report.artifact_review_quality.avg_overall_score, 82);
+    assert.equal(report.economics.codex_tokens_saved_estimate, 11_200);
+    assert.equal(report.economics.product_adjusted_codex_tokens_saved_estimate, 1200);
+    assert.equal(report.economics.product_adjusted_gemini_estimated_cost_usd, 0.0024);
+    assert.equal(report.economics.usage_applicable_adjusted_coverage_rate, 1);
+    assert.match(text, /Product analytics/);
+    assert.match(text, /Product-adjusted events: 1 of 2/);
+    assert.match(text, /Validation events excluded from product metrics: 1/);
+    assert.doesNotMatch(serialized, /evt_report_000005|evt_report_000006|private report prompt|private report response/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryReport points pending delivery attention at bounded flush diagnostics", async () => {
   const cwd = await temporaryWorkspace();
   try {

@@ -841,6 +841,62 @@ test("runTelemetryPriorities supports global scope, top limit, and pricing overr
   }
 });
 
+test("runTelemetryPriorities surfaces product-adjusted counts and ignores validation-only economics", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(31, {
+        command: "diff-review",
+        economics: {
+          input_tokens: 100,
+          output_tokens: 10,
+          total_tokens: 110,
+          codex_tokens_saved_estimate: 120,
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(32, {
+        command: "artifact-review",
+        economics: {
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          total_tokens: 1_100_000,
+          codex_tokens_saved_estimate: 2_000_000,
+        },
+        metadata: {
+          telemetry_purpose: "validation",
+        },
+      }),
+    });
+
+    const report = await runTelemetryPriorities({ cwd, scope: "local", topLimit: 5 });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.equal(report.totals.event_count, 2);
+    assert.equal(report.totals.product_adjusted, true);
+    assert.equal(report.totals.product_adjusted_event_count, 1);
+    assert.equal(report.totals.validation_event_count, 1);
+    assert.equal(report.totals.product_adjusted_codex_tokens_saved_estimate, 120);
+    assert.equal(report.totals.codex_tokens_saved_estimate, 2_000_120);
+    assert.equal(report.priorities.some((item) => item.kind === "economics"), false);
+    assert.match(text, /Product-adjusted events: 1 of 2/);
+    assert.match(text, /Validation events excluded from product metrics: 1/);
+    assert.doesNotMatch(serialized, /evt_priority_000031|evt_priority_000032|private priority prompt|private priority response/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities uses usage-applicable coverage for instrumentation priority", async () => {
   const cwd = await temporaryWorkspace();
   try {
@@ -1118,7 +1174,9 @@ test("runTelemetryPriorities keeps workflow priority stable without gate input b
       workflow.action,
       "Reduce prompt size, narrow context packs, or route only the parts Gemini can handle cheaply.",
     );
-    assert.ok(workflow.evidence.some((item) => item === "Gemini tokens per estimated Codex token saved: 11"));
+    assert.ok(workflow.evidence.some((item) => (
+      item === "Product-adjusted Gemini tokens per estimated Codex token saved: 11"
+    )));
     assert.equal(workflow.evidence.some((item) => /Gate input/.test(item)), false);
   } finally {
     await rm(cwd, { recursive: true, force: true });

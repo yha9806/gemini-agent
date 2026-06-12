@@ -428,9 +428,12 @@ function instrumentationPriority(summary, economics, multimodalCoverage, multimo
 }
 
 function economicsPriority(economics) {
-  const candidate = economics.top_commands.find((item) => (
-    item.codex_tokens_saved_estimate >= 1_000_000
-    && item.gemini_estimated_cost_usd <= 10
+  const rows = economics.product_adjusted_top_commands?.length
+    ? economics.product_adjusted_top_commands
+    : economics.top_commands;
+  const candidate = rows.find((item) => (
+    item.product_adjusted_codex_tokens_saved_estimate >= 1_000_000
+    && item.product_adjusted_gemini_estimated_cost_usd <= 10
     && (item.success_rate ?? 0) >= 0.8
   ));
   if (!candidate) return null;
@@ -442,8 +445,8 @@ function economicsPriority(economics) {
     action: "Keep this route active and build product affordances that make it easier to call intentionally.",
     command: candidate.command,
     evidence: [
-      `Estimated Codex tokens saved: ${formatNumber(candidate.codex_tokens_saved_estimate)}`,
-      `Estimated Gemini cost: ${formatUsd(candidate.gemini_estimated_cost_usd)}`,
+      `Product-adjusted Codex tokens saved: ${formatNumber(candidate.product_adjusted_codex_tokens_saved_estimate)}`,
+      `Product-adjusted Gemini cost: ${formatUsd(candidate.product_adjusted_gemini_estimated_cost_usd)}`,
       `Success rate: ${formatPercent(candidate.success_rate)}`,
     ],
   });
@@ -467,10 +470,13 @@ function gateInputForCommand(economics, command) {
 }
 
 function workflowPriority(economics) {
-  const candidate = economics.top_commands.find((item) => (
-    item.codex_tokens_saved_estimate > 0
-    && item.gemini_tokens_per_codex_token_saved !== null
-    && item.gemini_tokens_per_codex_token_saved > 2
+  const rows = economics.product_adjusted_top_commands?.length
+    ? economics.product_adjusted_top_commands
+    : economics.top_commands;
+  const candidate = rows.find((item) => (
+    item.product_adjusted_codex_tokens_saved_estimate > 0
+    && item.product_adjusted_gemini_tokens_per_codex_token_saved !== null
+    && item.product_adjusted_gemini_tokens_per_codex_token_saved > 2
   ));
   if (!candidate) return null;
   const gateInput = gateInputForCommand(economics, candidate.command);
@@ -492,8 +498,8 @@ function workflowPriority(economics) {
       : "Reduce prompt size, narrow context packs, or route only the parts Gemini can handle cheaply.",
     command: candidate.command,
     evidence: [
-      `Gemini tokens per estimated Codex token saved: ${candidate.gemini_tokens_per_codex_token_saved}`,
-      `Estimated Codex tokens saved: ${formatNumber(candidate.codex_tokens_saved_estimate)}`,
+      `Product-adjusted Gemini tokens per estimated Codex token saved: ${candidate.product_adjusted_gemini_tokens_per_codex_token_saved}`,
+      `Product-adjusted Codex tokens saved: ${formatNumber(candidate.product_adjusted_codex_tokens_saved_estimate)}`,
       ...gateInputEvidence,
     ],
   });
@@ -818,6 +824,11 @@ export async function runTelemetryPriorities({
   ]);
   const multimodal = mediaCoverage(summary.multimodal_adjusted ?? summary.multimodal);
   const priorities = buildPriorities({ summary, economics }).slice(0, topLimit);
+  const telemetryPurpose = summary.telemetry_purpose ?? {
+    event_count: summary.event_counts.total,
+    product_adjusted_event_count: summary.event_counts.total,
+    validation_event_count: 0,
+  };
 
   return {
     scope: summary.scope,
@@ -826,6 +837,9 @@ export async function runTelemetryPriorities({
     pricing: economics.pricing,
     totals: {
       event_count: summary.event_counts.total,
+      product_adjusted: true,
+      product_adjusted_event_count: telemetryPurpose.product_adjusted_event_count,
+      validation_event_count: telemetryPurpose.validation_event_count,
       success_count: summary.status_counts.success_count,
       error_count: summary.status_counts.error_count,
       error_rate: statusErrorRate(summary),
@@ -849,6 +863,12 @@ export async function runTelemetryPriorities({
       artifact_review_known_depth_event_count: summary.artifact_review_depths?.known_depth_event_count ?? 0,
       gemini_estimated_cost_usd: economics.totals.gemini_estimated_cost_usd,
       codex_tokens_saved_estimate: economics.totals.codex_tokens_saved_estimate,
+      product_adjusted_gemini_estimated_cost_usd: (
+        economics.totals.product_adjusted_gemini_estimated_cost_usd
+      ),
+      product_adjusted_codex_tokens_saved_estimate: (
+        economics.totals.product_adjusted_codex_tokens_saved_estimate
+      ),
     },
     priorities,
     limitations: [
@@ -875,6 +895,8 @@ export function formatTelemetryPrioritiesText(report) {
     `Scope: ${report.scope}`,
     `Storage: ${report.storage_cwd}`,
     `Events: ${formatNumber(report.totals.event_count)} total, ${formatPercent(report.totals.error_rate)} error rate, ${formatNumber(report.totals.pending_count)} pending, ${formatNumber(report.totals.failed_count)} failed, ${formatNumber(report.totals.quarantine_count ?? 0)} quarantined`,
+    `Product-adjusted events: ${formatNumber(report.totals.product_adjusted_event_count ?? report.totals.event_count)} of ${formatNumber(report.totals.event_count)}`,
+    `Validation events excluded from product metrics: ${formatNumber(report.totals.validation_event_count ?? 0)}`,
     `Latency p95: ${report.totals.latency_p95_ms == null ? "n/a" : `${formatNumber(report.totals.latency_p95_ms)} ms`}`,
     `Usage coverage: ${formatPercent(report.totals.usage_coverage_rate)}`,
     `Usage-applicable coverage: ${formatPercent(report.totals.usage_applicable_coverage_rate)}`,
@@ -882,6 +904,8 @@ export function formatTelemetryPrioritiesText(report) {
     `Suspected test fixture events: ${formatNumber(report.totals.suspected_test_fixture_event_count)}`,
     `Estimated Gemini cost: ${formatUsd(report.totals.gemini_estimated_cost_usd)}`,
     `Estimated Codex tokens saved: ${formatNumber(report.totals.codex_tokens_saved_estimate)}`,
+    `Product-adjusted Gemini cost: ${formatUsd(report.totals.product_adjusted_gemini_estimated_cost_usd ?? 0)}`,
+    `Product-adjusted Codex tokens saved: ${formatNumber(report.totals.product_adjusted_codex_tokens_saved_estimate ?? 0)}`,
     "",
     "Priorities:",
     formatPriorityRows(report.priorities),
