@@ -124,6 +124,7 @@ function zeroArtifactReviewQuality() {
     success_count: 0,
     error_count: 0,
     scorecard_event_count: 0,
+    scorecard_field_coverage: [],
     avg_overall_score: null,
     avg_visual_hierarchy_score: null,
     avg_clarity_score: null,
@@ -986,6 +987,13 @@ function formatArtifactReviewBudgetCohortRows(items) {
   )).join("\n");
 }
 
+function formatScorecardFieldCoverageRows(items) {
+  if (items.length === 0) return "None";
+  return items.map((item, index) => (
+    `${index + 1}. ${item.field}: ${formatNumber(item.scored_event_count)} of ${formatNumber(item.event_count)} events (${formatPercent(item.coverage_rate)})`
+  )).join("\n");
+}
+
 function formatBackfillManifestSourceRows(items) {
   if (items.length === 0) return "None";
   return items.map((item, index) => (
@@ -1633,6 +1641,16 @@ function artifactReviewQualityCommandRows(map, topLimit) {
     }));
 }
 
+function scorecardFieldCoverageRows(scores, eventCount) {
+  if (eventCount <= 0) return [];
+  return DESIGN_SCORE_FIELDS.map(([key]) => ({
+    field: key,
+    scored_event_count: scores[key].count,
+    event_count: eventCount,
+    coverage_rate: nullableRatio(scores[key].count, eventCount, 4),
+  }));
+}
+
 function buildArtifactReviewQualitySummary(accumulator, topLimit) {
   if (accumulator.artifactReviewQuality.event_count === 0) return zeroArtifactReviewQuality();
   return {
@@ -1640,6 +1658,10 @@ function buildArtifactReviewQualitySummary(accumulator, topLimit) {
     success_count: accumulator.artifactReviewQuality.success_count,
     error_count: accumulator.artifactReviewQuality.error_count,
     scorecard_event_count: accumulator.artifactReviewQuality.scorecard_event_count,
+    scorecard_field_coverage: scorecardFieldCoverageRows(
+      accumulator.artifactReviewQuality.scores,
+      accumulator.artifactReviewQuality.event_count,
+    ),
     ...Object.fromEntries(DESIGN_SCORE_FIELDS.map(([key, avgKey]) => [
       avgKey,
       averageDesignScore(accumulator.artifactReviewQuality.scores, key),
@@ -1970,6 +1992,8 @@ export function formatTelemetrySummaryText(summary) {
     `- Scorecard events: ${formatNumber(summary.artifact_review_quality?.scorecard_event_count ?? 0)}`,
     `- Average overall score: ${summary.artifact_review_quality?.avg_overall_score ?? "n/a"}`,
     `- Average implementation readiness score: ${summary.artifact_review_quality?.avg_implementation_readiness_score ?? "n/a"}`,
+    "Scorecard field coverage:",
+    formatScorecardFieldCoverageRows(summary.artifact_review_quality?.scorecard_field_coverage ?? []),
     "",
     "Artifact review depths:",
     `- Events: ${formatNumber(summary.artifact_review_depths?.event_count ?? 0)}`,

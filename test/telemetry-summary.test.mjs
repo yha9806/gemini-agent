@@ -146,6 +146,7 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     success_count: 0,
     error_count: 0,
     scorecard_event_count: 0,
+    scorecard_field_coverage: [],
     avg_overall_score: null,
     avg_visual_hierarchy_score: null,
     avg_clarity_score: null,
@@ -1056,16 +1057,42 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
       },
     }),
   });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(49, {
+      command: "artifact-review",
+      metadata: {
+        design_scorecard: {
+          overall_score: -1,
+          visual_hierarchy_score: 101,
+          clarity_score: 50.5,
+          accessibility_score: "90",
+          consistency_score: Number.NaN,
+          implementation_readiness_score: Number.POSITIVE_INFINITY,
+          custom_private_score: 75,
+          issues: ["private invalid scorecard detail should not appear"],
+        },
+      },
+    }),
+  });
 
   const summary = await runTelemetrySummary({ cwd, scope: "local" });
   const text = formatTelemetrySummaryText(summary);
   const serialized = `${JSON.stringify(summary)}\n${text}`;
 
   assert.deepEqual(summary.artifact_review_quality, {
-    event_count: 3,
-    success_count: 3,
+    event_count: 4,
+    success_count: 4,
     error_count: 0,
     scorecard_event_count: 3,
+    scorecard_field_coverage: [
+      { field: "overall_score", scored_event_count: 3, event_count: 4, coverage_rate: 0.75 },
+      { field: "visual_hierarchy_score", scored_event_count: 3, event_count: 4, coverage_rate: 0.75 },
+      { field: "clarity_score", scored_event_count: 3, event_count: 4, coverage_rate: 0.75 },
+      { field: "accessibility_score", scored_event_count: 0, event_count: 4, coverage_rate: 0 },
+      { field: "consistency_score", scored_event_count: 3, event_count: 4, coverage_rate: 0.75 },
+      { field: "implementation_readiness_score", scored_event_count: 3, event_count: 4, coverage_rate: 0.75 },
+    ],
     avg_overall_score: 80,
     avg_visual_hierarchy_score: 90,
     avg_clarity_score: 83.3,
@@ -1075,8 +1102,8 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
     top_commands: [
       {
         command: "artifact-review",
-        event_count: 2,
-        success_count: 2,
+        event_count: 3,
+        success_count: 3,
         error_count: 0,
         unknown_count: 0,
         scorecard_event_count: 2,
@@ -1095,7 +1122,9 @@ test("runTelemetrySummary aggregates artifact-review design scorecards safely", 
   });
   assert.match(text, /Artifact review quality:/);
   assert.match(text, /Average overall score: 80/);
-  assert.doesNotMatch(serialized, /private strength|private backfill action/);
+  assert.match(text, /Scorecard field coverage:/);
+  assert.match(text, /accessibility_score: 0 of 4 events \(0\.0%\)/);
+  assert.doesNotMatch(serialized, /private strength|private backfill action|private invalid scorecard detail|custom_private_score/);
 });
 
 test("runTelemetrySummary compares artifact-review depth latency, reliability, usage, and scorecards safely", async () => {

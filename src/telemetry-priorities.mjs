@@ -484,6 +484,40 @@ function artifactReviewScorecardCoverage(summary) {
   );
 }
 
+function scorecardFieldCoverageRows(summary) {
+  const rows = summary.artifact_review_quality?.scorecard_field_coverage;
+  return Array.isArray(rows) ? rows : [];
+}
+
+function scorecardFieldCoverageMin(summary) {
+  const rows = scorecardFieldCoverageRows(summary)
+    .map((item) => nullableMetricRatio(item?.coverage_rate))
+    .filter((item) => item !== null);
+  if (rows.length === 0) return null;
+  return Math.min(...rows);
+}
+
+function weakestScorecardFieldEvidence(summary) {
+  const rows = scorecardFieldCoverageRows(summary)
+    .map((item) => ({
+      field: typeof item?.field === "string" && item.field.trim() ? item.field : null,
+      coverage: nullableMetricRatio(item?.coverage_rate),
+      scoredEvents: nonnegativeMetric(item?.scored_event_count),
+      events: nonnegativeMetric(item?.event_count),
+    }))
+    .filter((item) => item.field && item.coverage !== null && item.events > 0)
+    .sort((left, right) => (
+      left.coverage - right.coverage
+      || left.scoredEvents - right.scoredEvents
+      || left.field.localeCompare(right.field)
+    ));
+  const weakest = rows[0];
+  if (!weakest) return [];
+  return [
+    `Weakest scorecard field: ${weakest.field} ${formatPercent(weakest.coverage)} coverage (${formatNumber(weakest.scoredEvents)} of ${formatNumber(weakest.events)} events)`,
+  ];
+}
+
 function topArtifactReviewQualityCommand(summary) {
   const row = summary.artifact_review_quality?.top_commands?.[0];
   const command = typeof row?.command === "string" && row.command.trim()
@@ -552,6 +586,7 @@ function multimodalPriority(summary, multimodalCoverage) {
         `Artifact-review quality events: ${formatNumber(qualityEventCount)}`,
         `Scorecard events: ${formatNumber(scorecardEventCount)}`,
         `Artifact-review scorecard coverage: ${formatPercent(scorecardCoverage)}`,
+        ...weakestScorecardFieldEvidence(summary),
       ],
     });
   }
@@ -747,6 +782,7 @@ export async function runTelemetryPriorities({
       artifact_review_quality_event_count: summary.artifact_review_quality?.event_count ?? 0,
       artifact_review_scorecard_event_count: summary.artifact_review_quality?.scorecard_event_count ?? 0,
       artifact_review_scorecard_coverage_rate: artifactReviewScorecardCoverage(summary),
+      artifact_review_scorecard_field_coverage_min: scorecardFieldCoverageMin(summary),
       artifact_review_avg_overall_score: summary.artifact_review_quality?.avg_overall_score ?? null,
       artifact_review_depth_event_count: summary.artifact_review_depths?.event_count ?? 0,
       artifact_review_known_depth_event_count: summary.artifact_review_depths?.known_depth_event_count ?? 0,

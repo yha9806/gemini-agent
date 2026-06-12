@@ -1471,6 +1471,9 @@ test("runTelemetryPriorities recommends scorecard capture when artifact-review q
           metadata: index <= 2 ? {
             design_scorecard: {
               overall_score: 78,
+              visual_hierarchy_score: 76,
+              clarity_score: 72,
+              consistency_score: 80,
               implementation_readiness_score: 74,
               strengths: ["private coverage detail"],
             },
@@ -1492,9 +1495,11 @@ test("runTelemetryPriorities recommends scorecard capture when artifact-review q
 
     assert.equal(report.totals.artifact_review_quality_event_count, 5);
     assert.equal(report.totals.artifact_review_scorecard_coverage_rate, 0.4);
+    assert.equal(report.totals.artifact_review_scorecard_field_coverage_min, 0);
     assert.equal(multimodal.title, "Improve artifact-review design scorecard coverage.");
     assert.match(multimodal.action, /Capture numeric design scorecards/);
     assert.ok(multimodal.evidence.includes("Artifact-review scorecard coverage: 40.0%"));
+    assert.ok(multimodal.evidence.includes("Weakest scorecard field: accessibility_score 0.0% coverage (0 of 5 events)"));
     assert.doesNotMatch(serialized, /private coverage detail/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
