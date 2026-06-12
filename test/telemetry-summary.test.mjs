@@ -1352,6 +1352,80 @@ test("runTelemetrySummary compares artifact-review depth latency, reliability, u
   assert.doesNotMatch(serialized, /\/Users\/example|secret-token|Authorization: Bearer|private\.png/);
 });
 
+test("runTelemetrySummary excludes validation artifact reviews from product quality and depth metrics", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(52, {
+      command: "artifact-review",
+      latency_ms: 10_000,
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 1000, media_kind: "design" }],
+      },
+      economics: { input_tokens: 2000, output_tokens: 300, total_tokens: 2300 },
+      metadata: {
+        telemetry_purpose: "production",
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+        design_scorecard: {
+          overall_score: 80,
+          implementation_readiness_score: 74,
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(53, {
+      command: "artifact-review",
+      latency_ms: 12_000,
+      payload: {
+        prompt_truncated: false,
+        response_truncated: false,
+        multimodal: [{ mime_type: "image/png", byte_size: 1000, media_kind: "design" }],
+      },
+      economics: { input_tokens: 2000, output_tokens: 300, total_tokens: 2300 },
+      metadata: {
+        telemetry_purpose: "validation",
+        artifact_review_depth: "quick",
+        artifact_review_max_output_tokens: 2048,
+        design_scorecard: {
+          overall_score: 95,
+          implementation_readiness_score: 90,
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const text = formatTelemetrySummaryText(summary);
+  const serialized = `${JSON.stringify(summary)}\n${text}`;
+
+  assert.equal(summary.event_counts.total, 2);
+  assert.equal(summary.latency.event_count, 2);
+  assert.equal(summary.multimodal.event_count, 1);
+  assert.equal(summary.multimodal.item_count, 1);
+  assert.equal(summary.usage.prompt_tokens, 2000);
+  assert.equal(summary.usage.response_tokens, 300);
+  assert.equal(summary.usage.total_tokens, 2300);
+  assert.equal(summary.artifact_review_quality.event_count, 1);
+  assert.equal(summary.artifact_review_quality.scorecard_event_count, 1);
+  assert.equal(summary.artifact_review_quality.avg_overall_score, 80);
+  assert.equal(summary.artifact_review_depths.event_count, 1);
+  assert.equal(summary.artifact_review_depths.top_depths[0].event_count, 1);
+  assert.equal(summary.artifact_review_depths.top_depths[0].avg_overall_score, 80);
+  assert.doesNotMatch(serialized, /evt_000052|evt_000053/);
+});
+
 test("runTelemetrySummary reports correction overlays without polluting original multimodal totals", async () => {
   const cwd = await temporaryWorkspace();
   await saveTelemetryConfig({

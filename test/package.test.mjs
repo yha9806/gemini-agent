@@ -68,12 +68,14 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent context-pack --bootstrap --write-artifact$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent context-pack --doctor --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent artifact-review --file design\.png --kind ui --review-depth quick$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent artifact-review --file design\.png --kind ui --telemetry-purpose validation$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent artifact-review --file before\.png --file after\.png --kind ui --review-mode comparison$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000$/m);
   assert.match(readme, /project\/workspace attribution/);
   assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
   assert.match(readme, /`artifact-review` returns a structured design scorecard/);
   assert.match(readme, /`artifact-review --review-depth quick` keeps the same JSON shape/);
+  assert.match(readme, /`artifact-review --telemetry-purpose validation` marks canary or manual validation runs/);
   assert.match(readme, /Telemetry summary and report aggregate artifact-review design scorecard metrics and per-field score coverage/);
   assert.match(readme, /`telemetry backfill-artifacts` carries only allowlisted numeric\/null artifact-review design scorecard fields/);
   assert.match(readme, /Telemetry priorities use artifact-review design scorecard coverage, per-field score coverage, and average score/);

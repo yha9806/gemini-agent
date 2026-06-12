@@ -68,6 +68,7 @@ import {
   formatTelemetrySummaryText,
   runTelemetrySummary,
 } from "./telemetry-summary.mjs";
+import { assertTelemetryPurpose } from "./telemetry-purpose.mjs";
 import {
   formatTelemetryRawInventoryText,
   runTelemetryRawInventory,
@@ -149,7 +150,7 @@ function printUsage() {
     "  gemini-agent ask <prompt>",
     "  gemini-agent context-pack [--bootstrap | --stdin | --file <path> ... | --diff | text] [--write-artifact]",
     "  gemini-agent context-pack --doctor [--json] [--max-age-hours <n>]",
-    "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--write-artifact]",
+    "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--telemetry-purpose production|validation] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1534,6 +1535,7 @@ function parseArtifactArgs(args) {
   let artifactKind = "image";
   let reviewMode = null;
   let reviewDepth = "standard";
+  let telemetryPurpose = "production";
   let writeArtifact = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -1563,6 +1565,11 @@ function parseArtifactArgs(args) {
       if (!ARTIFACT_REVIEW_DEPTHS.has(depth)) throw new Error("--review-depth must be quick or standard.");
       reviewDepth = depth;
       index += 1;
+    } else if (arg === "--telemetry-purpose") {
+      const purpose = args[index + 1];
+      if (!purpose || purpose.startsWith("--")) throw new Error("--telemetry-purpose must be production or validation.");
+      telemetryPurpose = assertTelemetryPurpose(purpose);
+      index += 1;
     } else if (arg === "--write-artifact") {
       writeArtifact = true;
     } else {
@@ -1574,7 +1581,7 @@ function parseArtifactArgs(args) {
   if (files.length > MAX_ARTIFACT_REVIEW_FILES) {
     throw new Error(`artifact-review supports at most ${MAX_ARTIFACT_REVIEW_FILES} files.`);
   }
-  return { file: files[0], files, artifactKind, reviewMode, reviewDepth, writeArtifact };
+  return { file: files[0], files, artifactKind, reviewMode, reviewDepth, telemetryPurpose, writeArtifact };
 }
 
 async function prevalidateArtifactFile(file, cwd = process.cwd()) {
@@ -1757,7 +1764,7 @@ async function runContextPackCommand(args) {
 }
 
 async function runArtifactReviewCommand(args) {
-  const { file, files, artifactKind, reviewMode, reviewDepth, writeArtifact } = parseArtifactArgs(args);
+  const { file, files, artifactKind, reviewMode, reviewDepth, telemetryPurpose, writeArtifact } = parseArtifactArgs(args);
   const cwd = process.cwd();
   for (const source of files) {
     await prevalidateArtifactFile(source, cwd);
@@ -1779,7 +1786,12 @@ async function runArtifactReviewCommand(args) {
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,
-    telemetry: { cwd, source: "cli", command: "artifact-review" },
+    telemetry: {
+      cwd,
+      source: "cli",
+      command: "artifact-review",
+      metadata: { telemetry_purpose: telemetryPurpose },
+    },
   });
   output.write(artifactReviewToPrettyJson(review));
 }

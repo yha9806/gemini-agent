@@ -1293,6 +1293,63 @@ test("artifact-review accepts quick review depth", async () => {
   assert.equal(parsed.metadata.review_depth, "quick");
 });
 
+test("artifact-review records validation telemetry purpose", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const imagePath = join(dir, "design.png");
+  await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TELEMETRY_TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  const { stdout } = await execFileAsync(bin, [
+    "artifact-review",
+    "--file",
+    "design.png",
+    "--kind",
+    "ui",
+    "--telemetry-purpose",
+    "validation",
+  ], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeArtifactReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  const pending = await Promise.all((await readdir(telemetryQueueDirs(dir).pending)).map(async (file) => (
+    JSON.parse(await readFile(join(telemetryQueueDirs(dir).pending, file), "utf8"))
+  )));
+  assert.equal(parsed.kind, "artifact_review");
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].metadata.telemetry_purpose, "validation");
+});
+
+test("artifact-review rejects invalid telemetry purpose before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await writeFile(join(dir, "design.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+  await assert.rejects(
+    execFileAsync(bin, ["artifact-review", "--file", "design.png", "--telemetry-purpose", "experiment"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--telemetry-purpose must be production or validation/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
 test("artifact-review accepts multiple image files for comparison", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);

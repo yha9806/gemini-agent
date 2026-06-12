@@ -312,6 +312,21 @@ test("runTelemetryEconomics separates usage-applicable runtime events from synth
       cwd,
       event: telemetryEvent(24, { command: "telemetry validate" }),
     });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(25, {
+        command: "artifact-review",
+        economics: {
+          input_tokens: 200,
+          output_tokens: 40,
+          total_tokens: 240,
+          codex_tokens_saved_estimate: 300,
+        },
+        metadata: {
+          telemetry_purpose: "validation",
+        },
+      }),
+    });
 
     const report = await runTelemetryEconomics({
       cwd,
@@ -321,16 +336,18 @@ test("runTelemetryEconomics separates usage-applicable runtime events from synth
     const text = formatTelemetryEconomicsText(report);
     const commands = new Map(report.top_commands.map((item) => [item.command, item]));
 
-    assert.equal(report.totals.event_count, 5);
-    assert.equal(report.totals.events_with_usage, 1);
+    assert.equal(report.totals.event_count, 6);
+    assert.equal(report.totals.events_with_usage, 2);
     assert.equal(report.totals.events_missing_usage, 4);
-    assert.equal(report.totals.usage_coverage_rate, 0.2);
+    assert.equal(report.totals.usage_coverage_rate, 0.3333);
     assert.equal(report.totals.usage_applicable_event_count, 2);
-    assert.equal(report.totals.usage_not_applicable_event_count, 3);
+    assert.equal(report.totals.usage_not_applicable_event_count, 4);
     assert.equal(report.totals.usage_applicable_missing_count, 1);
     assert.equal(report.totals.usage_applicable_coverage_rate, 0.5);
     assert.equal(commands.get("artifact-review-backfill").usage_applicable_event_count, 0);
     assert.equal(commands.get("artifact-review-backfill").usage_not_applicable_event_count, 1);
+    assert.equal(commands.get("artifact-review").usage_applicable_event_count, 0);
+    assert.equal(commands.get("artifact-review").usage_not_applicable_event_count, 1);
     assert.equal(commands.get("plan-critique").usage_applicable_missing_count, 1);
     assert.match(text, /plan-critique: .*0\.0% usage-applicable coverage/);
     assert.match(text, /artifact-review-backfill: .*n\/a usage-applicable coverage/);

@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { normalizeTelemetryCommandAlias } from "./telemetry-command-normalization.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
+import { isValidationTelemetryEvent } from "./telemetry-purpose.mjs";
 import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
 import { telemetryQueueDirs } from "./telemetry-queue.mjs";
 
@@ -140,7 +141,8 @@ function hasUsage(event) {
 }
 
 function usageApplies(event) {
-  return !USAGE_NOT_APPLICABLE_COMMANDS.has(canonicalCommand(event.command));
+  return !isValidationTelemetryEvent(event)
+    && !USAGE_NOT_APPLICABLE_COMMANDS.has(canonicalCommand(event.command));
 }
 
 function textByteLength(value) {

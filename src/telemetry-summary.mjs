@@ -3,6 +3,7 @@ import { basename, relative, join, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { normalizeTelemetryCommandAlias } from "./telemetry-command-normalization.mjs";
 import { loadTelemetryConfigContext } from "./telemetry-config.mjs";
+import { isValidationTelemetryEvent } from "./telemetry-purpose.mjs";
 import { maskCredentialText, normalizeTelemetryEvent } from "./telemetry-schemas.mjs";
 import {
   loadTelemetryState,
@@ -1131,6 +1132,7 @@ function addEvent(accumulator, state, event) {
   accumulator.counts[state] += 1;
   accumulator.counts.total += 1;
   const status = event.status === "success" || event.status === "error" ? event.status : "unknown";
+  const validation = isValidationTelemetryEvent(event);
   updateStatusCounts(accumulator.statusCounts, status);
   updateDimension(accumulator.projects, event.project_id, status);
   updateOptionalDimension(accumulator.workspaces, event.context?.workspace_id, status);
@@ -1138,9 +1140,11 @@ function addEvent(accumulator, state, event) {
   updateCommandDimension(accumulator.commands, event.command, status);
   updateDimension(accumulator.sources, event.source, status);
   updateDimension(accumulator.models, event.model, status);
-  if (isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
-  addArtifactReviewQualityEvent(accumulator, event, status);
-  addArtifactReviewDepthEvent(accumulator, event, status);
+  if (!validation && isPaletteSplitEvent(event)) addPaletteSplitEvent(accumulator, event, status);
+  if (!validation) {
+    addArtifactReviewQualityEvent(accumulator, event, status);
+    addArtifactReviewDepthEvent(accumulator, event, status);
+  }
   addContextLoopEvent(accumulator, event);
   addLatency(accumulator.latency, event.command, event.latency_ms);
   addLatencyStages(accumulator.latencyStages, event.command, event.metadata);
@@ -1153,7 +1157,7 @@ function addEvent(accumulator, state, event) {
   const multimodalItems = Array.isArray(event.payload?.multimodal)
     ? event.payload.multimodal
     : [];
-  if (isBackfillCommand(event.command)) {
+  if (!validation && isBackfillCommand(event.command)) {
     updateBackfillManifestSource(
       accumulator.backfillManifestSources,
       event.metadata?.media_manifest_source,
@@ -1162,6 +1166,9 @@ function addEvent(accumulator, state, event) {
     );
   }
   const compactItems = compactMediaItems(multimodalItems);
+  if (validation) {
+    return;
+  }
   if (isCorrectionEvent(event)) {
     addCorrectionEvent(accumulator, event, multimodalItems);
     addAdjustedCorrectionCandidate(accumulator, event, compactItems);
