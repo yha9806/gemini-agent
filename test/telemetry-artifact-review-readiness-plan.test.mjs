@@ -125,12 +125,14 @@ function doctor(overrides = {}) {
     delivery: {
       status: "flush_ready",
       pending_events: 9,
+      inflight_events: 0,
       failed_events: 0,
       quarantine_events: 0,
       recommended_action: "Run telemetry flush --dry-run, then telemetry flush --batch-size 1.",
     },
     queue: {
       pending: { count: 9, bytes: 494396 },
+      inflight: { count: 0, bytes: 0 },
       failed: { count: 0, bytes: 0 },
       quarantine: { count: 0, bytes: 0 },
     },
@@ -213,7 +215,20 @@ function readyCoveragePlan(overrides = {}) {
 
 function cleanDoctor(overrides = {}) {
   return doctor({
-    queue: { pending: { count: 0 }, failed: { count: 0 }, quarantine: { count: 0 } },
+    delivery: {
+      status: "delivered",
+      pending_events: 0,
+      inflight_events: 0,
+      failed_events: 0,
+      quarantine_events: 0,
+      recommended_action: "No pending, inflight, failed, or quarantined telemetry events.",
+    },
+    queue: {
+      pending: { count: 0 },
+      inflight: { count: 0 },
+      failed: { count: 0 },
+      quarantine: { count: 0 },
+    },
     small_flush_safe: false,
     ...overrides,
   });
@@ -222,8 +237,15 @@ function cleanDoctor(overrides = {}) {
 function cleanRawPreflight(overrides = {}) {
   return rawPreflight({
     pending: { total_count: 0, total_bytes: 0 },
-    batch: { would_send_count: 0 },
-    risk: { sensitive_signal_count: 0 },
+    batch: {
+      batch_size: 100,
+      would_send_count: 0,
+      batch_bytes: 0,
+      exceeds_max_bytes: false,
+      excluded_by_batch_size_count: 0,
+      preview_error: null,
+    },
+    risk: { file_count: 0, event_count: 0, sensitive_signal_count: 0 },
     ...overrides,
   });
 }
@@ -524,6 +546,41 @@ test("readiness plan requires explicit healthy doctor evidence before limited ro
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
+test("readiness plan requires explicit doctor delivery counters before limited routing", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: {
+      ok: true,
+      endpoint_check: { ok: true, status: 200 },
+      queue: {},
+    },
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.ok(report.readiness.reasons.includes("telemetry_doctor_incomplete"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
 test("readiness plan requires complete raw preflight evidence before limited routing", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary({
@@ -547,7 +604,7 @@ test("readiness plan requires complete raw preflight evidence before limited rou
     }),
     coveragePlan: readyCoveragePlan(),
     doctor: cleanDoctor(),
-    rawPreflight: { ok: true },
+    rawPreflight: { ok: true, pending: {}, batch: {}, risk: {} },
   });
 
   assert.equal(report.readiness.status, "collect_more_samples");
@@ -646,6 +703,49 @@ test("readiness plan uses raw preflight pending evidence when doctor pending is 
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
+test("readiness plan requires raw preflight to cover all pending telemetry", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight({
+      pending: { total_count: 101, total_bytes: 4096 },
+      batch: {
+        batch_size: 100,
+        would_send_count: 100,
+        batch_bytes: 4000,
+        exceeds_max_bytes: false,
+        excluded_by_batch_size_count: 1,
+        preview_error: null,
+      },
+      risk: { file_count: 100, event_count: 100, sensitive_signal_count: 0 },
+    }),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.ok(report.readiness.reasons.includes("raw_preflight_partial"));
+  assert.ok(report.next_actions.includes("Run raw preflight over the remaining pending telemetry before limited routing."));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
 test("readiness plan becomes ready only when every hard gate passes", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary({
@@ -690,12 +790,8 @@ test("readiness plan becomes ready only when every hard gate passes", () => {
         near_budget: false,
       },
     }),
-    doctor: doctor({ queue: { pending: { count: 0 }, failed: { count: 0 }, quarantine: { count: 0 } }, small_flush_safe: false }),
-    rawPreflight: rawPreflight({
-      pending: { total_count: 0, total_bytes: 0 },
-      batch: { would_send_count: 0 },
-      risk: { sensitive_signal_count: 0 },
-    }),
+    doctor: cleanDoctor(),
+    rawPreflight: cleanRawPreflight(),
   });
 
   assert.equal(report.readiness.status, "ready_for_limited_routing");

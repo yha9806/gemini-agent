@@ -97,8 +97,24 @@ function plainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function nonnegativeFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function doctorCounterComplete(doctor, queueName, deliveryName) {
+  const queue = plainObject(doctor?.queue) ? doctor.queue : {};
+  const delivery = plainObject(doctor?.delivery) ? doctor.delivery : {};
+  return nonnegativeFiniteNumber(queue?.[queueName]?.count)
+    || nonnegativeFiniteNumber(delivery?.[deliveryName]);
+}
+
 function doctorComplete(doctor) {
-  return plainObject(doctor) && (doctor.ok === true || doctor.ok === false);
+  return plainObject(doctor)
+    && doctor.ok === true
+    && doctorCounterComplete(doctor, "pending", "pending_events")
+    && doctorCounterComplete(doctor, "inflight", "inflight_events")
+    && doctorCounterComplete(doctor, "failed", "failed_events")
+    && doctorCounterComplete(doctor, "quarantine", "quarantine_events");
 }
 
 function rawPreflightComplete(rawPreflight) {
@@ -106,7 +122,11 @@ function rawPreflightComplete(rawPreflight) {
     && rawPreflight.ok === true
     && plainObject(rawPreflight.pending)
     && plainObject(rawPreflight.batch)
-    && plainObject(rawPreflight.risk);
+    && plainObject(rawPreflight.risk)
+    && nonnegativeFiniteNumber(rawPreflight.pending.total_count)
+    && nonnegativeFiniteNumber(rawPreflight.batch.would_send_count)
+    && nonnegativeFiniteNumber(rawPreflight.batch.excluded_by_batch_size_count)
+    && nonnegativeFiniteNumber(rawPreflight.risk.sensitive_signal_count);
 }
 
 function rawPreflightIncomplete(rawPreflight) {
@@ -252,6 +272,8 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
   const pending = plainObject(rawPreflight?.pending) ? rawPreflight.pending : {};
   const batch = plainObject(rawPreflight?.batch) ? rawPreflight.batch : {};
   const risk = plainObject(rawPreflight?.risk) ? rawPreflight.risk : {};
+  const preflightComplete = rawPreflightComplete(rawPreflight);
+  const excludedCount = nonnegativeInteger(batch.excluded_by_batch_size_count);
   const selectedCount = Math.max(
     nonnegativeInteger(batch.would_send_count),
     nonnegativeInteger(risk.file_count),
@@ -263,14 +285,17 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
     nonnegativeInteger(pending.total_count),
     selectedCount,
   );
+  const preflightPartial = preflightComplete
+    && (excludedCount > 0 || nonnegativeInteger(pending.total_count) > selectedCount);
   return {
     pending_count: pendingCount,
     inflight_count: nonnegativeInteger(queue.inflight?.count ?? delivery.inflight_events),
     failed_count: nonnegativeInteger(queue.failed?.count ?? delivery.failed_events),
     quarantine_count: nonnegativeInteger(queue.quarantine?.count ?? delivery.quarantine_events),
     small_flush_safe: doctor?.small_flush_safe === true,
-    preflight_available: rawPreflightComplete(rawPreflight),
+    preflight_available: preflightComplete,
     preflight_incomplete: rawPreflightIncomplete(rawPreflight),
+    preflight_partial: preflightPartial,
     preflight_selected_count: selectedCount,
     sensitive_signal_count: sensitiveSignalCount(risk),
     recommended_action: safeDoctorAction(doctor?.recommended_action ?? delivery.recommended_action),
@@ -316,6 +341,7 @@ function buildReadinessReasons({
   if (!raw.preflight_available && !raw.preflight_incomplete) {
     collect.push("raw_preflight_unavailable");
   }
+  if (raw.preflight_partial) collect.push("raw_preflight_partial");
   if (quick.low_confidence || quick.additional_events_needed > 0) {
     collect.push("active_quick_low_sample");
   }
@@ -363,6 +389,7 @@ function statusFor({ blocked, production, quick, latency, structured, raw, docto
     && raw.inflight_count === 0
     && raw.quarantine_count === 0
     && raw.preflight_available
+    && !raw.preflight_partial
     && (raw.pending_count === 0 || raw.sensitive_signal_count === 0);
   const deliveryReady = doctorComplete(doctor) && doctor.ok === true && endpointDiagnosticsHealthy(doctor);
   if (scorecardReady && quickReady && latencyReady && structuredReady && rawReady && deliveryReady) {
@@ -420,6 +447,9 @@ function nextActionsFor({ status, reasons, quick, structured, raw, latency, prod
     || reasons.includes("raw_preflight_incomplete")
   ) {
     actions.push("Run raw telemetry preflight with pending, batch, and risk summaries before limited routing.");
+  }
+  if (reasons.includes("raw_preflight_partial")) {
+    actions.push("Run raw preflight over the remaining pending telemetry before limited routing.");
   }
   if (reasons.includes("raw_inflight_events_present")) {
     actions.push("Wait for in-flight raw telemetry delivery to settle before limited routing.");
