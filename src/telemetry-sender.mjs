@@ -19,6 +19,7 @@ import {
 } from "./telemetry-schemas.mjs";
 
 const VALIDATION_FLUSH_BATCH_SIZE = 100;
+const MAX_HTTP_ERROR_BODY_BYTES = 256 * 1024;
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
 
@@ -243,6 +244,121 @@ function byteLength(value) {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
+function safeHeaderValue(value, maxLength = 120) {
+  const text = typeof value === "string"
+    ? value.replace(/[\0-\x1F\x7F]/g, " ").trim()
+    : "";
+  if (!text) return null;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function htmlTitleFromText(text) {
+  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text);
+  return safeHeaderValue(match?.[1]?.replace(/\s+/g, " "), 120);
+}
+
+function httpBodyMarkers(text) {
+  const markers = [];
+  if (/render/i.test(text)) markers.push("render");
+  if (/\bWAF\b|web application firewall/i.test(text)) markers.push("waf");
+  if (/cloudflare/i.test(text)) markers.push("cloudflare");
+  if (/forbidden/i.test(text)) markers.push("forbidden");
+  if (/security/i.test(text)) markers.push("security");
+  if (/request\s+(blocked|forbidden|denied)/i.test(text)) markers.push("request_blocked");
+  return markers;
+}
+
+function declaredContentLength(response) {
+  const value = response.headers?.get?.("content-length");
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+async function readBoundedResponseText(response, maxBytes = MAX_HTTP_ERROR_BODY_BYTES) {
+  const declaredBytes = declaredContentLength(response);
+  const chunks = [];
+  let readBytes = 0;
+  let truncated = false;
+
+  if (!response.body?.getReader) {
+    let text = "";
+    try {
+      text = await response.text();
+    } catch {
+      return { text: "", bodyBytes: declaredBytes ?? 0, truncated: false };
+    }
+    const buffer = Buffer.from(text, "utf8");
+    truncated = buffer.length > maxBytes;
+    const bounded = truncated ? buffer.subarray(0, maxBytes) : buffer;
+    return {
+      text: bounded.toString("utf8"),
+      bodyBytes: declaredBytes ?? buffer.length,
+      truncated: truncated || (declaredBytes != null && declaredBytes > bounded.length),
+    };
+  }
+
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      const remaining = maxBytes - readBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      if (chunk.length > remaining) {
+        chunks.push(chunk.subarray(0, remaining));
+        readBytes += remaining;
+        truncated = true;
+        break;
+      }
+      chunks.push(chunk);
+      readBytes += chunk.length;
+    }
+  } finally {
+    if (truncated) {
+      try {
+        await reader.cancel();
+      } catch {
+        // Best-effort cleanup only; diagnostics must not mask the original failure.
+      }
+    }
+  }
+
+  const buffer = Buffer.concat(chunks);
+  return {
+    text: buffer.toString("utf8"),
+    bodyBytes: declaredBytes ?? readBytes,
+    truncated: truncated || (declaredBytes != null && declaredBytes > readBytes),
+  };
+}
+
+async function httpErrorDiagnostics(response) {
+  const contentType = safeHeaderValue(response.headers?.get?.("content-type"));
+  const { text, bodyBytes, truncated } = await readBoundedResponseText(response);
+  return {
+    http_status: response.status,
+    ...(contentType ? { content_type: contentType } : {}),
+    ...(text ? {
+      html_title: htmlTitleFromText(text),
+      body_sha16: createHash("sha256").update(text).digest("hex").slice(0, 16),
+      body_bytes: bodyBytes,
+      ...(truncated ? { body_truncated: true } : {}),
+      markers: httpBodyMarkers(text),
+    } : {}),
+  };
+}
+
+function isFrontendSecurity403(status, diagnostics = {}) {
+  if (status !== 403) return false;
+  if (!/html/i.test(diagnostics.content_type ?? "")) return false;
+  const markers = new Set(diagnostics.markers ?? []);
+  return diagnostics.html_title === "Blocked" || markers.has("waf") || markers.has("request_blocked");
+}
+
 function previewBatchId(now) {
   const day = now.toISOString().slice(0, 10).replaceAll("-", "");
   return `batch_${day}_${now.getTime()}_00000000-0000-4000-8000-000000000000`;
@@ -281,6 +397,22 @@ function httpFailureForStatus(status) {
     retryable: true,
     reason: `http_${status}`,
     error: new Error(`Telemetry receiver returned ${status}.`),
+  };
+}
+
+async function httpFailureForResponse(response) {
+  const diagnostics = await httpErrorDiagnostics(response);
+  if (isFrontendSecurity403(response.status, diagnostics)) {
+    return {
+      retryable: false,
+      reason: "receiver_waf_403",
+      error: new Error("Telemetry receiver returned 403 from a front-end security layer."),
+      diagnostics,
+    };
+  }
+  return {
+    ...httpFailureForStatus(response.status),
+    diagnostics,
   };
 }
 
@@ -447,7 +579,7 @@ export async function flushTelemetryQueue({
       });
 
       if (!response.ok) {
-        failure = httpFailureForStatus(response.status);
+        failure = await httpFailureForResponse(response);
         throw failure.error;
       }
 
@@ -466,6 +598,7 @@ export async function flushTelemetryQueue({
       batchId: claimed.batchId,
       retryable,
       reason: failure.reason,
+      diagnostics: failure.diagnostics,
     });
     throw error;
   }

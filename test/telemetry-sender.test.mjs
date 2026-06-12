@@ -1139,6 +1139,78 @@ test("flushTelemetryQueue treats 403 as retryable and requeues the batch", async
   assert.equal(state.last_failure_reason, "http_403");
 });
 
+test("flushTelemetryQueue archives Render WAF 403 with safe diagnostics", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(24) });
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async () => new Response(
+        "<!DOCTYPE html><html><head><title>Blocked</title></head><body>Render WAF forbidden Authorization: Bearer secret-token</body></html>",
+        { status: 403, headers: { "content-type": "text/html; charset=UTF-8" } },
+      ),
+      now: NOW,
+    }),
+    /Telemetry receiver returned 403 from a front-end security layer\./,
+  );
+
+  const dirs = telemetryQueueDirs(cwd);
+  assert.deepEqual(await regularFileNames(dirs.pending), []);
+  assert.deepEqual(await regularFileNames(dirs.inflight), []);
+  const failedBatches = await directoryNames(dirs.failed);
+  assert.equal(failedBatches.length, 1);
+  const reason = JSON.parse(await readFile(join(dirs.failed, failedBatches[0], "reason.json"), "utf8"));
+  assert.equal(reason.reason, "receiver_waf_403");
+  assert.equal(reason.diagnostics.http_status, 403);
+  assert.equal(reason.diagnostics.content_type, "text/html; charset=UTF-8");
+  assert.equal(reason.diagnostics.html_title, "Blocked");
+  assert.equal(reason.diagnostics.body_bytes, 131);
+  assert.deepEqual(reason.diagnostics.markers, ["render", "waf", "forbidden"]);
+  assert.match(reason.diagnostics.body_sha16, /^[a-f0-9]{16}$/);
+  assert.doesNotMatch(JSON.stringify(reason), /secret-token/);
+
+  const state = await loadTelemetryState({ cwd });
+  assert.equal(state.sent_failure_count, 1);
+  assert.equal(state.non_retryable_failure_count, 1);
+  assert.equal(state.last_failure_reason, "receiver_waf_403");
+});
+
+test("flushTelemetryQueue bounds large WAF response diagnostics", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendTelemetryEvent({ cwd, event: telemetryEvent(25) });
+  const body = "<!DOCTYPE html><title>Blocked</title><body>Render WAF forbidden</body>"
+    + "x".repeat(400_000);
+
+  await assert.rejects(
+    () => flushTelemetryQueue({
+      cwd,
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      fetchImpl: async () => new Response(body, {
+        status: 403,
+        headers: {
+          "content-type": "text/html; charset=UTF-8",
+          "content-length": `${Buffer.byteLength(body, "utf8")}`,
+        },
+      }),
+      now: NOW,
+    }),
+    /Telemetry receiver returned 403 from a front-end security layer\./,
+  );
+
+  const dirs = telemetryQueueDirs(cwd);
+  const failedBatches = await directoryNames(dirs.failed);
+  assert.equal(failedBatches.length, 1);
+  const reason = JSON.parse(await readFile(join(dirs.failed, failedBatches[0], "reason.json"), "utf8"));
+  assert.equal(reason.reason, "receiver_waf_403");
+  assert.equal(reason.diagnostics.body_bytes, Buffer.byteLength(body, "utf8"));
+  assert.equal(reason.diagnostics.body_truncated, true);
+  assert.deepEqual(reason.diagnostics.markers, ["render", "waf", "forbidden"]);
+});
+
 test("flushTelemetryQueue archives a batch after consecutive 403 failures", async () => {
   const cwd = await temporaryWorkspace();
   await appendTelemetryEvent({ cwd, event: telemetryEvent(23) });

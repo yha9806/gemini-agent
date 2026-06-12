@@ -265,20 +265,43 @@ async function failedBatchDirectories(dir) {
     .sort((left, right) => left.localeCompare(right));
 }
 
-async function failedBatchReason(batchDir) {
-  let raw;
-  try {
-    raw = await readFile(join(batchDir, "reason.json"), "utf8");
-  } catch {
-    return "unknown";
+function safeReceiverDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const diagnostics = {};
+  if (Number.isInteger(value.http_status) && value.http_status >= 100 && value.http_status <= 599) {
+    diagnostics.http_status = value.http_status;
   }
+  if (typeof value.content_type === "string") {
+    diagnostics.content_type = safeDiagnosticLabel(value.content_type, 120);
+  }
+  if (typeof value.html_title === "string") {
+    diagnostics.html_title = safeDiagnosticLabel(value.html_title, 120);
+  }
+  if (typeof value.body_sha16 === "string" && /^[a-f0-9]{16}$/i.test(value.body_sha16)) {
+    diagnostics.body_sha16 = value.body_sha16.toLowerCase();
+  }
+  if (Number.isInteger(value.body_bytes) && value.body_bytes >= 0) {
+    diagnostics.body_bytes = value.body_bytes;
+  }
+  if (typeof value.body_truncated === "boolean") {
+    diagnostics.body_truncated = value.body_truncated;
+  }
+  if (Array.isArray(value.markers)) {
+    const markers = value.markers
+      .map((marker) => safeDiagnosticLabel(marker, 80))
+      .filter((marker) => marker !== "unknown")
+      .slice(0, 20);
+    if (markers.length > 0) diagnostics.markers = markers;
+  }
+  return Object.keys(diagnostics).length > 0 ? diagnostics : undefined;
+}
 
-  try {
-    const parsed = JSON.parse(raw);
-    return safeFailureReason(parsed?.reason);
-  } catch {
-    return "unknown";
-  }
+async function failedBatchMetadata(batchDir) {
+  const parsed = await readJsonOrNull(join(batchDir, "reason.json"));
+  return {
+    reason: safeFailureReason(parsed?.reason),
+    diagnostics: safeReceiverDiagnostics(parsed?.diagnostics),
+  };
 }
 
 function safeQuarantineEventDir(eventId) {
@@ -821,8 +844,9 @@ export async function loadFailedTelemetryBatchSummaries({
   for (const batchName of batchNames) {
     const batchDir = join(dirs.failed, batchName);
     const events = await failedSummary(batchDir);
+    const metadata = await failedBatchMetadata(batchDir);
     summaries.push({
-      reason: await failedBatchReason(batchDir),
+      reason: metadata.reason,
       event_count: events.count,
       bytes: events.bytes,
     });
@@ -845,13 +869,14 @@ async function failedRetryCandidates(dirs, reason) {
   const candidates = [];
   for (const batchName of batchNames) {
     const batchDir = join(dirs.failed, batchName);
-    const batchReason = await failedBatchReason(batchDir);
+    const { reason: batchReason, diagnostics } = await failedBatchMetadata(batchDir);
     if (batchReason !== sanitizedReason) continue;
     const files = await failedBatchEventFiles(batchDir);
     if (files.length === 0) continue;
     candidates.push({
       batchDir,
       reason: batchReason,
+      diagnostics,
       files,
       bytes: await sumFileSizes(files),
     });
@@ -866,9 +891,11 @@ async function allFailedCandidates(dirs) {
     const batchDir = join(dirs.failed, batchName);
     const files = await failedBatchEventFiles(batchDir);
     if (files.length === 0) continue;
+    const { reason, diagnostics } = await failedBatchMetadata(batchDir);
     candidates.push({
       batchDir,
-      reason: await failedBatchReason(batchDir),
+      reason,
+      diagnostics,
       files,
       bytes: await sumFileSizes(files),
     });
@@ -973,9 +1000,9 @@ async function readJsonOrNull(path) {
   }
 }
 
-function failedEventDescriptor(event, reason) {
+function failedEventDescriptor(event, reason, diagnostics) {
   const safeEvent = event && typeof event === "object" && !Array.isArray(event) ? event : {};
-  return {
+  const descriptor = {
     reason,
     command: safeDiagnosticLabel(safeEvent.command),
     model: safeDiagnosticLabel(safeEvent.model),
@@ -987,6 +1014,8 @@ function failedEventDescriptor(event, reason) {
     media_item_count: mediaItemCount(safeEvent),
     retryable_hint: reason === "unauthorized" ? "fix_auth_then_retry_or_archive" : "retry_failed_or_archive",
   };
+  if (diagnostics) descriptor.diagnostics = diagnostics;
+  return descriptor;
 }
 
 function quarantinedEventDescriptor(event, reason) {
@@ -1063,7 +1092,11 @@ export async function inspectFailedTelemetryEvents({
   for (const candidate of candidates) {
     for (const file of candidate.files) {
       if (descriptors.length >= limit) break;
-      descriptors.push(failedEventDescriptor(await readJsonOrNull(file.path), candidate.reason));
+      descriptors.push(failedEventDescriptor(
+        await readJsonOrNull(file.path),
+        candidate.reason,
+        candidate.diagnostics,
+      ));
     }
     if (descriptors.length >= limit) break;
   }
@@ -1630,6 +1663,7 @@ export async function failTelemetryBatch({
   batchId,
   retryable = true,
   reason = "receiver_error",
+  diagnostics,
 } = {}) {
   assertSafeBatchId(batchId);
   if (typeof retryable !== "boolean") {
@@ -1663,10 +1697,12 @@ export async function failTelemetryBatch({
         await chmod(destination, SECURE_FILE_MODE);
         moved += 1;
       }
+      const safeDiagnostics = safeReceiverDiagnostics(diagnostics);
       await writeSecureJsonFile(cwd, join(failedBatchDir, "reason.json"), {
         batch_id: batchId,
         reason,
         retryable: false,
+        ...(safeDiagnostics ? { diagnostics: safeDiagnostics } : {}),
         failed_at: new Date().toISOString(),
       });
       await rm(batchDir, { recursive: true, force: true });

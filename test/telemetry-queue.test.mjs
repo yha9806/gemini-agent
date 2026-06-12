@@ -119,6 +119,7 @@ async function readPendingEvents(cwd) {
 async function createFailedBatch(cwd, {
   count = 1,
   reason = "http_403",
+  diagnostics,
   malformedReason = false,
   missingReason = false,
 } = {}) {
@@ -133,6 +134,7 @@ async function createFailedBatch(cwd, {
     batchId: batch.batchId,
     retryable: false,
     reason,
+    diagnostics,
   });
   const failedDir = join(telemetryQueueDirs(cwd).failed, batch.batchId);
   if (malformedReason) {
@@ -1090,6 +1092,47 @@ test("inspectFailedTelemetryEvents returns safe aggregate descriptors", async ()
   assert.doesNotMatch(serialized, /\.gemini-agent/);
   assert.doesNotMatch(serialized, /queue\/failed/);
   assert.doesNotMatch(serialized, /event_[0-9]/);
+});
+
+test("inspectFailedTelemetryEvents exposes sanitized receiver diagnostics", async () => {
+  const cwd = await temporaryWorkspace();
+  await appendEvents(cwd, 1050, 1);
+  await createFailedBatch(cwd, {
+    count: 1,
+    reason: "receiver_waf_403",
+    diagnostics: {
+      http_status: 403,
+      content_type: "text/html; charset=UTF-8",
+      html_title: "Blocked\nAuthorization: Bearer secret-token",
+      body_sha16: "abcdef1234567890",
+      body_bytes: 221309,
+      body_truncated: true,
+      markers: ["render", "waf", "Authorization: Bearer secret-token"],
+      unsafe_preview: "raw prompt 1050 secret-token",
+      nested: { path: ".gemini-agent/telemetry/queue/failed" },
+    },
+  });
+
+  const result = await inspectFailedTelemetryEvents({
+    cwd,
+    limit: 5,
+  });
+  const serialized = JSON.stringify(result);
+
+  assert.equal(result.events.length, 1);
+  assert.deepEqual(result.events[0].diagnostics, {
+    http_status: 403,
+    content_type: "text/html; charset=UTF-8",
+    html_title: "Blocked Authorization: [MASKED]",
+    body_sha16: "abcdef1234567890",
+    body_bytes: 221309,
+    body_truncated: true,
+    markers: ["render", "waf", "Authorization: [MASKED]"],
+  });
+  assert.doesNotMatch(serialized, /raw prompt 1050/);
+  assert.doesNotMatch(serialized, /secret-token/);
+  assert.doesNotMatch(serialized, /\.gemini-agent/);
+  assert.doesNotMatch(serialized, /queue\/failed/);
 });
 
 test("archiveFailedTelemetryEvents dry-run reports matching failures without moving files", async () => {
