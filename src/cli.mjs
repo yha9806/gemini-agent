@@ -63,6 +63,10 @@ import {
   runArtifactReviewQualityGate,
 } from "./telemetry-artifact-review-quality-gate.mjs";
 import {
+  artifactReviewCoveragePlanToText,
+  runArtifactReviewCoveragePlan,
+} from "./telemetry-artifact-review-coverage-plan.mjs";
+import {
   formatTelemetryMultimodalRepairMetadataText,
   formatTelemetryMultimodalRepairText,
   runTelemetryMultimodalRepairKind,
@@ -175,6 +179,7 @@ function printUsage() {
     "  gemini-agent telemetry priorities [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry report [--global] [--json] [--top <n>] [--input-price-per-million <usd>] [--output-price-per-million <usd>]",
     "  gemini-agent telemetry artifact-review quality-gate [--global] [--json] [--top <n>]",
+    "  gemini-agent telemetry artifact-review coverage-plan [--global] [--json] [--top <n>]",
     "  gemini-agent telemetry multimodal repair-kind --correction-version <id> [--global] [--dry-run|--write] [--limit <n>] [--json]",
     "  gemini-agent telemetry multimodal repair-metadata --correction-version <id> [--global] [--dry-run|--write] [--limit <n>] [--json]",
     "  gemini-agent telemetry doctor [--global] [--json]",
@@ -913,6 +918,32 @@ function parseTelemetryArtifactReviewQualityGateOptions(args) {
       index += 1;
     } else {
       throw new Error(`Unknown telemetry artifact-review quality-gate argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseTelemetryArtifactReviewCoveragePlanOptions(args) {
+  const options = {
+    global: false,
+    json: false,
+    topLimit: 10,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--global") {
+      options.global = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--top") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--top requires a positive integer.");
+      options.topLimit = positiveIntegerOption(value, "--top");
+      index += 1;
+    } else {
+      throw new Error(`Unknown telemetry artifact-review coverage-plan argument: ${arg}`);
     }
   }
 
@@ -2238,6 +2269,21 @@ async function runTelemetryArtifactReviewQualityGateCommand(args = []) {
   output.write(`${artifactReviewQualityGateToText(gate)}\n`);
 }
 
+async function runTelemetryArtifactReviewCoveragePlanCommand(args = []) {
+  const options = parseTelemetryArtifactReviewCoveragePlanOptions(args);
+  const report = await runArtifactReviewCoveragePlan({
+    cwd: process.cwd(),
+    home: process.env.HOME,
+    scope: telemetryScope(options),
+    topLimit: options.topLimit,
+  });
+  if (options.json) {
+    output.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  output.write(`${artifactReviewCoveragePlanToText(report)}\n`);
+}
+
 async function runTelemetryMultimodal(args = []) {
   const [subcommand, ...subArgs] = args;
   if (subcommand === "repair-kind") {
@@ -2487,6 +2533,11 @@ async function runTelemetry(args) {
 
   if (subcommand === "report") {
     await runTelemetryReportCommand(subArgs);
+    return;
+  }
+
+  if (subcommand === "artifact-review" && subArgs[0] === "coverage-plan") {
+    await runTelemetryArtifactReviewCoveragePlanCommand(subArgs.slice(1));
     return;
   }
 

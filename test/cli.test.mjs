@@ -2675,6 +2675,120 @@ test("telemetry artifact-review quality-gate rejects invalid arguments", async (
   );
 });
 
+test("telemetry artifact-review coverage-plan outputs aggregate JSON", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-coverage-plan-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(501, {
+        command: "artifact-review",
+        status: "success",
+        latency_ms: 12_000,
+        metadata: {
+          telemetry_purpose: "production",
+          artifact_review_depth: "quick",
+          artifact_review_max_output_tokens: 2048,
+          design_scorecard: {
+            overall_score: 80,
+            visual_hierarchy_score: 81,
+            clarity_score: 82,
+            accessibility_score: 83,
+            consistency_score: 84,
+            implementation_readiness_score: 85,
+          },
+          latency_stages_ms: {
+            gemini_generation: 12_000,
+          },
+        },
+        economics: { input_tokens: 1000, output_tokens: 200, total_tokens: 1200 },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(502, {
+        command: "artifact-review",
+        status: "success",
+        metadata: {
+          telemetry_purpose: "validation",
+          artifact_review_depth: "quick",
+          artifact_review_max_output_tokens: 2048,
+          design_scorecard: {
+            overall_score: 95,
+            visual_hierarchy_score: 94,
+            clarity_score: 93,
+            accessibility_score: 92,
+            consistency_score: 91,
+            implementation_readiness_score: 90,
+          },
+        },
+      }),
+    });
+
+    const { stdout, stderr } = await execBin(["telemetry", "artifact-review", "coverage-plan", "--json"], { cwd });
+    const parsed = JSON.parse(stdout);
+
+    assert.equal(stderr, "");
+    assert.equal(parsed.command, "artifact-review");
+    assert.equal(parsed.production_scorecard.event_count, 1);
+    assert.equal(parsed.validation_scorecard.event_count, 1);
+    assert.equal(parsed.validation_scorecard.coverage_rate, 1);
+    assert.doesNotMatch(stdout, /evt_cli_501|evt_cli_502|Authorization|Bearer|private\.png/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry artifact-review coverage-plan outputs text", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-coverage-plan-text-"));
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TELEMETRY_TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+
+    const { stdout, stderr } = await execBin(["telemetry", "artifact-review", "coverage-plan"], { cwd });
+
+    assert.equal(stderr, "");
+    assert.match(stdout, /Artifact-review coverage plan:/);
+    assert.match(stdout, /Production scorecard coverage:/);
+    assert.match(stdout, /Validation scorecard coverage:/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("telemetry artifact-review coverage-plan rejects invalid arguments", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-coverage-plan-args-"));
+  try {
+    await assert.rejects(
+      () => execBin(["telemetry", "artifact-review", "coverage-plan", "--top", "0"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--top requires a positive integer/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => execBin(["telemetry", "artifact-review", "coverage-plan", "--unknown"], { cwd }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Unknown telemetry artifact-review coverage-plan argument/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("telemetry report prints safe product output", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "gemini-agent-cli-report-"));
   try {
