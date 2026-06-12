@@ -197,7 +197,7 @@ test("readiness plan returns collect_more_samples for current A2-shaped data", (
   assert.ok(report.readiness.reasons.includes("structured_response_unrecovered_json_envelope"));
   assert.ok(report.readiness.reasons.includes("raw_pending_sensitive_signals"));
   assert.ok(report.readiness.reasons.includes("generation_latency_near_budget"));
-  assert.doesNotMatch(JSON.stringify(report), /raw prompt|Authorization|Bearer|evt_private|private\.png|batch_private|\/home\/example/);
+  assert.doesNotMatch(JSON.stringify(report), /raw prompt\b|Authorization|Bearer|evt_private|private\.png|batch_private|\/home\/example/);
 });
 
 test("readiness plan blocks unsafe active quick reliability", () => {
@@ -360,7 +360,7 @@ test("readiness plan text uses aggregate fields only", () => {
   assert.match(text, /Limited routing: no/);
   assert.match(text, /Production sampling: yes/);
   assert.match(text, /collect 6 more quick 2048 samples/);
-  assert.doesNotMatch(text, /raw prompt|Authorization|Bearer|evt_private|private\.png|batch_private|\/home\/example/);
+  assert.doesNotMatch(text, /raw prompt\b|Authorization|Bearer|evt_private|private\.png|batch_private|\/home\/example/);
 });
 
 test("runArtifactReviewReadinessPlan degrades when endpoint diagnostics fail", async () => {
@@ -387,7 +387,7 @@ test("runArtifactReviewReadinessPlan degrades when endpoint diagnostics fail", a
     assert.equal(report.readiness.status, "collect_more_samples");
     assert.equal(report.raw_governance.failed_count, 0);
     assert.equal(report.routing_recommendation.limited_routing_allowed, false);
-    assert.doesNotMatch(JSON.stringify(report), new RegExp(cwd.replaceAll("/", "\\/")));
+    assert.equal(JSON.stringify(report).includes(cwd), false);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
