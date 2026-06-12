@@ -234,6 +234,7 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
   const risk = rawPreflight?.risk && typeof rawPreflight.risk === "object" ? rawPreflight.risk : {};
   return {
     pending_count: nonnegativeInteger(queue.pending?.count ?? delivery.pending_events ?? pending.total_count),
+    inflight_count: nonnegativeInteger(queue.inflight?.count ?? delivery.inflight_events),
     failed_count: nonnegativeInteger(queue.failed?.count ?? delivery.failed_events),
     quarantine_count: nonnegativeInteger(queue.quarantine?.count ?? delivery.quarantine_events),
     small_flush_safe: doctor?.small_flush_safe === true,
@@ -244,15 +245,12 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
   };
 }
 
-function hasEndpointDiagnostics(doctor) {
+function endpointDiagnosticsHealthy(doctor) {
   return doctor !== null
     && typeof doctor === "object"
     && doctor.endpoint_check !== null
-    && typeof doctor.endpoint_check === "object";
-}
-
-function endpointDiagnosticsHealthy(doctor) {
-  return !hasEndpointDiagnostics(doctor) || doctor.endpoint_check.ok === true;
+    && typeof doctor.endpoint_check === "object"
+    && doctor.endpoint_check.ok === true;
 }
 
 function buildReadinessReasons({
@@ -274,12 +272,13 @@ function buildReadinessReasons({
   if (production.event_count > 0 && production.scorecard_event_count === 0) {
     blocked.push("production_scorecard_coverage_zero");
   }
+  if (raw.inflight_count > 0) collect.push("raw_inflight_events_present");
   if (raw.failed_count > 0) blocked.push("raw_failed_events_present");
   if (raw.quarantine_count > 0) blocked.push("raw_quarantine_events_present");
   if (doctor && doctor.ok === false) blocked.push("telemetry_delivery_unhealthy");
 
   if (doctor === null) collect.push("telemetry_doctor_unavailable");
-  if (hasEndpointDiagnostics(doctor) && doctor.endpoint_check.ok !== true) {
+  if (doctor !== null && !endpointDiagnosticsHealthy(doctor)) {
     collect.push("telemetry_endpoint_unhealthy");
   }
   if (!raw.preflight_available) collect.push("raw_preflight_unavailable");
@@ -327,6 +326,7 @@ function statusFor({ blocked, production, quick, latency, structured, raw, docto
   const latencyReady = latency.status === "within_budget" && latency.near_budget === false;
   const structuredReady = structured.missing_json_envelope_count <= structured.retry_recovered_count;
   const rawReady = raw.failed_count === 0
+    && raw.inflight_count === 0
     && raw.quarantine_count === 0
     && raw.preflight_available
     && (raw.pending_count === 0 || raw.sensitive_signal_count === 0);
@@ -490,7 +490,7 @@ export function artifactReviewReadinessPlanToText(report) {
     `- Production sampling: ${routing.production_sampling_allowed ? "yes" : "no"}${routing.additional_quick_samples_needed > 0 ? `, collect ${formatNumber(routing.additional_quick_samples_needed)} more quick ${cohort} samples` : ""}`,
     `- Production scorecard coverage: ${formatPercent(report.production_scorecard.coverage_rate)} (${formatNumber(report.production_scorecard.scorecard_event_count)} of ${formatNumber(report.production_scorecard.event_count)})`,
     `- Structured response: ${formatNumber(report.structured_response.missing_json_envelope_count)} missing JSON-envelope events, ${formatNumber(report.structured_response.retry_recovered_count)} recovered`,
-    `- Raw governance: ${formatNumber(report.raw_governance.pending_count)} pending, ${formatNumber(report.raw_governance.failed_count)} failed, ${formatNumber(report.raw_governance.quarantine_count)} quarantined`,
+    `- Raw governance: ${formatNumber(report.raw_governance.pending_count)} pending, ${formatNumber(report.raw_governance.inflight_count)} in-flight, ${formatNumber(report.raw_governance.failed_count)} failed, ${formatNumber(report.raw_governance.quarantine_count)} quarantined`,
     `- Latency: ${report.latency_guard.status}, p95 ${report.latency_guard.p95_ms === null ? "n/a" : `${formatNumber(report.latency_guard.p95_ms)} ms`}, budget ${formatNumber(report.latency_guard.budget_ms)} ms${report.latency_guard.near_budget ? ", near budget" : ""}`,
   ];
   if (quick.active_budget_cohorts.length > 0) {

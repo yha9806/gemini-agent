@@ -452,6 +452,76 @@ test("readiness plan requires healthy endpoint diagnostics before limited routin
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
+test("readiness plan requires endpoint diagnostics to be present before limited routing", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor({ ok: true, endpoint_check: undefined }),
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.ok(report.readiness.reasons.includes("telemetry_endpoint_unhealthy"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
+test("readiness plan requires raw delivery to have no in-flight events", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor({
+      queue: {
+        pending: { count: 0 },
+        inflight: { count: 1 },
+        failed: { count: 0 },
+        quarantine: { count: 0 },
+      },
+    }),
+    rawPreflight: cleanRawPreflight(),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.raw_governance.inflight_count, 1);
+  assert.ok(report.readiness.reasons.includes("raw_inflight_events_present"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
 test("readiness plan becomes ready only when every hard gate passes", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary({
