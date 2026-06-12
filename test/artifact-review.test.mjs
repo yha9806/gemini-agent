@@ -104,7 +104,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   assert.doesNotMatch(JSON.stringify(latest.metadata.media_manifest), /design\.png|inlineData|iVBOR|YWJjZA/);
 });
 
-test("runArtifactReview quick depth sets concise prompt, output budget, and safe telemetry metadata", async () => {
+test("runArtifactReview quick depth sets concise prompt, schema-safe output budget, and safe telemetry metadata", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
   await writeFile(join(dir, "design.png"), pngBytes);
   let seenPrompt = "";
@@ -127,12 +127,12 @@ test("runArtifactReview quick depth sets concise prompt, output budget, and safe
     },
   });
 
-  assert.equal(seenMaxOutputTokens, 768);
+  assert.equal(seenMaxOutputTokens, 2048);
   assert.match(seenPrompt, /Review depth: quick/);
   assert.match(seenPrompt, /Quick review budget/);
   assert.equal(seenTelemetry.metadata.artifact_review_depth, "quick");
   assert.equal(seenTelemetry.metadata.artifact_review_prompt_budget, "quick");
-  assert.equal(seenTelemetry.metadata.artifact_review_max_output_tokens, 768);
+  assert.equal(seenTelemetry.metadata.artifact_review_max_output_tokens, 2048);
   assert.deepEqual(seenTelemetry.metadata.latency_stages_ms, {
     media_prepare: 2,
     policy_prompt: 1,
