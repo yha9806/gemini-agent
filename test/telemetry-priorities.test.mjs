@@ -1358,6 +1358,111 @@ test("runTelemetryPriorities does not warn on usage when no events need usage me
   }
 });
 
+test("runTelemetryPriorities recommends scorecard capture when artifact-review quality coverage is weak", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    for (let index = 1; index <= 5; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(200 + index, {
+          command: "artifact-review",
+          payload: {
+            prompt_truncated: false,
+            response_truncated: false,
+            multimodal: [{ mime_type: "image/png", byte_size: 100, media_kind: "design" }],
+          },
+          metadata: index <= 2 ? {
+            design_scorecard: {
+              overall_score: 78,
+              implementation_readiness_score: 74,
+              strengths: ["private coverage detail"],
+            },
+          } : {},
+          economics: {
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 150,
+            codex_tokens_saved_estimate: 100,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({ cwd, scope: "local", topLimit: 5 });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const multimodal = report.priorities.find((item) => item.kind === "multimodal");
+
+    assert.equal(report.totals.artifact_review_quality_event_count, 5);
+    assert.equal(report.totals.artifact_review_scorecard_coverage_rate, 0.4);
+    assert.equal(multimodal.title, "Improve artifact-review design scorecard coverage.");
+    assert.match(multimodal.action, /Capture numeric design scorecards/);
+    assert.ok(multimodal.evidence.includes("Artifact-review scorecard coverage: 40.0%"));
+    assert.doesNotMatch(serialized, /private coverage detail/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runTelemetryPriorities recommends design quality calibration when scorecard scores are low", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    const scores = [55, 60, 65, 68, 62];
+    for (let index = 0; index < scores.length; index += 1) {
+      await appendTelemetryEvent({
+        cwd,
+        event: telemetryEvent(220 + index, {
+          command: "artifact-review",
+          payload: {
+            prompt_truncated: false,
+            response_truncated: false,
+            multimodal: [{ mime_type: "image/png", byte_size: 100, media_kind: "design" }],
+          },
+          metadata: {
+            design_scorecard: {
+              overall_score: scores[index],
+              implementation_readiness_score: 66,
+              issues: ["private quality detail"],
+            },
+          },
+          economics: {
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 150,
+            codex_tokens_saved_estimate: 100,
+          },
+        }),
+      });
+    }
+
+    const report = await runTelemetryPriorities({ cwd, scope: "local", topLimit: 5 });
+    const text = formatTelemetryPrioritiesText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+    const multimodal = report.priorities.find((item) => item.kind === "multimodal");
+
+    assert.equal(report.totals.artifact_review_scorecard_coverage_rate, 1);
+    assert.equal(report.totals.artifact_review_avg_overall_score, 62);
+    assert.equal(multimodal.title, "Improve artifact-review design quality signals.");
+    assert.match(multimodal.action, /Calibrate artifact-review prompts/);
+    assert.ok(multimodal.evidence.includes("Average artifact-review overall score: 62"));
+    assert.doesNotMatch(serialized, /private quality detail/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryPriorities rejects invalid options", async () => {
   await assert.rejects(
     () => runTelemetryPriorities({ topLimit: 0 }),

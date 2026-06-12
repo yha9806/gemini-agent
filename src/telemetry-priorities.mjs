@@ -474,6 +474,24 @@ function workflowPriority(economics) {
   });
 }
 
+function artifactReviewScorecardCoverage(summary) {
+  const quality = summary.artifact_review_quality;
+  if (!quality || nonnegativeMetric(quality.event_count) <= 0) return null;
+  return nullableRatio(
+    nonnegativeMetric(quality.scorecard_event_count),
+    nonnegativeMetric(quality.event_count),
+    4,
+  );
+}
+
+function topArtifactReviewQualityCommand(summary) {
+  const row = summary.artifact_review_quality?.top_commands?.[0];
+  const command = typeof row?.command === "string" && row.command.trim()
+    ? row.command
+    : "artifact-review";
+  return command === "other" ? null : command;
+}
+
 function contextPackReusePriority(economics) {
   const rows = Array.isArray(economics.context_loop?.top_gate_commands)
     ? economics.context_loop.top_gate_commands
@@ -516,6 +534,46 @@ function contextPackReusePriority(economics) {
 function multimodalPriority(summary, multimodalCoverage) {
   if (summary.multimodal.event_count < 5 || multimodalCoverage.min === null || multimodalCoverage.min < 0.75) {
     return null;
+  }
+  const quality = summary.artifact_review_quality ?? {};
+  const qualityEventCount = nonnegativeMetric(quality.event_count);
+  const scorecardEventCount = nonnegativeMetric(quality.scorecard_event_count);
+  const scorecardCoverage = artifactReviewScorecardCoverage(summary);
+  const avgOverallScore = nullableMetricRatio(quality.avg_overall_score);
+  if (qualityEventCount >= 5 && scorecardCoverage !== null && scorecardCoverage < 0.8) {
+    return priority({
+      kind: "multimodal",
+      severity: "medium",
+      score: 66,
+      title: "Improve artifact-review design scorecard coverage.",
+      action: "Capture numeric design scorecards for artifact-review runs before using visual quality metrics for product decisions.",
+      command: topArtifactReviewQualityCommand(summary),
+      evidence: [
+        `Artifact-review quality events: ${formatNumber(qualityEventCount)}`,
+        `Scorecard events: ${formatNumber(scorecardEventCount)}`,
+        `Artifact-review scorecard coverage: ${formatPercent(scorecardCoverage)}`,
+      ],
+    });
+  }
+  if (qualityEventCount >= 5
+    && scorecardCoverage !== null
+    && scorecardCoverage >= 0.8
+    && avgOverallScore !== null
+    && avgOverallScore < 70) {
+    return priority({
+      kind: "multimodal",
+      severity: "medium",
+      score: 65,
+      title: "Improve artifact-review design quality signals.",
+      action: "Calibrate artifact-review prompts, design scorecard rubric, and screenshot review workflow before expanding more visual tasks.",
+      command: topArtifactReviewQualityCommand(summary),
+      evidence: [
+        `Artifact-review quality events: ${formatNumber(qualityEventCount)}`,
+        `Scorecard events: ${formatNumber(scorecardEventCount)}`,
+        `Artifact-review scorecard coverage: ${formatPercent(scorecardCoverage)}`,
+        `Average artifact-review overall score: ${avgOverallScore}`,
+      ],
+    });
   }
   const topCommand = summary.multimodal.top_commands[0]?.command ?? "multimodal workflows";
   return priority({
@@ -616,6 +674,10 @@ export async function runTelemetryPriorities({
       multimodal_event_count: summary.multimodal.event_count,
       multimodal_item_count: summary.multimodal.item_count,
       multimodal_metadata_coverage_min: multimodal.min,
+      artifact_review_quality_event_count: summary.artifact_review_quality?.event_count ?? 0,
+      artifact_review_scorecard_event_count: summary.artifact_review_quality?.scorecard_event_count ?? 0,
+      artifact_review_scorecard_coverage_rate: artifactReviewScorecardCoverage(summary),
+      artifact_review_avg_overall_score: summary.artifact_review_quality?.avg_overall_score ?? null,
       gemini_estimated_cost_usd: economics.totals.gemini_estimated_cost_usd,
       codex_tokens_saved_estimate: economics.totals.codex_tokens_saved_estimate,
     },

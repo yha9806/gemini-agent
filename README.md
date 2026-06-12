@@ -109,6 +109,7 @@ Global Gemini review gate for Codex.
 - `telemetry economics` estimates Gemini cost, Codex token savings, and aggregate gate input byte metrics from usage metadata; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - `telemetry priorities` combines aggregate economics, reliability, delivery, latency, instrumentation, and multimodal metadata signals into a development priority list; it does not print raw prompt, response text, event ids, batch ids, or media file names.
 - Telemetry priorities use latency stage attribution to distinguish pre-Gemini artifact-review work from Gemini generation latency without exposing raw prompts, responses, event ids, paths, or media file names.
+- Telemetry priorities use artifact-review design scorecard coverage and average score to choose between scorecard capture work, design-quality calibration, and broader visual workflow expansion.
 - Latency priorities only use stage attribution when `pre_gemini_total` has at least 5 command-level samples, avoiding overconfident conclusions from smoke-test or sparse stage data.
 - Latency priorities initially require at least 5 samples and command p95 >= 10,000 ms before recommending profiling a slow Gemini route.
 - `telemetry report` combines aggregate health, economics, context reuse, attribution, multimodal adoption, and top development priority into a product decision snapshot; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
