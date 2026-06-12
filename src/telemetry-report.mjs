@@ -83,14 +83,42 @@ function compactStructuredResponseFinishReason(row) {
   };
 }
 
+function compactStructuredResponseRetryReason(row) {
+  if (!row) return null;
+  return {
+    retry_reason: row.retry_reason,
+    event_count: row.event_count,
+  };
+}
+
+function compactStructuredResponseRetryCommand(row) {
+  if (!row) return null;
+  return {
+    command: row.command,
+    retry_event_count: row.retry_event_count,
+    retry_scheduled_count: row.retry_scheduled_count,
+    retry_recovered_count: row.retry_recovered_count,
+    max_retry_next_max_output_tokens: row.max_retry_next_max_output_tokens,
+  };
+}
+
 export function buildStructuredResponseReport(summary) {
   const structured = summary.structured_response ?? {};
   const eventCount = structured.event_count ?? 0;
   const missingJsonEnvelopeCount = structured.missing_json_envelope_count ?? 0;
+  const retryScheduledCount = structured.retry_scheduled_count ?? 0;
+  const retryRecoveredCount = structured.retry_recovered_count ?? 0;
   return {
     event_count: eventCount,
     missing_json_envelope_count: missingJsonEnvelopeCount,
     missing_json_envelope_rate: nullableRatio(missingJsonEnvelopeCount, eventCount, 4),
+    retry_event_count: structured.retry_event_count ?? 0,
+    retry_scheduled_count: retryScheduledCount,
+    retry_recovered_count: retryRecoveredCount,
+    retry_recovery_rate: retryScheduledCount > 0
+      ? Math.min(1, nullableRatio(retryRecoveredCount, retryScheduledCount, 4))
+      : null,
+    max_retry_next_max_output_tokens: structured.max_retry_next_max_output_tokens ?? null,
     avg_response_text_bytes: structured.avg_response_text_bytes ?? null,
     max_response_text_bytes: structured.max_response_text_bytes ?? null,
     top_finish_reason: compactStructuredResponseFinishReason(
@@ -98,6 +126,12 @@ export function buildStructuredResponseReport(summary) {
     ),
     top_command: compactStructuredResponseCommand(
       firstOrNull(structured.top_commands),
+    ),
+    top_retry_reason: compactStructuredResponseRetryReason(
+      firstOrNull(structured.top_retry_reasons),
+    ),
+    top_retry_command: compactStructuredResponseRetryCommand(
+      firstOrNull(structured.top_retry_commands),
     ),
   };
 }
@@ -306,6 +340,11 @@ function formatTopFinishReason(item) {
   return item.gemini_finish_reason;
 }
 
+function formatTopRetryReason(item) {
+  if (!item) return "None";
+  return item.retry_reason;
+}
+
 function formatTopPriority(priorities) {
   const item = priorities[0];
   if (!item) return "None";
@@ -373,10 +412,15 @@ export function formatTelemetryReportText(report) {
     "Structured responses:",
     `- Events: ${formatNumber(report.structured_response.event_count)}`,
     `- Missing JSON envelope: ${formatNumber(report.structured_response.missing_json_envelope_count)} (${formatPercent(report.structured_response.missing_json_envelope_rate)})`,
+    `- Structured JSON retries recovered: ${formatNumber(report.structured_response.retry_recovered_count)} of ${formatNumber(report.structured_response.retry_scheduled_count)} (${formatPercent(report.structured_response.retry_recovery_rate)})`,
+    `- Retry events: ${formatNumber(report.structured_response.retry_event_count)}`,
+    `- Max retry output budget: ${report.structured_response.max_retry_next_max_output_tokens == null ? "n/a" : formatNumber(report.structured_response.max_retry_next_max_output_tokens)}`,
     `- Average response bytes: ${report.structured_response.avg_response_text_bytes == null ? "n/a" : formatNumber(report.structured_response.avg_response_text_bytes)}`,
     `- Max response bytes: ${report.structured_response.max_response_text_bytes == null ? "n/a" : formatNumber(report.structured_response.max_response_text_bytes)}`,
     `- Top finish reason: ${formatTopFinishReason(report.structured_response.top_finish_reason)}`,
     `- Top structured command: ${formatTopCommand(report.structured_response.top_command)}`,
+    `- Top retry reason: ${formatTopRetryReason(report.structured_response.top_retry_reason)}`,
+    `- Top retry command: ${formatTopCommand(report.structured_response.top_retry_command)}`,
     "",
     "Attribution:",
     `- Top projects: ${formatDimensionRows(report.attribution.top_projects, "project_id")}`,

@@ -412,6 +412,11 @@ function structuredResponsePriority(summary) {
   if (eventCount <= 0 || missingCount <= 0) return null;
   const missingRate = nullableRatio(missingCount, eventCount, 4);
   const maxTokensCount = structuredResponseFinishReasonCount(summary, "MAX_TOKENS");
+  const retryScheduledCount = nonnegativeMetric(structured.retry_scheduled_count);
+  const retryRecoveredCount = nonnegativeMetric(structured.retry_recovered_count);
+  const retryRecoveryRate = retryScheduledCount > 0
+    ? Math.min(1, nullableRatio(retryRecoveredCount, retryScheduledCount, 4))
+    : null;
   const topCommand = topStructuredResponseMissingCommand(summary);
   const command = typeof topCommand?.command === "string" && topCommand.command !== "unknown"
     ? topCommand.command
@@ -429,6 +434,10 @@ function structuredResponsePriority(summary) {
   ];
   if (maxTokensCount > 0) {
     evidence.push(`MAX_TOKENS finish reason events: ${formatNumber(maxTokensCount)}`);
+  }
+  if (retryScheduledCount > 0 || retryRecoveredCount > 0) {
+    evidence.push(`Structured JSON retries recovered: ${formatNumber(retryRecoveredCount)} of ${formatNumber(retryScheduledCount)}`);
+    evidence.push(`Structured JSON retry recovery rate: ${formatPercent(retryRecoveryRate)}`);
   }
   if (topCommand) {
     evidence.push(`Top affected command: ${topCommand.command ?? "unknown"} missing ${formatNumber(nonnegativeMetric(topCommand.missing_json_envelope_count))} of ${formatNumber(nonnegativeMetric(topCommand.event_count))} structured responses`);
@@ -1074,6 +1083,14 @@ export async function runTelemetryPriorities({
         summary.structured_response?.event_count ?? 0,
         4,
       ),
+      structured_response_retry_event_count: summary.structured_response?.retry_event_count ?? 0,
+      structured_response_retry_scheduled_count: summary.structured_response?.retry_scheduled_count ?? 0,
+      structured_response_retry_recovered_count: summary.structured_response?.retry_recovered_count ?? 0,
+      structured_response_retry_recovery_rate: (() => {
+        const scheduled = summary.structured_response?.retry_scheduled_count ?? 0;
+        const recovered = summary.structured_response?.retry_recovered_count ?? 0;
+        return scheduled > 0 ? Math.min(1, nullableRatio(recovered, scheduled, 4)) : null;
+      })(),
       gemini_estimated_cost_usd: economics.totals.gemini_estimated_cost_usd,
       codex_tokens_saved_estimate: economics.totals.codex_tokens_saved_estimate,
       product_adjusted_gemini_estimated_cost_usd: (

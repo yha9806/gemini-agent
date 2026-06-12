@@ -406,6 +406,12 @@ test("runTelemetryPriorities flags structured response JSON envelope failures", 
             response_has_json_object_envelope: false,
             gemini_finish_reason: "MAX_TOKENS",
           },
+          structured_response_retry: {
+            attempt: 1,
+            will_retry: true,
+            retry_reason: "MAX_TOKENS",
+            next_max_output_tokens: 4096,
+          },
         },
       }),
     });
@@ -419,6 +425,12 @@ test("runTelemetryPriorities flags structured response JSON envelope failures", 
             response_text_bytes: 128,
             response_has_json_object_envelope: true,
             gemini_finish_reason: "STOP",
+          },
+          structured_response_retry: {
+            attempt: 2,
+            will_retry: false,
+            recovered: true,
+            retry_reason: "MAX_TOKENS",
           },
         },
       }),
@@ -438,10 +450,15 @@ test("runTelemetryPriorities flags structured response JSON envelope failures", 
     assert.ok(structured.evidence.some((item) => item === "Missing JSON envelope: 1"));
     assert.ok(structured.evidence.some((item) => item === "Missing JSON envelope rate: 50.0%"));
     assert.ok(structured.evidence.some((item) => item === "MAX_TOKENS finish reason events: 1"));
+    assert.ok(structured.evidence.some((item) => item === "Structured JSON retries recovered: 1 of 1"));
     assert.ok(structured.evidence.some((item) => item === "Top affected command: artifact-review missing 1 of 2 structured responses"));
     assert.equal(report.totals.structured_response_event_count, 2);
     assert.equal(report.totals.structured_response_missing_json_envelope_count, 1);
     assert.equal(report.totals.structured_response_missing_json_envelope_rate, 0.5);
+    assert.equal(report.totals.structured_response_retry_event_count, 2);
+    assert.equal(report.totals.structured_response_retry_scheduled_count, 1);
+    assert.equal(report.totals.structured_response_retry_recovered_count, 1);
+    assert.equal(report.totals.structured_response_retry_recovery_rate, 1);
     assert.match(text, /Structured response JSON envelope failures/);
     assert.doesNotMatch(serialized, /private response|secret-token|\/Users\/example|evt_priority_000045/);
   } finally {

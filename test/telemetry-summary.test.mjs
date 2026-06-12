@@ -439,6 +439,12 @@ test("runTelemetrySummary aggregates safe structured response diagnostics", asyn
           response_has_json_object_envelope: false,
           gemini_finish_reason: "MAX_TOKENS",
         },
+        structured_response_retry: {
+          attempt: 1,
+          will_retry: true,
+          retry_reason: "MAX_TOKENS",
+          next_max_output_tokens: 4096,
+        },
       },
     }),
   });
@@ -453,6 +459,12 @@ test("runTelemetrySummary aggregates safe structured response diagnostics", asyn
           response_has_json_object_envelope: true,
           gemini_finish_reason: "STOP",
         },
+        structured_response_retry: {
+          attempt: 2,
+          will_retry: false,
+          recovered: true,
+          retry_reason: "MAX_TOKENS",
+        },
       },
     }),
   });
@@ -466,6 +478,12 @@ test("runTelemetrySummary aggregates safe structured response diagnostics", asyn
           response_text_bytes: 2,
           response_has_json_object_envelope: true,
           gemini_finish_reason: "/Users/example/private",
+        },
+        structured_response_retry: {
+          attempt: 2,
+          will_retry: false,
+          recovered: true,
+          retry_reason: "/Users/example/private Authorization: Bearer secret-token",
         },
       },
     }),
@@ -482,6 +500,11 @@ test("runTelemetrySummary aggregates safe structured response diagnostics", asyn
   assert.deepEqual(summary.structured_response, {
     event_count: 3,
     missing_json_envelope_count: 1,
+    retry_event_count: 3,
+    retry_scheduled_count: 1,
+    retry_recovered_count: 2,
+    retry_recovery_rate: 1,
+    max_retry_next_max_output_tokens: 4096,
     avg_response_text_bytes: 345.7,
     max_response_text_bytes: 1024,
     top_finish_reasons: [
@@ -503,6 +526,26 @@ test("runTelemetrySummary aggregates safe structured response diagnostics", asyn
         missing_json_envelope_count: 0,
         avg_response_text_bytes: 11,
         max_response_text_bytes: 11,
+      },
+    ],
+    top_retry_reasons: [
+      { retry_reason: "MAX_TOKENS", event_count: 2 },
+      { retry_reason: "unknown", event_count: 1 },
+    ],
+    top_retry_commands: [
+      {
+        command: "artifact-review",
+        retry_event_count: 2,
+        retry_scheduled_count: 1,
+        retry_recovered_count: 1,
+        max_retry_next_max_output_tokens: 4096,
+      },
+      {
+        command: "diff-review",
+        retry_event_count: 1,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 1,
+        max_retry_next_max_output_tokens: null,
       },
     ],
   });

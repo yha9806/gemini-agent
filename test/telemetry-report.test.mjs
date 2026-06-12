@@ -348,6 +348,12 @@ test("runTelemetryReport exposes aggregate structured response diagnostics safel
             response_has_json_object_envelope: false,
             gemini_finish_reason: "MAX_TOKENS",
           },
+          structured_response_retry: {
+            attempt: 1,
+            will_retry: true,
+            retry_reason: "MAX_TOKENS",
+            next_max_output_tokens: 4096,
+          },
         },
       }),
     });
@@ -362,6 +368,12 @@ test("runTelemetryReport exposes aggregate structured response diagnostics safel
             response_has_json_object_envelope: true,
             gemini_finish_reason: "STOP",
           },
+          structured_response_retry: {
+            attempt: 2,
+            will_retry: false,
+            recovered: true,
+            retry_reason: "MAX_TOKENS",
+          },
         },
       }),
     });
@@ -374,6 +386,11 @@ test("runTelemetryReport exposes aggregate structured response diagnostics safel
       event_count: 2,
       missing_json_envelope_count: 1,
       missing_json_envelope_rate: 0.5,
+      retry_event_count: 2,
+      retry_scheduled_count: 1,
+      retry_recovered_count: 1,
+      retry_recovery_rate: 1,
+      max_retry_next_max_output_tokens: 4096,
       avg_response_text_bytes: 2112,
       max_response_text_bytes: 4096,
       top_finish_reason: {
@@ -387,11 +404,25 @@ test("runTelemetryReport exposes aggregate structured response diagnostics safel
         avg_response_text_bytes: 2112,
         max_response_text_bytes: 4096,
       },
+      top_retry_reason: {
+        retry_reason: "MAX_TOKENS",
+        event_count: 2,
+      },
+      top_retry_command: {
+        command: "artifact-review",
+        retry_event_count: 2,
+        retry_scheduled_count: 1,
+        retry_recovered_count: 1,
+        max_retry_next_max_output_tokens: 4096,
+      },
     });
     assert.equal(report.priorities[0].kind, "reliability");
     assert.match(report.priorities[0].title, /Structured response JSON envelope failures/);
     assert.match(text, /Structured responses/);
     assert.match(text, /Missing JSON envelope: 1/);
+    assert.match(text, /Structured JSON retries recovered: 1 of 1 \(100\.0%\)/);
+    assert.match(text, /Top retry reason: MAX_TOKENS/);
+    assert.match(text, /Top retry command: artifact-review/);
     assert.match(text, /Top finish reason: MAX_TOKENS/);
     assert.match(text, /Top structured command: artifact-review/);
     assert.doesNotMatch(serialized, /private report response|secret-token|\/Users\/example|private\.png|evt_report_000007/);
@@ -405,10 +436,17 @@ test("buildStructuredResponseReport tolerates legacy summaries without structure
     event_count: 0,
     missing_json_envelope_count: 0,
     missing_json_envelope_rate: null,
+    retry_event_count: 0,
+    retry_scheduled_count: 0,
+    retry_recovered_count: 0,
+    retry_recovery_rate: null,
+    max_retry_next_max_output_tokens: null,
     avg_response_text_bytes: null,
     max_response_text_bytes: null,
     top_finish_reason: null,
     top_command: null,
+    top_retry_reason: null,
+    top_retry_command: null,
   });
 });
 

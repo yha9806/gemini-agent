@@ -195,10 +195,17 @@ function zeroStructuredResponse() {
   return {
     event_count: 0,
     missing_json_envelope_count: 0,
+    retry_event_count: 0,
+    retry_scheduled_count: 0,
+    retry_recovered_count: 0,
+    retry_recovery_rate: null,
+    max_retry_next_max_output_tokens: null,
     avg_response_text_bytes: null,
     max_response_text_bytes: null,
     top_finish_reasons: [],
     top_commands: [],
+    top_retry_reasons: [],
+    top_retry_commands: [],
   };
 }
 
@@ -438,14 +445,25 @@ function safeStructuredResponseFinishReason(value) {
   return /^[A-Za-z0-9_.-]{1,64}$/.test(text) ? text : "unknown";
 }
 
+function safeStructuredResponseRetryReason(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return ["MAX_TOKENS", "missing_json_envelope"].includes(text) ? text : "unknown";
+}
+
 function createStructuredResponseAggregate() {
   return {
     event_count: 0,
     missing_json_envelope_count: 0,
+    retry_event_count: 0,
+    retry_scheduled_count: 0,
+    retry_recovered_count: 0,
+    max_retry_next_max_output_tokens: null,
     response_text_bytes_sum: 0,
     max_response_text_bytes: null,
     finishReasons: new Map(),
     commands: new Map(),
+    retryReasons: new Map(),
+    retryCommands: new Map(),
   };
 }
 
@@ -465,6 +483,28 @@ function addStructuredResponseCommand(map, command, responseTextBytes, hasJsonEn
   map.set(key, item);
 }
 
+function addStructuredResponseRetryCommand(map, command, retry) {
+  const key = structuredResponseCommandKey(command);
+  const nextMaxOutputTokens = safeInteger(retry.next_max_output_tokens);
+  const item = map.get(key) ?? {
+    key,
+    retry_event_count: 0,
+    retry_scheduled_count: 0,
+    retry_recovered_count: 0,
+    max_retry_next_max_output_tokens: null,
+  };
+  item.retry_event_count += 1;
+  if (retry.will_retry === true) item.retry_scheduled_count += 1;
+  if (retry.recovered === true) item.retry_recovered_count += 1;
+  if (nextMaxOutputTokens > 0) {
+    item.max_retry_next_max_output_tokens = Math.max(
+      item.max_retry_next_max_output_tokens ?? 0,
+      nextMaxOutputTokens,
+    );
+  }
+  map.set(key, item);
+}
+
 function addStructuredResponse(aggregate, command, metadata) {
   const diagnostic = metadata?.structured_response;
   if (!diagnostic || typeof diagnostic !== "object" || Array.isArray(diagnostic)) return;
@@ -477,6 +517,21 @@ function addStructuredResponse(aggregate, command, metadata) {
   aggregate.max_response_text_bytes = Math.max(aggregate.max_response_text_bytes ?? 0, responseTextBytes);
   updateSimpleCount(aggregate.finishReasons, finishReason);
   addStructuredResponseCommand(aggregate.commands, command, responseTextBytes, hasJsonEnvelope);
+  const retry = metadata?.structured_response_retry;
+  if (!retry || typeof retry !== "object" || Array.isArray(retry)) return;
+  const retryReason = safeStructuredResponseRetryReason(retry.retry_reason);
+  const nextMaxOutputTokens = safeInteger(retry.next_max_output_tokens);
+  aggregate.retry_event_count += 1;
+  if (retry.will_retry === true) aggregate.retry_scheduled_count += 1;
+  if (retry.recovered === true) aggregate.retry_recovered_count += 1;
+  if (nextMaxOutputTokens > 0) {
+    aggregate.max_retry_next_max_output_tokens = Math.max(
+      aggregate.max_retry_next_max_output_tokens ?? 0,
+      nextMaxOutputTokens,
+    );
+  }
+  updateSimpleCount(aggregate.retryReasons, retryReason);
+  addStructuredResponseRetryCommand(aggregate.retryCommands, command, retry);
 }
 
 function topStructuredResponseCommands(map, limit) {
@@ -496,15 +551,42 @@ function topStructuredResponseCommands(map, limit) {
     }));
 }
 
+function topStructuredResponseRetryCommands(map, limit) {
+  return [...map.values()]
+    .sort((left, right) => (
+      right.retry_event_count - left.retry_event_count
+      || right.retry_recovered_count - left.retry_recovered_count
+      || right.retry_scheduled_count - left.retry_scheduled_count
+      || left.key.localeCompare(right.key)
+    ))
+    .slice(0, limit)
+    .map((item) => ({
+      command: item.key,
+      retry_event_count: item.retry_event_count,
+      retry_scheduled_count: item.retry_scheduled_count,
+      retry_recovered_count: item.retry_recovered_count,
+      max_retry_next_max_output_tokens: item.max_retry_next_max_output_tokens,
+    }));
+}
+
 function buildStructuredResponseSummary(aggregate, topLimit) {
   if (aggregate.event_count === 0) return zeroStructuredResponse();
   return {
     event_count: aggregate.event_count,
     missing_json_envelope_count: aggregate.missing_json_envelope_count,
+    retry_event_count: aggregate.retry_event_count,
+    retry_scheduled_count: aggregate.retry_scheduled_count,
+    retry_recovered_count: aggregate.retry_recovered_count,
+    retry_recovery_rate: aggregate.retry_scheduled_count > 0
+      ? Math.min(1, nullableRatio(aggregate.retry_recovered_count, aggregate.retry_scheduled_count))
+      : null,
+    max_retry_next_max_output_tokens: aggregate.max_retry_next_max_output_tokens,
     avg_response_text_bytes: roundOne(aggregate.response_text_bytes_sum / aggregate.event_count),
     max_response_text_bytes: aggregate.max_response_text_bytes,
     top_finish_reasons: topSimpleCounts(aggregate.finishReasons, "gemini_finish_reason", topLimit),
     top_commands: topStructuredResponseCommands(aggregate.commands, topLimit),
+    top_retry_reasons: topSimpleCounts(aggregate.retryReasons, "retry_reason", topLimit),
+    top_retry_commands: topStructuredResponseRetryCommands(aggregate.retryCommands, topLimit),
   };
 }
 
