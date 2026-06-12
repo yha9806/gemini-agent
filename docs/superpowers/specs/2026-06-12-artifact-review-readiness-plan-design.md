@@ -76,7 +76,6 @@ Return `blocked` when any of these are true:
 
 - active quick error rate is at least 5% after minimum blocking sample size;
 - generation latency is over the budget;
-- structured JSON failures exist for artifact-review and no retry recovery evidence exists;
 - production scorecard coverage is zero after production artifact-review events exist;
 - raw telemetry is in failed or quarantine state;
 - endpoint/token/config checks fail when delivery diagnostics are available.
@@ -88,6 +87,7 @@ Return `collect_more_samples` when routing is not blocked but any of these are t
 - active quick `2048` has fewer than 10 production outcomes;
 - production scorecard coverage is below 80%;
 - any fixed numeric scorecard field has coverage below 80%;
+- structured JSON envelope risk exists for artifact-review and needs retry recovery evidence before limited routing;
 - generation latency is within budget but at or above 90% of the budget;
 - raw pending events have sensitive preflight signals and need governed review, reveal/export/delete/prune, or small-batch flush before broader routing;
 - validation coverage is healthier than production coverage, meaning calibration is useful but production proof is still missing.
@@ -194,8 +194,8 @@ Existing artifact-review already performs one structured JSON retry for `MAX_TOK
 
 Rules:
 
-- unrecovered artifact-review missing-envelope events block wider routing;
-- retry recovery evidence can downgrade the issue from `blocked` to `collect_more_samples`;
+- unrecovered artifact-review missing-envelope events block limited routing but still allow bounded sample collection when all hard safety gates are clean;
+- retry recovery evidence can clear the structured-response collection reason when all other gates pass;
 - retry diagnostics should remain aggregate-only;
 - the command must not inspect raw response text to diagnose JSON failures.
 

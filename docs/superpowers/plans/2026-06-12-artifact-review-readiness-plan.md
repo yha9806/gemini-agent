@@ -659,9 +659,6 @@ function buildReadinessReasons({
     blocked.push("active_quick_error_rate_high");
   }
   if (latency.status === "over_budget") blocked.push("generation_latency_over_budget");
-  if (structured.missing_json_envelope_count > structured.retry_recovered_count) {
-    blocked.push("structured_response_unrecovered_json_envelope");
-  }
   if (production.event_count > 0 && production.scorecard_event_count === 0) {
     blocked.push("production_scorecard_coverage_zero");
   }
@@ -677,6 +674,9 @@ function buildReadinessReasons({
     collect.push("production_scorecard_field_coverage_low");
   }
   if (latency.near_budget) collect.push("generation_latency_near_budget");
+  if (structured.missing_json_envelope_count > structured.retry_recovered_count) {
+    collect.push("structured_response_unrecovered_json_envelope");
+  }
   if (raw.pending_count > 0 && raw.sensitive_signal_count > 0) collect.push("raw_pending_sensitive_signals");
   if (
     validation.coverage_rate !== null
