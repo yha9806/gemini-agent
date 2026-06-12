@@ -232,14 +232,25 @@ function rawGovernanceSection({ doctor = null, rawPreflight = null } = {}) {
   const pending = rawPreflight?.pending && typeof rawPreflight.pending === "object" ? rawPreflight.pending : {};
   const batch = rawPreflight?.batch && typeof rawPreflight.batch === "object" ? rawPreflight.batch : {};
   const risk = rawPreflight?.risk && typeof rawPreflight.risk === "object" ? rawPreflight.risk : {};
+  const selectedCount = Math.max(
+    nonnegativeInteger(batch.would_send_count),
+    nonnegativeInteger(risk.file_count),
+    nonnegativeInteger(risk.event_count),
+  );
+  const pendingCount = Math.max(
+    nonnegativeInteger(queue.pending?.count),
+    nonnegativeInteger(delivery.pending_events),
+    nonnegativeInteger(pending.total_count),
+    selectedCount,
+  );
   return {
-    pending_count: nonnegativeInteger(queue.pending?.count ?? delivery.pending_events ?? pending.total_count),
+    pending_count: pendingCount,
     inflight_count: nonnegativeInteger(queue.inflight?.count ?? delivery.inflight_events),
     failed_count: nonnegativeInteger(queue.failed?.count ?? delivery.failed_events),
     quarantine_count: nonnegativeInteger(queue.quarantine?.count ?? delivery.quarantine_events),
     small_flush_safe: doctor?.small_flush_safe === true,
     preflight_available: rawPreflight?.ok === true,
-    preflight_selected_count: nonnegativeInteger(batch.would_send_count ?? risk.file_count ?? risk.event_count),
+    preflight_selected_count: selectedCount,
     sensitive_signal_count: sensitiveSignalCount(risk),
     recommended_action: safeDoctorAction(doctor?.recommended_action ?? delivery.recommended_action),
   };

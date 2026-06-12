@@ -522,6 +522,55 @@ test("readiness plan requires raw delivery to have no in-flight events", () => {
   assert.equal(report.routing_recommendation.limited_routing_allowed, false);
 });
 
+test("readiness plan uses raw preflight pending evidence when doctor pending is zero", () => {
+  const report = buildArtifactReviewReadinessPlan({
+    summary: summary({
+      structured_response: {
+        event_count: 12,
+        missing_json_envelope_count: 0,
+        missing_json_envelope_rate: 0,
+        retry_event_count: 0,
+        retry_scheduled_count: 0,
+        retry_recovered_count: 0,
+        retry_recovery_rate: null,
+        top_commands: [
+          {
+            command: "artifact-review",
+            event_count: 12,
+            missing_json_envelope_count: 0,
+          },
+        ],
+        top_retry_commands: [],
+      },
+    }),
+    coveragePlan: readyCoveragePlan(),
+    doctor: cleanDoctor({
+      delivery: {
+        pending_events: 0,
+        failed_events: 0,
+        quarantine_events: 0,
+      },
+      queue: {
+        pending: { count: 0 },
+        inflight: { count: 0 },
+        failed: { count: 0 },
+        quarantine: { count: 0 },
+      },
+    }),
+    rawPreflight: cleanRawPreflight({
+      pending: { total_count: 3, total_bytes: 1200 },
+      batch: { would_send_count: 2 },
+      risk: { file_count: 2, sensitive_signal_count: 2 },
+    }),
+  });
+
+  assert.equal(report.readiness.status, "collect_more_samples");
+  assert.equal(report.raw_governance.pending_count, 3);
+  assert.equal(report.raw_governance.preflight_selected_count, 2);
+  assert.ok(report.readiness.reasons.includes("raw_pending_sensitive_signals"));
+  assert.equal(report.routing_recommendation.limited_routing_allowed, false);
+});
+
 test("readiness plan becomes ready only when every hard gate passes", () => {
   const report = buildArtifactReviewReadinessPlan({
     summary: summary({
