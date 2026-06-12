@@ -60,6 +60,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry report --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry artifact-review quality-gate --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry artifact-review coverage-plan --global --json$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent telemetry artifact-review readiness-plan --global --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --diff$/m);
@@ -90,6 +91,9 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /pending raw preflight governance/);
   assert.match(readme, /`telemetry artifact-review quality-gate` reports aggregate quick-depth readiness/);
   assert.match(readme, /`telemetry artifact-review coverage-plan` separates production scorecard coverage from validation scorecard coverage/);
+  assert.match(readme, /It combines coverage-plan, quality-gate, structured-response, latency, and raw-governance signals into one aggregate blocked \/ collect-more-samples \/ ready-for-limited-routing decision\./);
+  assert.match(readme, /It does not run artifact-review samples, upload raw telemetry, or change routing by itself\./);
+  assert.match(readme, /Output does not include raw prompts, raw responses, local paths, event ids, media file names, or credential-shaped strings\./);
   assert.match(readme, /Validation artifact-review coverage is calibration evidence only and cannot prove production routing readiness/);
   assert.match(readme, /Artifact-review quality gate separates Gemini generation latency readiness from scorecard coverage/);
   assert.match(readme, /current active quick budget cohort from historical non-active cohorts/);

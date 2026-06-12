@@ -42,6 +42,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent telemetry report --global --json
 ./bin/gemini-agent telemetry artifact-review quality-gate --global --json
 ./bin/gemini-agent telemetry artifact-review coverage-plan --global --json
+./bin/gemini-agent telemetry artifact-review readiness-plan --global --json
 ./bin/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --dry-run
 ./bin/gemini-agent telemetry multimodal repair-kind --global --correction-version media-kind-v1 --write --json
 ./bin/gemini-agent telemetry multimodal repair-metadata --global --correction-version media-v2 --dry-run
@@ -124,6 +125,7 @@ Global Gemini review gate for Codex.
 - Telemetry priorities and report surface aggregate structured response diagnostics such as missing JSON-envelope counts, `MAX_TOKENS` finish-reason counts, retry recovery counts/rates, and affected base commands without exposing raw prompt, response text, event ids, paths, or media file names.
 - `telemetry artifact-review quality-gate` reports aggregate quick-depth readiness, risky budget cohorts, and design scorecard coverage without exposing raw prompts, raw responses, event ids, paths, or media file names.
 - `telemetry artifact-review coverage-plan` separates production scorecard coverage from validation scorecard coverage, reports active quick cohort sample gaps, keeps historical quick budget failures visible, and recommends whether to collect more production samples or expand limited routing without exposing raw prompts, raw responses, event ids, paths, or media file names.
+- `telemetry artifact-review readiness-plan` is operator decision support before controlled artifact-review routing expansion. It combines coverage-plan, quality-gate, structured-response, latency, and raw-governance signals into one aggregate blocked / collect-more-samples / ready-for-limited-routing decision. It does not run artifact-review samples, upload raw telemetry, or change routing by itself. Output does not include raw prompts, raw responses, local paths, event ids, media file names, or credential-shaped strings.
 - Validation artifact-review coverage is calibration evidence only and cannot prove production routing readiness; production readiness depends on production scorecard coverage, active quick cohort reliability, and Gemini generation latency.
 - Artifact-review quality gate separates Gemini generation latency readiness from scorecard coverage, so high generation p95 first recommends raising scorecard coverage when coverage is weak and only recommends prompt/schema slimming once scorecard coverage is healthy.
 - Artifact-review quality gate and priorities distinguish the current active quick budget cohort from historical non-active cohorts, so old quick-depth failures stay visible without blocking current 2048-token routing when that active cohort is healthy.
