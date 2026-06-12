@@ -267,10 +267,8 @@ function structuredResponseSection(summary = {}) {
   const artifactRow = topCommands.find((row) => row?.command === "artifact-review") ?? null;
   const artifactRetryRow = topRetryCommands.find((row) => row?.command === "artifact-review") ?? null;
   const rowSelected = artifactRow !== null;
-  const eventCount = nonnegativeInteger(artifactRow?.event_count ?? structured.event_count);
-  const missingCount = nonnegativeInteger(
-    artifactRow?.missing_json_envelope_count ?? structured.missing_json_envelope_count,
-  );
+  const eventCount = rowSelected ? nonnegativeInteger(artifactRow.event_count) : 0;
+  const missingCount = rowSelected ? nonnegativeInteger(artifactRow.missing_json_envelope_count) : 0;
   const retryEventCount = nonnegativeInteger(artifactRetryRow?.retry_event_count);
   const retryScheduledCount = nonnegativeInteger(artifactRetryRow?.retry_scheduled_count);
   const retryRecoveredCount = nonnegativeInteger(artifactRetryRow?.retry_recovered_count);
@@ -279,7 +277,7 @@ function structuredResponseSection(summary = {}) {
     event_count: eventCount,
     missing_json_envelope_count: missingCount,
     missing_json_envelope_rate: nullableNumber(
-      rowSelected ? artifactRow.missing_json_envelope_rate : structured.missing_json_envelope_rate,
+      rowSelected ? artifactRow.missing_json_envelope_rate : null,
     ) ?? ratio(missingCount, eventCount),
     retry_event_count: retryEventCount,
     retry_scheduled_count: retryScheduledCount,
