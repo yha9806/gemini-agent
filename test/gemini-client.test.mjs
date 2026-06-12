@@ -114,6 +114,32 @@ test("generateJson sends structured JSON request and normalizes response", async
   assert.deepEqual(result, { ok: "context_pack" });
 });
 
+test("generateJson forwards maxOutputTokens when provided", async () => {
+  const result = await generateJson({
+    apiKey: "fake-key",
+    prompt: "build concise context",
+    responseSchema: GeminiContextPackSchema,
+    maxOutputTokens: 768,
+    normalize(value) {
+      assert.deepEqual(value, { kind: "context_pack" });
+      return { ok: value.kind };
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent(request) {
+          assert.equal(request.config.maxOutputTokens, 768);
+          assert.equal(request.config.temperature, 0.2);
+          assert.equal(request.config.responseMimeType, "application/json");
+          assert.equal(request.config.responseSchema, GeminiContextPackSchema);
+          return { text: JSON.stringify({ kind: "context_pack" }) };
+        },
+      },
+    }),
+  });
+
+  assert.deepEqual(result, { ok: "context_pack" });
+});
+
 test("structured and text generation ignore caller model overrides", async () => {
   await generateJson({
     apiKey: "fake-key",

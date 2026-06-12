@@ -128,6 +128,7 @@ const GATE_COMMANDS = new Map([
 
 const ARTIFACT_KINDS = new Set(["image", "ui", "design", "architecture", "research"]);
 const ARTIFACT_REVIEW_MODES = new Set(["single", "comparison"]);
+const ARTIFACT_REVIEW_DEPTHS = new Set(["quick", "standard"]);
 const MAX_ARTIFACT_REVIEW_FILES = 4;
 const DEFAULT_TELEMETRY_ENDPOINT = "http://127.0.0.1:8787/ingest";
 const DEFAULT_TELEMETRY_TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
@@ -148,7 +149,7 @@ function printUsage() {
     "  gemini-agent ask <prompt>",
     "  gemini-agent context-pack [--bootstrap | --stdin | --file <path> ... | --diff | text] [--write-artifact]",
     "  gemini-agent context-pack --doctor [--json] [--max-age-hours <n>]",
-    "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--write-artifact]",
+    "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1532,6 +1533,7 @@ function parseArtifactArgs(args) {
   const files = [];
   let artifactKind = "image";
   let reviewMode = null;
+  let reviewDepth = "standard";
   let writeArtifact = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -1555,6 +1557,12 @@ function parseArtifactArgs(args) {
       if (!ARTIFACT_REVIEW_MODES.has(mode)) throw new Error("--review-mode must be single or comparison.");
       reviewMode = mode;
       index += 1;
+    } else if (arg === "--review-depth") {
+      const depth = args[index + 1];
+      if (!depth || depth.startsWith("--")) throw new Error("--review-depth must be quick or standard.");
+      if (!ARTIFACT_REVIEW_DEPTHS.has(depth)) throw new Error("--review-depth must be quick or standard.");
+      reviewDepth = depth;
+      index += 1;
     } else if (arg === "--write-artifact") {
       writeArtifact = true;
     } else {
@@ -1566,7 +1574,7 @@ function parseArtifactArgs(args) {
   if (files.length > MAX_ARTIFACT_REVIEW_FILES) {
     throw new Error(`artifact-review supports at most ${MAX_ARTIFACT_REVIEW_FILES} files.`);
   }
-  return { file: files[0], files, artifactKind, reviewMode, writeArtifact };
+  return { file: files[0], files, artifactKind, reviewMode, reviewDepth, writeArtifact };
 }
 
 async function prevalidateArtifactFile(file, cwd = process.cwd()) {
@@ -1749,7 +1757,7 @@ async function runContextPackCommand(args) {
 }
 
 async function runArtifactReviewCommand(args) {
-  const { file, files, artifactKind, reviewMode, writeArtifact } = parseArtifactArgs(args);
+  const { file, files, artifactKind, reviewMode, reviewDepth, writeArtifact } = parseArtifactArgs(args);
   const cwd = process.cwd();
   for (const source of files) {
     await prevalidateArtifactFile(source, cwd);
@@ -1767,6 +1775,7 @@ async function runArtifactReviewCommand(args) {
     files,
     artifactKind,
     reviewMode,
+    reviewDepth,
     env: process.env,
     allowFakeResponse: fakeAllowed,
     writeArtifact,

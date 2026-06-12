@@ -9,6 +9,8 @@ import { normalizeArtifactReview } from "./schemas.mjs";
 
 const MAX_ARTIFACT_REVIEW_FILES = 4;
 const ARTIFACT_REVIEW_MODES = new Set(["single", "comparison"]);
+const ARTIFACT_REVIEW_DEPTHS = new Set(["quick", "standard"]);
+const QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS = 768;
 const SAFE_MEDIA_KINDS = new Set(["screenshot", "design", "document", "image", "unknown"]);
 
 function artifactTypeFor({ artifactKind = "image", mimeType }) {
@@ -36,6 +38,17 @@ function normalizeReviewMode(mode, sourceCount) {
   if (!value) return sourceCount > 1 ? "comparison" : "single";
   if (!ARTIFACT_REVIEW_MODES.has(value)) throw new Error("--review-mode must be single or comparison.");
   return value;
+}
+
+function normalizeReviewDepth(depth) {
+  const value = String(depth ?? "").trim().toLowerCase();
+  if (!value) return "standard";
+  if (!ARTIFACT_REVIEW_DEPTHS.has(value)) throw new Error("reviewDepth must be quick or standard.");
+  return value;
+}
+
+function maxOutputTokensForReviewDepth(depth) {
+  return depth === "quick" ? QUICK_ARTIFACT_REVIEW_MAX_OUTPUT_TOKENS : undefined;
 }
 
 function artifactTelemetryMediaKind(artifactKind) {
@@ -90,8 +103,14 @@ function mediaByteCount(mediaRefs) {
   ), 0);
 }
 
-function artifactLatencyMetadata({ mediaPrepareMs, policyPromptMs, telemetryContents }) {
-  return {
+function artifactLatencyMetadata({
+  mediaPrepareMs,
+  policyPromptMs,
+  telemetryContents,
+  reviewDepth,
+  maxOutputTokens,
+}) {
+  const metadata = {
     latency_stages_ms: {
       media_prepare: mediaPrepareMs,
       policy_prompt: policyPromptMs,
@@ -99,7 +118,13 @@ function artifactLatencyMetadata({ mediaPrepareMs, policyPromptMs, telemetryCont
     },
     media_file_count: telemetryContents.length,
     media_byte_count: mediaByteCount(telemetryContents),
+    artifact_review_depth: reviewDepth,
+    artifact_review_prompt_budget: reviewDepth,
   };
+  if (Number.isInteger(maxOutputTokens) && maxOutputTokens > 0) {
+    metadata.artifact_review_max_output_tokens = maxOutputTokens;
+  }
+  return metadata;
 }
 
 export async function runArtifactReview({
@@ -109,6 +134,7 @@ export async function runArtifactReview({
   files = null,
   artifactKind = "image",
   reviewMode = null,
+  reviewDepth = "standard",
   env = process.env,
   allowFakeResponse = false,
   now = new Date(),
@@ -119,6 +145,8 @@ export async function runArtifactReview({
 } = {}) {
   const sources = normalizeArtifactFiles({ file, files });
   const mode = normalizeReviewMode(reviewMode, sources.length);
+  const depth = normalizeReviewDepth(reviewDepth);
+  const maxOutputTokens = maxOutputTokensForReviewDepth(depth);
 
   const resolvedFiles = sources.map((source) => resolveCwdFilePath(source, { cwd }));
   const mimeTypes = sources.map((source) => detectArtifactMime(source));
@@ -145,6 +173,7 @@ export async function runArtifactReview({
   const prompt = buildArtifactReviewPrompt({
     artifactKind,
     reviewMode: mode,
+    reviewDepth: depth,
     sources,
     policy,
   });
@@ -155,6 +184,8 @@ export async function runArtifactReview({
     mediaPrepareMs: elapsedMs(mediaPrepareStartMs, mediaPrepareEndMs),
     policyPromptMs: elapsedMs(mediaPrepareEndMs, policyPromptEndMs),
     telemetryContents,
+    reviewDepth: depth,
+    maxOutputTokens,
   });
 
   const generated = await generate({
@@ -163,6 +194,7 @@ export async function runArtifactReview({
     contents,
     env,
     allowFakeResponse,
+    maxOutputTokens,
     telemetry: telemetry ? {
       ...telemetry,
       contents: telemetryContents,
@@ -184,6 +216,7 @@ export async function runArtifactReview({
       omitted_sources: [],
       media_manifest: artifactMediaManifest(telemetryContents, { cwd }),
       review_mode: mode,
+      review_depth: depth,
     },
   });
 

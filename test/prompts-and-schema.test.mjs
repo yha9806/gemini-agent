@@ -219,6 +219,22 @@ test("builds artifact review prompt with artifact kind and policy", () => {
   assert.match(prompt, /0-100/);
 });
 
+test("builds quick artifact review prompt with concise output budget instructions", () => {
+  const prompt = buildArtifactReviewPrompt({
+    artifactKind: "ui",
+    reviewDepth: "quick",
+    sources: ["design.png"],
+    policy: null,
+  });
+
+  assert.match(prompt, /Review depth: quick/);
+  assert.match(prompt, /Quick review budget/);
+  assert.match(prompt, /at most two/i);
+  assert.match(prompt, /Keep the same JSON shape/);
+  assert.match(prompt, /design_scorecard/);
+  assert.match(prompt, /overall_score/);
+});
+
 test("builds comparison artifact review prompt for visual diff", () => {
   const prompt = buildArtifactReviewPrompt({
     artifactKind: "ui",

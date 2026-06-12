@@ -68,6 +68,8 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
       },
       media_file_count: 1,
       media_byte_count: pngBytes.length,
+      artifact_review_depth: "standard",
+      artifact_review_prompt_budget: "standard",
     },
   });
   assert.match(seenPrompt, /artifact review/i);
@@ -81,6 +83,7 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   assert.deepEqual(seenContents[1], { text: seenPrompt });
   assert.equal(review.metadata.model, "gemini-3.5-flash");
   assert.equal(review.metadata.generated_at, "2026-05-28T12:00:00.000Z");
+  assert.equal(review.metadata.review_depth, "standard");
   assert.deepEqual(review.metadata.sources, ["design.png"]);
   assert.deepEqual(review.metadata.omitted_sources, []);
   assert.ok(Array.isArray(review.metadata.media_manifest));
@@ -99,6 +102,43 @@ test("runArtifactReview sends image part and prompt part, attaches metadata, and
   assert.equal(latest.metadata.generated_at, "2026-05-28T12:00:00.000Z");
   assert.equal(latest.metadata.media_manifest[0].byte_size, pngBytes.length);
   assert.doesNotMatch(JSON.stringify(latest.metadata.media_manifest), /design\.png|inlineData|iVBOR|YWJjZA/);
+});
+
+test("runArtifactReview quick depth sets concise prompt, output budget, and safe telemetry metadata", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-artifact-"));
+  await writeFile(join(dir, "design.png"), pngBytes);
+  let seenPrompt = "";
+  let seenMaxOutputTokens = null;
+  let seenTelemetry = null;
+
+  const review = await runArtifactReview({
+    apiKey: "fake-key",
+    cwd: dir,
+    file: "design.png",
+    artifactKind: "ui",
+    reviewDepth: "quick",
+    now: new Date("2026-06-12T09:00:00.000Z"),
+    nowMs: deterministicClock([3000, 3002, 3003]),
+    generate: async ({ prompt, maxOutputTokens, telemetry }) => {
+      seenPrompt = prompt;
+      seenMaxOutputTokens = maxOutputTokens;
+      seenTelemetry = telemetry;
+      return fakeReview;
+    },
+  });
+
+  assert.equal(seenMaxOutputTokens, 768);
+  assert.match(seenPrompt, /Review depth: quick/);
+  assert.match(seenPrompt, /Quick review budget/);
+  assert.equal(seenTelemetry.metadata.artifact_review_depth, "quick");
+  assert.equal(seenTelemetry.metadata.artifact_review_prompt_budget, "quick");
+  assert.equal(seenTelemetry.metadata.artifact_review_max_output_tokens, 768);
+  assert.deepEqual(seenTelemetry.metadata.latency_stages_ms, {
+    media_prepare: 2,
+    policy_prompt: 1,
+    pre_gemini_total: 3,
+  });
+  assert.equal(review.metadata.review_depth, "quick");
 });
 
 test("runArtifactReview preserves explicit telemetry override and adds safe media references", async () => {
@@ -130,6 +170,8 @@ test("runArtifactReview preserves explicit telemetry override and adds safe medi
       },
       media_file_count: 1,
       media_byte_count: pngBytes.length,
+      artifact_review_depth: "standard",
+      artifact_review_prompt_budget: "standard",
     },
   });
   assert.deepEqual(telemetry, { cwd: "/override", source: "mcp", command: "gemini_artifact_review", awaitCapture: true });
@@ -191,6 +233,8 @@ test("runArtifactReview records safe pre-Gemini latency attribution metadata", a
     },
     media_file_count: 1,
     media_byte_count: pngBytes.length,
+    artifact_review_depth: "standard",
+    artifact_review_prompt_budget: "standard",
   });
   assert.doesNotMatch(JSON.stringify(seenTelemetry.metadata), /design\.png|inlineData|iVBOR|YWJjZA/);
 });

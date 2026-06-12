@@ -99,20 +99,38 @@ export function buildContextPackPrompt({ input, sources = [], policy = null }) {
   ].join("\n");
 }
 
-export function buildArtifactReviewPrompt({ artifactKind = "image", reviewMode = "single", sources = [], policy = null }) {
+export function buildArtifactReviewPrompt({
+  artifactKind = "image",
+  reviewMode = "single",
+  reviewDepth = "standard",
+  sources = [],
+  policy = null,
+}) {
   const artifactType = normalizeArtifactKind(artifactKind);
   const mode = String(reviewMode ?? "").trim().toLowerCase() === "comparison" ? "comparison" : "single";
+  const depth = String(reviewDepth ?? "").trim().toLowerCase() === "quick" ? "quick" : "standard";
   const reviewInstruction = mode === "comparison"
     ? "Compare the attached artifacts in source order. Focus on visual changes, regressions, hierarchy shifts, accessibility concerns, implementation-relevant differences, and uncertainty."
     : "Analyze the attached or referenced artifact and produce a structured artifact review. Focus on details Codex can use for implementation, design, research, or follow-up questions.";
+  const depthInstruction = depth === "quick"
+    ? [
+      "Quick review budget:",
+      "- Keep the same JSON shape and include every required field.",
+      "- Keep each array to at most two concise strings.",
+      "- Prioritize summary, concrete risks, implementation actions, and numeric design_scorecard values.",
+      "- Avoid explanatory prose, duplicate observations, and broad background context.",
+    ].join("\n")
+    : "Standard review budget: provide enough concise detail for Codex to act safely.";
 
   return [
     "You are Gemini acting as an artifact review coprocessor for Codex.",
     `Artifact kind: ${artifactKind}`,
     `Review mode: ${mode}`,
+    `Review depth: ${depth}`,
     `Use artifact_type exactly: ${artifactType}`,
     "",
     reviewInstruction,
+    depthInstruction,
     "For visual, UI, design, screenshot, or comparison artifacts, fill design_scorecard with 0-100 scores. Use null scores when a dimension is not applicable or cannot be judged from the artifact.",
     "",
     "Project policy:",

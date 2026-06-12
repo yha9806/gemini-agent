@@ -106,6 +106,7 @@ export async function generateJson({
   allowFakeResponse = false,
   makeAi = makeGoogleGenAI,
   temperature = 0.2,
+  maxOutputTokens,
   telemetry,
   telemetryResultMetadata,
 }) {
@@ -137,6 +138,7 @@ export async function generateJson({
       contents,
       config: {
         temperature,
+        ...(Number.isInteger(maxOutputTokens) && maxOutputTokens > 0 ? { maxOutputTokens } : {}),
         responseMimeType: "application/json",
         responseSchema,
       },
