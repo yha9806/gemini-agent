@@ -33,6 +33,23 @@ const MetadataZodSchema = z.object({
   omitted_sources: z.array(z.string()).default([]),
 }).passthrough();
 
+const NullableDesignScoreZodSchema = z.number().int().min(0).max(100).nullable().default(null);
+
+const DesignScorecardZodSchema = z.preprocess(
+  (value) => value ?? {},
+  z.object({
+    overall_score: NullableDesignScoreZodSchema,
+    visual_hierarchy_score: NullableDesignScoreZodSchema,
+    clarity_score: NullableDesignScoreZodSchema,
+    accessibility_score: NullableDesignScoreZodSchema,
+    consistency_score: NullableDesignScoreZodSchema,
+    implementation_readiness_score: NullableDesignScoreZodSchema,
+    strengths: z.array(z.string()).default([]),
+    issues: z.array(z.string()).default([]),
+    recommended_actions: z.array(z.string()).default([]),
+  }),
+);
+
 export const ContextPackZodSchema = z.object({
   kind: z.literal("context_pack"),
   source_summary: z.array(z.string()).default([]),
@@ -58,6 +75,7 @@ export const ArtifactReviewZodSchema = z.object({
   risks_or_ambiguities: z.array(z.string()).default([]),
   questions_for_user: z.array(z.string()).default([]),
   limitations: z.array(z.string()).default([]),
+  design_scorecard: DesignScorecardZodSchema,
   metadata: MetadataZodSchema,
 });
 
@@ -70,6 +88,39 @@ const GeminiMetadataSchema = {
     omitted_sources: { type: Type.ARRAY, items: { type: Type.STRING } },
   },
   required: ["model", "generated_at", "sources", "omitted_sources"],
+};
+
+const GeminiNullableDesignScoreSchema = {
+  type: Type.INTEGER,
+  minimum: 0,
+  maximum: 100,
+  nullable: true,
+};
+
+const GeminiDesignScorecardSchema = {
+  type: Type.OBJECT,
+  properties: {
+    overall_score: GeminiNullableDesignScoreSchema,
+    visual_hierarchy_score: GeminiNullableDesignScoreSchema,
+    clarity_score: GeminiNullableDesignScoreSchema,
+    accessibility_score: GeminiNullableDesignScoreSchema,
+    consistency_score: GeminiNullableDesignScoreSchema,
+    implementation_readiness_score: GeminiNullableDesignScoreSchema,
+    strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+    issues: { type: Type.ARRAY, items: { type: Type.STRING } },
+    recommended_actions: { type: Type.ARRAY, items: { type: Type.STRING } },
+  },
+  required: [
+    "overall_score",
+    "visual_hierarchy_score",
+    "clarity_score",
+    "accessibility_score",
+    "consistency_score",
+    "implementation_readiness_score",
+    "strengths",
+    "issues",
+    "recommended_actions",
+  ],
 };
 
 export const GeminiContextPackSchema = {
@@ -120,6 +171,7 @@ export const GeminiArtifactReviewSchema = {
     risks_or_ambiguities: { type: Type.ARRAY, items: { type: Type.STRING } },
     questions_for_user: { type: Type.ARRAY, items: { type: Type.STRING } },
     limitations: { type: Type.ARRAY, items: { type: Type.STRING } },
+    design_scorecard: GeminiDesignScorecardSchema,
     metadata: GeminiMetadataSchema,
   },
   required: [
@@ -132,6 +184,7 @@ export const GeminiArtifactReviewSchema = {
     "risks_or_ambiguities",
     "questions_for_user",
     "limitations",
+    "design_scorecard",
     "metadata",
   ],
 };

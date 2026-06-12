@@ -116,7 +116,76 @@ test("normalizes valid artifact review JSON", () => {
 
   assert.equal(review.kind, "artifact_review");
   assert.equal(review.artifact_type, "image");
+  assert.deepEqual(review.design_scorecard, {
+    overall_score: null,
+    visual_hierarchy_score: null,
+    clarity_score: null,
+    accessibility_score: null,
+    consistency_score: null,
+    implementation_readiness_score: null,
+    strengths: [],
+    issues: [],
+    recommended_actions: [],
+  });
   assert.match(artifactReviewToPrettyJson(review), /artifact_review/);
+});
+
+test("normalizes artifact review design scorecard with bounded scores", () => {
+  const review = normalizeArtifactReview({
+    kind: "artifact_review",
+    artifact_type: "design",
+    summary: ["A checkout screen"],
+    important_details: [],
+    design_or_research_findings: [],
+    implementation_hints_for_codex: [],
+    risks_or_ambiguities: [],
+    questions_for_user: [],
+    limitations: [],
+    design_scorecard: {
+      overall_score: 82,
+      visual_hierarchy_score: 90,
+      clarity_score: 84,
+      accessibility_score: 72,
+      consistency_score: 80,
+      implementation_readiness_score: 78,
+      strengths: ["Primary action is prominent"],
+      issues: ["Contrast should be checked"],
+      recommended_actions: ["Increase secondary text contrast"],
+    },
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-05-28T12:00:00.000Z",
+      sources: ["checkout.png"],
+    },
+  });
+
+  assert.equal(review.design_scorecard.overall_score, 82);
+  assert.deepEqual(review.design_scorecard.recommended_actions, ["Increase secondary text contrast"]);
+});
+
+test("rejects artifact review design scorecard scores outside 0-100", () => {
+  assert.throws(
+    () => normalizeArtifactReview({
+      kind: "artifact_review",
+      artifact_type: "design",
+      summary: [],
+      important_details: [],
+      design_or_research_findings: [],
+      implementation_hints_for_codex: [],
+      risks_or_ambiguities: [],
+      questions_for_user: [],
+      limitations: [],
+      design_scorecard: {
+        overall_score: 101,
+      },
+      metadata: {
+        model: "gemini-3.5-flash",
+        generated_at: "2026-05-28T12:00:00.000Z",
+        sources: [],
+      },
+    }),
+    /Invalid artifact review JSON/,
+  );
 });
 
 test("builds context pack prompt with policy and source manifest", () => {
@@ -145,6 +214,9 @@ test("builds artifact review prompt with artifact kind and policy", () => {
   assert.doesNotMatch(prompt, /"artifact_type": "ui"/);
   assert.match(prompt, /design\.png/);
   assert.match(prompt, /implementation_hints_for_codex/);
+  assert.match(prompt, /design_scorecard/);
+  assert.match(prompt, /overall_score/);
+  assert.match(prompt, /0-100/);
 });
 
 test("builds comparison artifact review prompt for visual diff", () => {

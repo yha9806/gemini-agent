@@ -82,6 +82,7 @@ Global Gemini review gate for Codex.
 - Global active Codex policy tells sessions to use `diff-review --smart-diff` for current branch review, reuse project-root `.gemini-agent/context/latest.json` with gate `--auto-context-pack` or explicit `--context-pack`, and manually regenerate stale or unrelated packs.
 - `context-pack` creates compact structured summaries for Codex; it does not edit source files. With `--write-artifact`, it ensures `.gemini-agent/` is ignored and writes JSON under `.gemini-agent/context/`.
 - `artifact-review` supports PNG/JPEG/WEBP inline image review in v1, including bounded multi-file comparison for visual diff work.
+- `artifact-review` returns a structured design scorecard with 0-100 visual hierarchy, clarity, accessibility, consistency, and implementation-readiness scores when the artifact supports design judgment.
 - multi-file artifact-review records media metadata without printing raw image bytes in ordinary telemetry output.
 - `palette-split` writes palette masks, decoded layers, a manifest, a quality scorecard, and a contact sheet to the explicit output directory selected by the caller.
 - Generated context/review artifacts live under `.gemini-agent/`, which is kept ignored by git.

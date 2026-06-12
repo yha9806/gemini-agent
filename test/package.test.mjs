@@ -71,6 +71,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000$/m);
   assert.match(readme, /project\/workspace attribution/);
   assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
+  assert.match(readme, /`artifact-review` returns a structured design scorecard/);
   assert.match(readme, /multi-file artifact-review records media metadata without printing raw image bytes/);
   assert.match(readme, /`diff-review --diff` reads the current git diff directly/);
   assert.match(readme, /`diff-review --smart-diff` reviews the current git diff with the project-root context pack/);
