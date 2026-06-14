@@ -333,6 +333,55 @@ const fakeArtifactReview = JSON.stringify({
     omitted_sources: [],
   },
 });
+const fakeDesignBrief = JSON.stringify({
+  kind: "design_brief",
+  run_id: "20260614T120000000Z-fakeid",
+  goal: "Improve dashboard",
+  target_user: "Operator",
+  screens: [{ id: "admin", purpose: "Monitor telemetry" }],
+  visual_direction: ["quiet"],
+  design_system: { tokens: [{ name: "--surface", value: "#ffffff" }] },
+  accessibility: ["AA contrast"],
+  responsive_requirements: ["390px"],
+  acceptance_criteria: ["Shows reliability"],
+  implementation_risks: ["Shared CSS"],
+  metadata: {
+    model: "gemini-3.5-flash",
+    generated_at: "2026-06-14T12:00:00.000Z",
+  },
+});
+const fakeDesignPrototype = JSON.stringify({
+  manifest: {
+    kind: "design_prototype",
+    run_id: "20260614T120000000Z-fakeid",
+    selected_candidate: null,
+    target_stack: "html",
+    model: "gemini-3.5-flash",
+    files: ["preview.html", "review-notes.md"],
+    preview_entry: "preview.html",
+    review_notes: ["Review only"],
+    limitations: ["Not production source"],
+    integration_recommendation: "Use as a visual reference.",
+  },
+  files: [
+    { path: "preview.html", content: "<!doctype html><title>Preview</title>" },
+    { path: "review-notes.md", content: "# Review\n" },
+  ],
+});
+const fakeDesignHandoff = JSON.stringify({
+  kind: "design_handoff",
+  run_id: "20260614T120000000Z-fakeid",
+  selected_candidate: null,
+  implementation_summary: "Update dashboard cards.",
+  file_hints: ["src/dashboard.tsx"],
+  component_tasks: ["Add status row"],
+  style_tokens: [{ name: "--surface", value: "#ffffff" }],
+  responsive_tasks: ["Check mobile"],
+  asset_tasks: [],
+  verification: ["npm test"],
+  open_questions: [],
+  risk_notes: ["Shared CSS"],
+});
 
 test("auth status reports env source without exposing key", async () => {
   const { stdout } = await execFileAsync(bin, ["auth", "status"], {
@@ -341,6 +390,533 @@ test("auth status reports env source without exposing key", async () => {
   assert.match(stdout, /"ok": true/);
   assert.match(stdout, /"source": "env"/);
   assert.doesNotMatch(stdout, /secret-value/);
+});
+
+test("design brief help documents stdin and file input", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design brief \[--stdin\|--file <path>\] \[--write-artifact\]/);
+});
+
+test("design generate help documents run variants and quality", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design generate --run <path> \[--variants <n>\] \[--quality fast\|pro\]/);
+});
+
+test("design perceive help documents run file targets and provider", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design perceive --run <path> --file <path> \[--target <name: description> \.\.\.\] \[--provider auto\|palette-mask\|gemini-vision\|vision-banana\]/);
+});
+
+test("design prototype help documents run candidate and target stack", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design prototype --run <path> \[--candidate <id>\] \[--target-stack html\|react\|tailwind\|auto\]/);
+});
+
+test("design handoff help documents run and candidate", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design handoff --run <path> \[--candidate <id>\]/);
+});
+
+test("design loop help documents run screenshots and iterations", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design loop --run <path> \[--target-screenshot <path>\] \[--actual-screenshot <path>\] \[--max-iterations <n>\]/);
+});
+
+test("design doctor help documents json output", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design doctor \[--json\]/);
+});
+
+test("design doctor reports model state without auth lookup or live probe", async () => {
+  const { stdout } = await execBin(["design", "doctor", "--json"], {
+    env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+  });
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.probes.design_model.status, "not_probed");
+  assert.equal(parsed.probes.image_model.status, "not_configured");
+  assert.doesNotMatch(stdout, /Gemini API key/);
+});
+
+test("design doctor prints concise text", async () => {
+  const { stdout } = await execBin(["design", "doctor"], {
+    env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+  });
+  assert.equal(stdout, "Design doctor: ok\n");
+});
+
+test("design loop writes resumable review without auth when actual screenshot is missing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-loop-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    await writeFile(join(runDir, "codex-tasks.md"), "# Codex Tasks\n- Run app\n");
+    const { stdout } = await execBin(["design", "loop", "--run", runId], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "needs_screenshot");
+    assert.equal(parsed.loop_review, "loop-review.json");
+    assert.match(parsed.message, /actual screenshot/i);
+    const review = JSON.parse(await readFile(join(runDir, "loop-review.json"), "utf8"));
+    assert.equal(review.status, "needs_screenshot");
+    assert.deepEqual(review.next_actions, ["Run app"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design loop validates max iterations before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "loop",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--max-iterations",
+      "4",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--max-iterations must be an integer between 1 and 3\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design loop rejects actual screenshot without target before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-loop-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    await assert.rejects(
+      () => execBin(["design", "loop", "--run", runId, "--actual-screenshot", "after.png"], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--target-screenshot is required when --actual-screenshot is provided\./);
+        assert.doesNotMatch(error.stderr, /Gemini API key/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design brief rejects empty input before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "brief", "--stdin"], {
+      input: "",
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Context input is empty\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design brief writes run artifacts with fake Gemini response", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-brief-cli-"));
+  try {
+    const { stdout } = await execBin(["design", "brief", "--stdin", "--write-artifact"], {
+      cwd: dir,
+      input: "Design a dashboard",
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignBrief,
+      },
+    });
+    const parsed = JSON.parse(stdout);
+    assert.match(parsed.run_id, /^[0-9TzZ._-]+-[A-Za-z0-9]{6,}$/);
+    assert.match(parsed.run_dir, /\.gemini-agent\/design\//);
+    assert.equal(parsed.brief, "brief.json");
+    assert.equal(parsed.design, "DESIGN.md");
+
+    const brief = JSON.parse(await readFile(join(parsed.run_dir, "brief.json"), "utf8"));
+    assert.equal(brief.run_id, parsed.run_id);
+    assert.equal(brief.goal, "Improve dashboard");
+    assert.match(await readFile(join(parsed.run_dir, "DESIGN.md"), "utf8"), /# Design Brief: Improve dashboard/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design perceive rejects invalid provider before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "perceive",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--file",
+      "screen.png",
+      "--provider",
+      "unknown",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--provider must be auto, palette-mask, gemini-vision, or vision-banana\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design perceive rejects palette-mask missing target before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "perceive",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--file",
+      "screen.png",
+      "--provider",
+      "palette-mask",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /palette-mask provider requires at least one --target\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design perceive default gemini-vision reports unimplemented path before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "perceive",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--file",
+      "screen.png",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /gemini-vision provider requires an injected generate function/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design perceive vision-banana writes perception without Gemini auth", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-perceive-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  let requestBody = null;
+  let serverListening = false;
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      regions: [{
+        id: "hero",
+        label: "Hero",
+        role: "target",
+        importance: 1,
+        bbox: null,
+        mask_ref: null,
+        confidence: 0.8,
+      }],
+      hierarchy: ["hero"],
+      layout_observations: ["Hero area is dominant"],
+      implementation_constraints: [],
+      confidence: 0.8,
+      warnings: [],
+    }));
+  });
+
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    serverListening = true;
+    const { port } = server.address();
+    const { stdout } = await execBin([
+      "design",
+      "perceive",
+      "--run",
+      runId,
+      "--file",
+      "screen.png",
+      "--provider",
+      "vision-banana",
+    ], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        VISION_BANANA_ENDPOINT: `http://127.0.0.1:${port}/vision`,
+      },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.deepEqual(parsed, {
+      provider: "vision-banana",
+      perception: "perceive/perception.json",
+    });
+    assert.deepEqual(requestBody, {
+      image_path: "screen.png",
+      run_id: runId,
+      targets: [],
+    });
+    const perception = JSON.parse(await readFile(join(runDir, "perceive", "perception.json"), "utf8"));
+    assert.equal(perception.provider, "vision-banana");
+    assert.equal(perception.regions[0].id, "hero");
+  } finally {
+    if (serverListening) await new Promise((resolve) => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design prototype rejects invalid target stack before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "prototype",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--target-stack",
+      "vue",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--target-stack must be html, react, tailwind, or auto\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design prototype writes isolated preview with fake Gemini response", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-prototype-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({
+      kind: "design_brief",
+      run_id: runId,
+      goal: "Dashboard",
+      target_user: "Operator",
+      screens: [],
+      visual_direction: [],
+      design_system: { tokens: [] },
+      accessibility: [],
+      responsive_requirements: [],
+      acceptance_criteria: [],
+      implementation_risks: [],
+      metadata: {},
+    })}\n`);
+
+    const { stdout } = await execBin([
+      "design",
+      "prototype",
+      "--run",
+      runId,
+      "--candidate",
+      "candidate-a",
+      "--target-stack",
+      "html",
+    ], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignPrototype,
+      },
+    });
+    const parsed = JSON.parse(stdout);
+    assert.deepEqual(parsed, {
+      prototype: "prototype",
+      manifest: "prototype/manifest.json",
+      preview_entry: "prototype/preview.html",
+    });
+    assert.match(await readFile(join(runDir, "prototype", "preview.html"), "utf8"), /Preview/);
+    const manifest = JSON.parse(await readFile(join(runDir, "prototype", "manifest.json"), "utf8"));
+    assert.equal(manifest.run_id, runId);
+    assert.equal(manifest.selected_candidate, "candidate-a");
+    assert.equal(manifest.target_stack, "html");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design handoff rejects missing run before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "handoff", "--candidate", "candidate-a"], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--run requires a path\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design handoff rejects unsafe run path before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "handoff", "--run", "../outside"], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Design run path must stay under \.gemini-agent\/design\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design handoff writes implementation artifacts with fake Gemini response", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-handoff-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({
+      kind: "design_brief",
+      run_id: runId,
+      goal: "Dashboard",
+      target_user: "Operator",
+      screens: [],
+      visual_direction: [],
+      design_system: { tokens: [] },
+      accessibility: [],
+      responsive_requirements: [],
+      acceptance_criteria: [],
+      implementation_risks: [],
+      metadata: {},
+    })}\n`);
+
+    const { stdout } = await execBin([
+      "design",
+      "handoff",
+      "--run",
+      runId,
+      "--candidate",
+      "candidate-a",
+    ], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignHandoff,
+      },
+    });
+    const parsed = JSON.parse(stdout);
+    assert.deepEqual(parsed, {
+      handoff: "handoff.json",
+      tasks: "codex-tasks.md",
+    });
+
+    const handoff = JSON.parse(await readFile(join(runDir, "handoff.json"), "utf8"));
+    assert.equal(handoff.run_id, runId);
+    assert.equal(handoff.selected_candidate, "candidate-a");
+    assert.equal(handoff.implementation_summary, "Update dashboard cards.");
+    assert.match(await readFile(join(runDir, "codex-tasks.md"), "utf8"), /# Codex Tasks: Update dashboard cards\./);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design generate rejects invalid variants before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "generate", "--run", "20260614T120000000Z-abcdef", "--variants", "0"], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--variants must be between 1 and 4\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design generate fails clearly when image model is missing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-generate-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({
+      kind: "design_brief",
+      run_id: runId,
+      goal: "Dashboard",
+      target_user: "Operator",
+      screens: [],
+      visual_direction: [],
+      design_system: { tokens: [] },
+      accessibility: [],
+      responsive_requirements: [],
+      acceptance_criteria: [],
+      implementation_risks: [],
+      metadata: {},
+    })}\n`);
+
+    await assert.rejects(
+      () => execBin(["design", "generate", "--run", runId], {
+        cwd: dir,
+        env: {
+          ...process.env,
+          HOME: CLI_TEST_HOME,
+          USERPROFILE: CLI_TEST_HOME,
+          GEMINI_API_KEY: "fake-key",
+          GEMINI_IMAGE_MODEL: "",
+          GEMINI_IMAGE_PRO_MODEL: "",
+        },
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /GEMINI_IMAGE_MODEL is required/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("diff-review accepts file input and prints JSON", async () => {

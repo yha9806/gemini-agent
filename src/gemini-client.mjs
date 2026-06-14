@@ -185,7 +185,7 @@ function telemetryMetadataFromResult(extract, result) {
   return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : undefined;
 }
 
-export async function generateJson({
+async function generateStructuredJson({
   apiKey,
   prompt,
   contents = prompt,
@@ -199,6 +199,9 @@ export async function generateJson({
   telemetry,
   telemetryResultMetadata,
   retryStructuredJsonFailure = false,
+  requestModel = getDefaultModel(),
+  telemetryRequestMetadata,
+  eventCommand = "generate-json",
 }) {
   if (!apiKey) throw new Error("Gemini API key is missing.");
   if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
@@ -209,14 +212,17 @@ export async function generateJson({
     const normalized = normalize(parseJsonObject(responseText));
     const latencyMs = Date.now() - started;
     await captureTelemetry(telemetry, {
-      command: "generate-json",
+      command: eventCommand,
       prompt,
       response: responseText,
       status: "success",
       latencyMs,
       contents,
       metadata: withGeminiGenerationLatency(
-        telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+        mergeTelemetryMetadata(
+          telemetryRequestMetadata,
+          telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+        ),
         latencyMs,
       ),
     });
@@ -233,7 +239,7 @@ export async function generateJson({
     try {
       const ai = makeAi(apiKey);
       response = await ai.models.generateContent({
-        model: getDefaultModel(),
+        model: requestModel,
         contents,
         config: {
           temperature,
@@ -247,14 +253,14 @@ export async function generateJson({
     } catch (error) {
       const latencyMs = Date.now() - started;
       await captureTelemetry(telemetry, {
-        command: "generate-json",
+        command: eventCommand,
         prompt,
         response: "",
         status: "error",
         errorType: errorType(error),
         latencyMs,
         contents,
-        metadata: withGeminiGenerationLatency(undefined, latencyMs),
+        metadata: withGeminiGenerationLatency(telemetryRequestMetadata, latencyMs),
       }, { awaitCapture: true });
       throw requestError(error, apiKey);
     }
@@ -265,13 +271,13 @@ export async function generateJson({
       normalized = normalize(parseJsonObject(responseText));
     } catch (error) {
       const latencyMs = Date.now() - started;
-      const structuredMetadata = withStructuredResponseMetadata(undefined, response, responseText);
+      const structuredMetadata = withStructuredResponseMetadata(telemetryRequestMetadata, response, responseText);
       const currentRetryReason = retryStructuredJsonFailure && attempt === 1
         ? structuredJsonRetryReason(structuredMetadata)
         : null;
       const nextMaxOutputTokens = currentRetryReason ? retryMaxOutputTokens(effectiveMaxOutputTokens) : null;
       await captureTelemetry(telemetry, {
-        command: "generate-json",
+        command: eventCommand,
         prompt,
         response: responseText,
         status: "error",
@@ -305,7 +311,7 @@ export async function generateJson({
 
     const latencyMs = Date.now() - started;
     await captureTelemetry(telemetry, {
-      command: "generate-json",
+      command: eventCommand,
       prompt,
       response: responseText,
       status: "success",
@@ -315,13 +321,18 @@ export async function generateJson({
       metadata: withGeminiGenerationLatency(
         withStructuredResponseMetadata(
           mergeTelemetryMetadata(
-            telemetryMetadataFromResult(telemetryResultMetadata, normalized),
-            retryReason ? structuredJsonRetryMetadata({
-              attempt,
-              willRetry: false,
-              recovered: true,
-              retryReason,
-            }) : undefined,
+            mergeTelemetryMetadata(
+              telemetryRequestMetadata,
+              telemetryMetadataFromResult(telemetryResultMetadata, normalized),
+            ),
+            retryReason
+              ? structuredJsonRetryMetadata({
+                attempt,
+                willRetry: false,
+                recovered: true,
+                retryReason,
+              })
+              : undefined,
           ),
           response,
           responseText,
@@ -331,6 +342,76 @@ export async function generateJson({
     });
     return normalized;
   }
+}
+
+export async function generateJson({
+  apiKey,
+  prompt,
+  contents = prompt,
+  responseSchema,
+  normalize,
+  env = process.env,
+  allowFakeResponse = false,
+  makeAi = makeGoogleGenAI,
+  temperature = 0.2,
+  maxOutputTokens,
+  telemetry,
+  telemetryResultMetadata,
+  retryStructuredJsonFailure = false,
+}) {
+  return generateStructuredJson({
+    apiKey,
+    prompt,
+    contents,
+    responseSchema,
+    normalize,
+    env,
+    allowFakeResponse,
+    makeAi,
+    temperature,
+    maxOutputTokens,
+    telemetry,
+    telemetryResultMetadata,
+    retryStructuredJsonFailure,
+    requestModel: getDefaultModel(),
+  });
+}
+
+export async function generateDesignJson({
+  apiKey,
+  model,
+  prompt,
+  contents = prompt,
+  responseSchema,
+  normalize,
+  env = process.env,
+  allowFakeResponse = false,
+  makeAi = makeGoogleGenAI,
+  temperature = 0.2,
+  maxOutputTokens,
+  telemetry,
+  telemetryResultMetadata,
+  retryStructuredJsonFailure = false,
+}) {
+  const requestModel = model || getDefaultModel();
+  return generateStructuredJson({
+    apiKey,
+    prompt,
+    contents,
+    responseSchema,
+    normalize,
+    env,
+    allowFakeResponse,
+    makeAi,
+    temperature,
+    maxOutputTokens,
+    telemetry,
+    telemetryResultMetadata,
+    retryStructuredJsonFailure,
+    requestModel,
+    telemetryRequestMetadata: { actual_model: requestModel },
+    eventCommand: "generate-design-json",
+  });
 }
 
 function designScoreValue(value) {
@@ -391,6 +472,73 @@ export async function generateArtifactReview(options) {
     telemetryResultMetadata: artifactReviewTelemetryMetadata,
     retryStructuredJsonFailure: true,
   });
+}
+
+function promptTextFromDesignImageInput({ prompt, contents }) {
+  if (typeof prompt === "string") return prompt;
+  if (typeof contents === "string") return contents;
+  return String(contents ?? "");
+}
+
+function imageFromGenerateImagesResponse(response) {
+  const image = response?.generatedImages?.find((item) => item?.image?.imageBytes)?.image;
+  if (image?.imageBytes) {
+    return {
+      mimeType: image.mimeType || image.mime_type || "image/png",
+      buffer: Buffer.from(image.imageBytes, "base64"),
+    };
+  }
+  throw new Error("Gemini response did not include an image.");
+}
+
+export async function generateDesignImage({
+  apiKey,
+  model,
+  prompt,
+  contents = prompt,
+  makeAi = makeGoogleGenAI,
+  telemetry,
+}) {
+  if (!apiKey) throw new Error("Gemini API key is missing.");
+  if (!model) throw new Error("Design image model is required.");
+  const imagePrompt = promptTextFromDesignImageInput({ prompt, contents });
+  if (!imagePrompt.trim()) throw new Error("Prompt is empty.");
+
+  const started = Date.now();
+  try {
+    const ai = makeAi(apiKey);
+    const response = await ai.models.generateImages({
+      model,
+      prompt: imagePrompt,
+      config: { numberOfImages: 1 },
+    });
+    const image = imageFromGenerateImagesResponse(response);
+    const latencyMs = Date.now() - started;
+    await captureTelemetry(telemetry, {
+      command: "design-generate",
+      prompt: imagePrompt,
+      response: `[image:${image.mimeType}:${image.buffer.length}]`,
+      status: "success",
+      latencyMs,
+      contents,
+      economics: usageMetadataFromResponse(response),
+      metadata: withGeminiGenerationLatency({ actual_model: model }, latencyMs),
+    });
+    return image;
+  } catch (error) {
+    const latencyMs = Date.now() - started;
+    await captureTelemetry(telemetry, {
+      command: "design-generate",
+      prompt: imagePrompt,
+      response: "",
+      status: "error",
+      errorType: errorType(error),
+      latencyMs,
+      contents,
+      metadata: withGeminiGenerationLatency({ actual_model: model }, latencyMs),
+    }, { awaitCapture: true });
+    throw requestError(error, apiKey);
+  }
 }
 
 export async function generateText({

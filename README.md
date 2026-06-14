@@ -22,6 +22,13 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent artifact-review --file design.png --kind ui --telemetry-purpose validation
 ./bin/gemini-agent artifact-review --file before.png --file after.png --kind ui --review-mode comparison
 ./bin/gemini-agent palette-split slide.png --target "product: the red product card" --target "chart: the blue chart panel" --output /tmp/palette-split
+./bin/gemini-agent design brief --stdin --write-artifact
+./bin/gemini-agent design generate --run .gemini-agent/design/<run-id> --variants 2 --quality fast
+./bin/gemini-agent design perceive --run .gemini-agent/design/<run-id> --file screenshot.png --target "hero: main area"
+./bin/gemini-agent design prototype --run .gemini-agent/design/<run-id> --target-stack html
+./bin/gemini-agent design handoff --run .gemini-agent/design/<run-id>
+./bin/gemini-agent design loop --run .gemini-agent/design/<run-id> --actual-screenshot after.png
+./bin/gemini-agent design doctor --json
 ./bin/gemini-agent telemetry enable --global --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --user-label local-admin --confirm-raw-content
 ./bin/gemini-agent telemetry status --global
 ./bin/gemini-agent telemetry summary --global
@@ -68,7 +75,7 @@ Global Gemini review gate for Codex.
 ## Safety
 
 - Credentials are read from `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or macOS Keychain service `GEMINI_API_KEY`.
-- Runtime text/review Gemini calls use `gemini-3.5-flash`; `palette-split` is an explicit image-generation workflow and uses `GEMINI_IMAGE_MODEL` or `gemini-3.1-flash-image`.
+- Runtime text/review Gemini calls use `gemini-3.5-flash`; `palette-split` uses `GEMINI_IMAGE_MODEL` or `gemini-3.1-flash-image`, `design generate --quality fast` requires `GEMINI_IMAGE_MODEL`, and `design generate --quality pro` requires `GEMINI_IMAGE_PRO_MODEL`.
 - `auth status` reports only availability and source; it never prints the key.
 - Gate commands reject empty manual input before resolving credentials; `diff-review --smart-diff` may resolve credentials after collecting bootstrap context when it needs to create a missing context pack.
 - Fake responses require explicit `GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1`.
@@ -94,6 +101,13 @@ Global Gemini review gate for Codex.
 - `artifact-review --telemetry-purpose validation` marks canary or manual validation runs so delivery and latency health still count, while product multimodal, scorecard, depth, and economics usage-applicable metrics exclude that run.
 - multi-file artifact-review records media metadata without printing raw image bytes in ordinary telemetry output.
 - `palette-split` writes palette masks, decoded layers, a manifest, a quality scorecard, and a contact sheet to the explicit output directory selected by the caller.
+- `design brief` starts a design run under `.gemini-agent/design/<run-id>/` and writes `brief.json` plus `DESIGN.md`.
+- `design generate` reads a run `brief.json`, calls the configured image model, and writes PNG candidates plus `candidates/manifest.json`.
+- `design perceive` reads a target screenshot, chooses palette masks when `--target` values are supplied, and writes `perceive/perception.json`.
+- `design prototype` writes reviewable prototype code under `prototype/` only; Codex decides actual project integration.
+- `design handoff` reads the normalized design brief and writes `handoff.json` plus `codex-tasks.md` for implementation.
+- `design loop` keeps Codex as the source-editing authority and uses `artifact-review` for target-vs-actual visual review.
+- `design doctor --json` reports design model routing and provider configuration without looking up auth or calling Gemini.
 - Generated context/review artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - Telemetry raw mode is explicit and requires `--confirm-raw-content`.
 - Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.

@@ -10,6 +10,14 @@ import {
   runContextPackDoctor,
 } from "./context-pack-doctor.mjs";
 import { runContextPack } from "./context-pack.mjs";
+import { runDesignBrief } from "./design-brief.mjs";
+import { runDesignGenerate } from "./design-generate.mjs";
+import { runDesignHandoff } from "./design-handoff.mjs";
+import { runDesignLoop } from "./design-loop.mjs";
+import { designDoctor } from "./design-model-router.mjs";
+import { runDesignPerceive, selectPerceptionProvider } from "./design-perceive.mjs";
+import { runDesignPrototype, validatePrototypeTargetStack } from "./design-prototype.mjs";
+import { resolveDesignRun } from "./design-run-store.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
 import {
@@ -164,6 +172,13 @@ function printUsage() {
     "  gemini-agent context-pack --doctor [--json] [--max-age-hours <n>]",
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--telemetry-purpose production|validation] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
+    "  gemini-agent design brief [--stdin|--file <path>] [--write-artifact]",
+    "  gemini-agent design generate --run <path> [--variants <n>] [--quality fast|pro]",
+    "  gemini-agent design perceive --run <path> --file <path> [--target <name: description> ...] [--provider auto|palette-mask|gemini-vision|vision-banana]",
+    "  gemini-agent design prototype --run <path> [--candidate <id>] [--target-stack html|react|tailwind|auto]",
+    "  gemini-agent design handoff --run <path> [--candidate <id>]",
+    "  gemini-agent design loop --run <path> [--target-screenshot <path>] [--actual-screenshot <path>] [--max-iterations <n>]",
+    "  gemini-agent design doctor [--json]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent diff-review (--file <path> | --stdin | --diff | --smart-diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1597,6 +1612,238 @@ async function parseCommonInputArgs(args) {
   return { stdinText, files, diff, bootstrap, writeArtifact };
 }
 
+function parseDesignBriefArgs(args) {
+  const options = {
+    stdin: false,
+    files: [],
+    writeArtifact: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--stdin") {
+      options.stdin = true;
+    } else if (arg === "--file") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--file requires a path.");
+      options.files.push(value);
+      index += 1;
+    } else if (arg === "--write-artifact") {
+      options.writeArtifact = true;
+    } else {
+      throw new Error(`Unknown design brief argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function parseDesignGenerateArgs(args) {
+  const options = { variants: 1, quality: "fast" };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--variants") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--variants must be between 1 and 4.");
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 4) {
+        throw new Error("--variants must be between 1 and 4.");
+      }
+      options.variants = parsed;
+      index += 1;
+    } else if (arg === "--quality") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--") || !["fast", "pro"].includes(value)) {
+        throw new Error("--quality must be fast or pro.");
+      }
+      options.quality = value;
+      index += 1;
+    } else {
+      throw new Error(`Unknown design generate argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  return options;
+}
+
+function parseDesignPrototypeArgs(args) {
+  const options = {
+    targetStack: "html",
+    selectedCandidate: null,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--candidate") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--candidate requires an id.");
+      options.selectedCandidate = value;
+      index += 1;
+    } else if (arg === "--target-stack") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--target-stack must be html, react, tailwind, or auto.");
+      }
+      options.targetStack = validatePrototypeTargetStack(value);
+      index += 1;
+    } else {
+      throw new Error(`Unknown design prototype argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  validatePrototypeTargetStack(options.targetStack);
+  return options;
+}
+
+function parseDesignHandoffArgs(args) {
+  const options = {
+    selectedCandidate: null,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--candidate") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--candidate requires an id.");
+      options.selectedCandidate = value;
+      index += 1;
+    } else {
+      throw new Error(`Unknown design handoff argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  return options;
+}
+
+function parseDesignLoopArgs(args) {
+  const options = {
+    targetScreenshot: null,
+    actualScreenshot: null,
+    maxIterations: 2,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--target-screenshot") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--target-screenshot requires a path.");
+      options.targetScreenshot = value;
+      index += 1;
+    } else if (arg === "--actual-screenshot") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--actual-screenshot requires a path.");
+      options.actualScreenshot = value;
+      index += 1;
+    } else if (arg === "--max-iterations") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--max-iterations must be an integer between 1 and 3.");
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 3) {
+        throw new Error("--max-iterations must be an integer between 1 and 3.");
+      }
+      options.maxIterations = parsed;
+      index += 1;
+    } else {
+      throw new Error(`Unknown design loop argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  return options;
+}
+
+function parseDesignDoctorArgs(args) {
+  const options = { json: false };
+  for (const arg of args) {
+    if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown design doctor argument: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function validateDesignPerceiveTarget(target) {
+  const value = String(target ?? "");
+  const separator = value.indexOf(":");
+  if (separator < 1) {
+    throw new Error(`Target must use "name: description" format: ${value}`);
+  }
+  const name = value.slice(0, separator).trim();
+  const description = value.slice(separator + 1).trim();
+  if (!name || !description || !/^[A-Za-z0-9_-]+$/u.test(name)) {
+    throw new Error(`Target must use "name: description" format: ${value}`);
+  }
+}
+
+function parseDesignPerceiveArgs(args) {
+  const options = {
+    provider: "auto",
+    targets: [],
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--file") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--file requires a path.");
+      options.file = value;
+      index += 1;
+    } else if (arg === "--target") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--target requires a value.");
+      validateDesignPerceiveTarget(value);
+      options.targets.push(value);
+      index += 1;
+    } else if (arg === "--provider") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--provider must be auto, palette-mask, gemini-vision, or vision-banana.");
+      }
+      options.provider = value;
+      selectPerceptionProvider({ provider: options.provider, targets: options.targets });
+      index += 1;
+    } else {
+      throw new Error(`Unknown design perceive argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  if (!options.file) throw new Error("--file requires a path.");
+  selectPerceptionProvider({ provider: options.provider, targets: options.targets });
+  return options;
+}
+
 function parseContextPackDoctorOptions(args) {
   const options = {
     json: false,
@@ -1901,6 +2148,181 @@ async function runPaletteSplitCommand(args) {
   output.write(`${JSON.stringify({
     output_dir: result.outputDir,
     manifest: "manifest.json",
+  }, null, 2)}\n`);
+}
+
+async function runDesignCommand(args) {
+  const [subcommand, ...subArgs] = args;
+  if (subcommand === "doctor") {
+    const options = parseDesignDoctorArgs(subArgs);
+    const report = await designDoctor({
+      env: process.env,
+      probe: async () => ({ ok: null, status: "not_probed" }),
+    });
+    output.write(options.json
+      ? `${JSON.stringify(report, null, 2)}\n`
+      : `Design doctor: ${report.ok ? "ok" : "caution"}\n`);
+    return;
+  }
+
+  if (subcommand === "loop") {
+    const options = parseDesignLoopArgs(subArgs);
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    let apiKey;
+    if (options.actualScreenshot && options.targetScreenshot) {
+      const key = await resolveApiKey();
+      if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+      apiKey = key.key;
+    }
+    const result = await runDesignLoop({
+      runDir,
+      targetScreenshot: options.targetScreenshot,
+      actualScreenshot: options.actualScreenshot,
+      maxIterations: options.maxIterations,
+      apiKey,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-loop" },
+    });
+    output.write(`${JSON.stringify({
+      status: result.review.status,
+      loop_review: "loop-review.json",
+      path: result.path,
+      message: result.message,
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "perceive") {
+    const options = parseDesignPerceiveArgs(subArgs);
+    const selectedProvider = selectPerceptionProvider({ provider: options.provider, targets: options.targets });
+    if (selectedProvider === "palette-mask" && options.targets.length === 0) {
+      throw new Error("palette-mask provider requires at least one --target.");
+    }
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    let apiKey;
+    if (selectedProvider === "palette-mask") {
+      const key = await resolveApiKey();
+      if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+      apiKey = key.key;
+    }
+    const result = await runDesignPerceive({
+      runDir,
+      file: options.file,
+      provider: options.provider,
+      targets: options.targets,
+      apiKey,
+      env: process.env,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-perceive" },
+    });
+    output.write(`${JSON.stringify({
+      provider: result.provider,
+      perception: "perceive/perception.json",
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "generate") {
+    const options = parseDesignGenerateArgs(subArgs);
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    const key = await resolveApiKey();
+    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    const result = await runDesignGenerate({
+      runDir,
+      variants: options.variants,
+      quality: options.quality,
+      apiKey: key.key,
+      env: process.env,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-generate" },
+    });
+    output.write(`${JSON.stringify({
+      candidates: result.manifest.candidates.length,
+      manifest: "candidates/manifest.json",
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "prototype") {
+    const options = parseDesignPrototypeArgs(subArgs);
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+    }
+    const key = await resolveApiKey();
+    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    const result = await runDesignPrototype({
+      runDir,
+      apiKey: key.key,
+      env: process.env,
+      targetStack: options.targetStack,
+      selectedCandidate: options.selectedCandidate,
+      allowFakeResponse: fakeAllowed,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-prototype" },
+    });
+    output.write(`${JSON.stringify({
+      prototype: "prototype",
+      manifest: "prototype/manifest.json",
+      preview_entry: join("prototype", result.manifest.preview_entry),
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "handoff") {
+    const options = parseDesignHandoffArgs(subArgs);
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+    }
+    const key = await resolveApiKey();
+    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    await runDesignHandoff({
+      runDir,
+      apiKey: key.key,
+      env: process.env,
+      selectedCandidate: options.selectedCandidate,
+      allowFakeResponse: fakeAllowed,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-handoff" },
+    });
+    output.write(`${JSON.stringify({
+      handoff: "handoff.json",
+      tasks: "codex-tasks.md",
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand !== "brief") throw new Error("Unknown design command.");
+
+  const options = parseDesignBriefArgs(subArgs);
+  const stdinText = options.stdin ? await readStdin() : "";
+  const collected = await collectTextInput({
+    stdinText,
+    files: options.files,
+    cwd: process.cwd(),
+  });
+  const fakeAllowed = allowFakeResponse(process.env);
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  const key = await resolveApiKey();
+  if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+  const result = await runDesignBrief({
+    cwd: process.cwd(),
+    inputText: collected.input,
+    apiKey: key.key,
+    env: process.env,
+    allowFakeResponse: fakeAllowed,
+    telemetry: {
+      cwd: process.cwd(),
+      source: "cli",
+      command: "design-brief",
+      metadata: { write_artifact: options.writeArtifact },
+    },
+  });
+  output.write(`${JSON.stringify({
+    run_id: result.run.runId,
+    run_dir: result.run.dir,
+    brief: "brief.json",
+    design: "DESIGN.md",
   }, null, 2)}\n`);
 }
 
@@ -2793,6 +3215,10 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (command === "palette-split") {
     await runPaletteSplitCommand(args);
+    return;
+  }
+  if (command === "design") {
+    await runDesignCommand(args);
     return;
   }
   if (GATE_COMMANDS.has(command)) {
