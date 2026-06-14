@@ -333,6 +333,23 @@ const fakeArtifactReview = JSON.stringify({
     omitted_sources: [],
   },
 });
+const fakeDesignBrief = JSON.stringify({
+  kind: "design_brief",
+  run_id: "20260614T120000000Z-fakeid",
+  goal: "Improve dashboard",
+  target_user: "Operator",
+  screens: [{ id: "admin", purpose: "Monitor telemetry" }],
+  visual_direction: ["quiet"],
+  design_system: { tokens: [{ name: "--surface", value: "#ffffff" }] },
+  accessibility: ["AA contrast"],
+  responsive_requirements: ["390px"],
+  acceptance_criteria: ["Shows reliability"],
+  implementation_risks: ["Shared CSS"],
+  metadata: {
+    model: "gemini-3.5-flash",
+    generated_at: "2026-06-14T12:00:00.000Z",
+  },
+});
 
 test("auth status reports env source without exposing key", async () => {
   const { stdout } = await execFileAsync(bin, ["auth", "status"], {
@@ -341,6 +358,56 @@ test("auth status reports env source without exposing key", async () => {
   assert.match(stdout, /"ok": true/);
   assert.match(stdout, /"source": "env"/);
   assert.doesNotMatch(stdout, /secret-value/);
+});
+
+test("design brief help documents stdin and file input", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design brief \[--stdin\|--file <path>\] \[--write-artifact\]/);
+});
+
+test("design brief rejects empty input before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "brief", "--stdin"], {
+      input: "",
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Context input is empty\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design brief writes run artifacts with fake Gemini response", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-brief-cli-"));
+  try {
+    const { stdout } = await execBin(["design", "brief", "--stdin", "--write-artifact"], {
+      cwd: dir,
+      input: "Design a dashboard",
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignBrief,
+      },
+    });
+    const parsed = JSON.parse(stdout);
+    assert.match(parsed.run_id, /^[0-9TzZ._-]+-[A-Za-z0-9]{6,}$/);
+    assert.match(parsed.run_dir, /\.gemini-agent\/design\//);
+    assert.equal(parsed.brief, "brief.json");
+    assert.equal(parsed.design, "DESIGN.md");
+
+    const brief = JSON.parse(await readFile(join(parsed.run_dir, "brief.json"), "utf8"));
+    assert.equal(brief.run_id, parsed.run_id);
+    assert.equal(brief.goal, "Improve dashboard");
+    assert.match(await readFile(join(parsed.run_dir, "DESIGN.md"), "utf8"), /# Design Brief: Improve dashboard/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("diff-review accepts file input and prints JSON", async () => {

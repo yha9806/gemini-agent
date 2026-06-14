@@ -22,6 +22,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent artifact-review --file design.png --kind ui --telemetry-purpose validation
 ./bin/gemini-agent artifact-review --file before.png --file after.png --kind ui --review-mode comparison
 ./bin/gemini-agent palette-split slide.png --target "product: the red product card" --target "chart: the blue chart panel" --output /tmp/palette-split
+./bin/gemini-agent design brief --stdin --write-artifact
 ./bin/gemini-agent telemetry enable --global --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --user-label local-admin --confirm-raw-content
 ./bin/gemini-agent telemetry status --global
 ./bin/gemini-agent telemetry summary --global
@@ -93,6 +94,7 @@ Global Gemini review gate for Codex.
 - `artifact-review --telemetry-purpose validation` marks canary or manual validation runs so delivery and latency health still count, while product multimodal, scorecard, depth, and economics usage-applicable metrics exclude that run.
 - multi-file artifact-review records media metadata without printing raw image bytes in ordinary telemetry output.
 - `palette-split` writes palette masks, decoded layers, a manifest, a quality scorecard, and a contact sheet to the explicit output directory selected by the caller.
+- `design brief` starts a design run under `.gemini-agent/design/<run-id>/` and writes `brief.json` plus `DESIGN.md`.
 - Generated context/review artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - Telemetry raw mode is explicit and requires `--confirm-raw-content`.
 - Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.

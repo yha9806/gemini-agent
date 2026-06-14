@@ -10,6 +10,7 @@ import {
   runContextPackDoctor,
 } from "./context-pack-doctor.mjs";
 import { runContextPack } from "./context-pack.mjs";
+import { runDesignBrief } from "./design-brief.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
 import {
@@ -160,6 +161,7 @@ function printUsage() {
     "  gemini-agent context-pack --doctor [--json] [--max-age-hours <n>]",
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--telemetry-purpose production|validation] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
+    "  gemini-agent design brief [--stdin|--file <path>] [--write-artifact]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent diff-review (--file <path> | --stdin | --diff | --smart-diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1566,6 +1568,32 @@ async function parseCommonInputArgs(args) {
   return { stdinText, files, diff, bootstrap, writeArtifact };
 }
 
+function parseDesignBriefArgs(args) {
+  const options = {
+    stdin: false,
+    files: [],
+    writeArtifact: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--stdin") {
+      options.stdin = true;
+    } else if (arg === "--file") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--file requires a path.");
+      options.files.push(value);
+      index += 1;
+    } else if (arg === "--write-artifact") {
+      options.writeArtifact = true;
+    } else {
+      throw new Error(`Unknown design brief argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
 function parseContextPackDoctorOptions(args) {
   const options = {
     json: false,
@@ -1870,6 +1898,44 @@ async function runPaletteSplitCommand(args) {
   output.write(`${JSON.stringify({
     output_dir: result.outputDir,
     manifest: "manifest.json",
+  }, null, 2)}\n`);
+}
+
+async function runDesignCommand(args) {
+  const [subcommand, ...subArgs] = args;
+  if (subcommand !== "brief") throw new Error("Unknown design command.");
+
+  const options = parseDesignBriefArgs(subArgs);
+  const stdinText = options.stdin ? await readStdin() : "";
+  const collected = await collectTextInput({
+    stdinText,
+    files: options.files,
+    cwd: process.cwd(),
+  });
+  const fakeAllowed = allowFakeResponse(process.env);
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  const key = await resolveApiKey();
+  if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+  const result = await runDesignBrief({
+    cwd: process.cwd(),
+    inputText: collected.input,
+    apiKey: key.key,
+    env: process.env,
+    allowFakeResponse: fakeAllowed,
+    telemetry: {
+      cwd: process.cwd(),
+      source: "cli",
+      command: "design-brief",
+      metadata: { write_artifact: options.writeArtifact },
+    },
+  });
+  output.write(`${JSON.stringify({
+    run_id: result.run.runId,
+    run_dir: result.run.dir,
+    brief: "brief.json",
+    design: "DESIGN.md",
   }, null, 2)}\n`);
 }
 
@@ -2743,6 +2809,10 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (command === "palette-split") {
     await runPaletteSplitCommand(args);
+    return;
+  }
+  if (command === "design") {
+    await runDesignCommand(args);
     return;
   }
   if (GATE_COMMANDS.has(command)) {
