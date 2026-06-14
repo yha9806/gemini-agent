@@ -74,6 +74,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent artifact-review --file before\.png --file after\.png --kind ui --review-mode comparison$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent design brief --stdin --write-artifact$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent design generate --run \.gemini-agent\/design\/<run-id> --variants 2 --quality fast$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent design perceive --run \.gemini-agent\/design\/<run-id> --file screenshot\.png --target "hero: main area"$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000$/m);
   assert.match(readme, /project\/workspace attribution/);
   assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
@@ -84,6 +85,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /`artifact-review --telemetry-purpose validation` marks canary or manual validation runs/);
   assert.match(readme, /`design brief` starts a design run under `\.gemini-agent\/design\/<run-id>\/` and writes `brief\.json` plus `DESIGN\.md`/);
   assert.match(readme, /`design generate` reads a run `brief\.json`, calls the configured image model, and writes PNG candidates plus `candidates\/manifest\.json`/);
+  assert.match(readme, /`design perceive` reads a target screenshot, chooses palette masks when `--target` values are supplied, and writes `perceive\/perception\.json`/);
   assert.match(readme, /Telemetry summary and report aggregate artifact-review design scorecard metrics and per-field score coverage/);
   assert.match(readme, /Telemetry summary, economics, priorities, and report expose product-adjusted analytics/);
   assert.match(readme, /The telemetry receiver `\/metrics` and `\/dashboard` endpoints expose product-adjusted analytics/);

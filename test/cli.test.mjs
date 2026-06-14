@@ -370,6 +370,11 @@ test("design generate help documents run variants and quality", async () => {
   assert.match(stdout, /gemini-agent design generate --run <path> \[--variants <n>\] \[--quality fast\|pro\]/);
 });
 
+test("design perceive help documents run file targets and provider", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design perceive --run <path> --file <path> \[--target <name: description> \.\.\.\] \[--provider auto\|palette-mask\|gemini-vision\|vision-banana\]/);
+});
+
 test("design brief rejects empty input before auth lookup", async () => {
   await assert.rejects(
     () => execBin(["design", "brief", "--stdin"], {
@@ -411,6 +416,146 @@ test("design brief writes run artifacts with fake Gemini response", async () => 
     assert.equal(brief.goal, "Improve dashboard");
     assert.match(await readFile(join(parsed.run_dir, "DESIGN.md"), "utf8"), /# Design Brief: Improve dashboard/);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design perceive rejects invalid provider before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "perceive",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--file",
+      "screen.png",
+      "--provider",
+      "unknown",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--provider must be auto, palette-mask, gemini-vision, or vision-banana\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design perceive rejects palette-mask missing target before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "perceive",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--file",
+      "screen.png",
+      "--provider",
+      "palette-mask",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /palette-mask provider requires at least one --target\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design perceive default gemini-vision reports unimplemented path before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "perceive",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--file",
+      "screen.png",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /gemini-vision provider requires an injected generate function/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design perceive vision-banana writes perception without Gemini auth", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-perceive-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  let requestBody = null;
+  let serverListening = false;
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      regions: [{
+        id: "hero",
+        label: "Hero",
+        role: "target",
+        importance: 1,
+        bbox: null,
+        mask_ref: null,
+        confidence: 0.8,
+      }],
+      hierarchy: ["hero"],
+      layout_observations: ["Hero area is dominant"],
+      implementation_constraints: [],
+      confidence: 0.8,
+      warnings: [],
+    }));
+  });
+
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    serverListening = true;
+    const { port } = server.address();
+    const { stdout } = await execBin([
+      "design",
+      "perceive",
+      "--run",
+      runId,
+      "--file",
+      "screen.png",
+      "--provider",
+      "vision-banana",
+    ], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        VISION_BANANA_ENDPOINT: `http://127.0.0.1:${port}/vision`,
+      },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.deepEqual(parsed, {
+      provider: "vision-banana",
+      perception: "perceive/perception.json",
+    });
+    assert.deepEqual(requestBody, {
+      image_path: "screen.png",
+      run_id: runId,
+      targets: [],
+    });
+    const perception = JSON.parse(await readFile(join(runDir, "perceive", "perception.json"), "utf8"));
+    assert.equal(perception.provider, "vision-banana");
+    assert.equal(perception.regions[0].id, "hero");
+  } finally {
+    if (serverListening) await new Promise((resolve) => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
   }
 });

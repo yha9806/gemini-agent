@@ -12,6 +12,7 @@ import {
 import { runContextPack } from "./context-pack.mjs";
 import { runDesignBrief } from "./design-brief.mjs";
 import { runDesignGenerate } from "./design-generate.mjs";
+import { runDesignPerceive, selectPerceptionProvider } from "./design-perceive.mjs";
 import { resolveDesignRun } from "./design-run-store.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
@@ -165,6 +166,7 @@ function printUsage() {
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent design brief [--stdin|--file <path>] [--write-artifact]",
     "  gemini-agent design generate --run <path> [--variants <n>] [--quality fast|pro]",
+    "  gemini-agent design perceive --run <path> --file <path> [--target <name: description> ...] [--provider auto|palette-mask|gemini-vision|vision-banana]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent diff-review (--file <path> | --stdin | --diff | --smart-diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1632,6 +1634,62 @@ function parseDesignGenerateArgs(args) {
   return options;
 }
 
+function validateDesignPerceiveTarget(target) {
+  const value = String(target ?? "");
+  const separator = value.indexOf(":");
+  if (separator < 1) {
+    throw new Error(`Target must use "name: description" format: ${value}`);
+  }
+  const name = value.slice(0, separator).trim();
+  const description = value.slice(separator + 1).trim();
+  if (!name || !description || !/^[A-Za-z0-9_-]+$/u.test(name)) {
+    throw new Error(`Target must use "name: description" format: ${value}`);
+  }
+}
+
+function parseDesignPerceiveArgs(args) {
+  const options = {
+    provider: "auto",
+    targets: [],
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--file") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--file requires a path.");
+      options.file = value;
+      index += 1;
+    } else if (arg === "--target") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--target requires a value.");
+      validateDesignPerceiveTarget(value);
+      options.targets.push(value);
+      index += 1;
+    } else if (arg === "--provider") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--provider must be auto, palette-mask, gemini-vision, or vision-banana.");
+      }
+      options.provider = value;
+      selectPerceptionProvider({ provider: options.provider, targets: options.targets });
+      index += 1;
+    } else {
+      throw new Error(`Unknown design perceive argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  if (!options.file) throw new Error("--file requires a path.");
+  selectPerceptionProvider({ provider: options.provider, targets: options.targets });
+  return options;
+}
+
 function parseContextPackDoctorOptions(args) {
   const options = {
     json: false,
@@ -1941,6 +1999,35 @@ async function runPaletteSplitCommand(args) {
 
 async function runDesignCommand(args) {
   const [subcommand, ...subArgs] = args;
+  if (subcommand === "perceive") {
+    const options = parseDesignPerceiveArgs(subArgs);
+    const selectedProvider = selectPerceptionProvider({ provider: options.provider, targets: options.targets });
+    if (selectedProvider === "palette-mask" && options.targets.length === 0) {
+      throw new Error("palette-mask provider requires at least one --target.");
+    }
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    let apiKey;
+    if (selectedProvider === "palette-mask") {
+      const key = await resolveApiKey();
+      if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+      apiKey = key.key;
+    }
+    const result = await runDesignPerceive({
+      runDir,
+      file: options.file,
+      provider: options.provider,
+      targets: options.targets,
+      apiKey,
+      env: process.env,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-perceive" },
+    });
+    output.write(`${JSON.stringify({
+      provider: result.provider,
+      perception: "perceive/perception.json",
+    }, null, 2)}\n`);
+    return;
+  }
+
   if (subcommand === "generate") {
     const options = parseDesignGenerateArgs(subArgs);
     const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
