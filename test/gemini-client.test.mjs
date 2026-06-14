@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   generateArtifactReview,
   generateContextPack,
+  generateDesignImage,
+  generateDesignJson,
   generateJson,
   generateReview,
   generateText,
@@ -191,6 +193,78 @@ test("structured and text generation ignore caller model overrides", async () =>
       },
     }),
   });
+});
+
+test("generateDesignJson uses caller model and structured schema", async () => {
+  let seenRequest;
+  const captures = [];
+  const responseSchema = {
+    type: "object",
+    properties: { kind: { type: "string" } },
+    required: ["kind"],
+  };
+  const result = await generateDesignJson({
+    apiKey: "key",
+    model: "configured-design-model",
+    prompt: "Return design brief JSON",
+    responseSchema,
+    normalize: (value) => value,
+    telemetry: {
+      command: "design-brief",
+      capture: async (event) => captures.push(event),
+    },
+    makeAi: () => ({
+      models: {
+        async generateContent(request) {
+          seenRequest = request;
+          return { text: JSON.stringify({ kind: "design_brief" }) };
+        },
+      },
+    }),
+  });
+
+  assert.equal(result.kind, "design_brief");
+  assert.equal(seenRequest.model, "configured-design-model");
+  assert.equal(seenRequest.config.responseMimeType, "application/json");
+  assert.equal(seenRequest.config.responseSchema, responseSchema);
+  assert.equal(captures[0].metadata.actual_model, "configured-design-model");
+});
+
+test("generateDesignImage calls image model and extracts first inline image", async () => {
+  let seenRequest;
+  const captures = [];
+  const image = await generateDesignImage({
+    apiKey: "key",
+    model: "configured-image-model",
+    prompt: "draw",
+    telemetry: {
+      command: "design-generate",
+      capture: async (event) => captures.push(event),
+    },
+    makeAi: () => ({
+      models: {
+        async generateImages(request) {
+          seenRequest = request;
+          return {
+            generatedImages: [{
+              image: {
+                mimeType: "image/png",
+                imageBytes: Buffer.from("png").toString("base64"),
+              },
+            }],
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(seenRequest.model, "configured-image-model");
+  assert.equal(seenRequest.prompt, "draw");
+  assert.deepEqual(seenRequest.config, { numberOfImages: 1 });
+  assert.equal(image.mimeType, "image/png");
+  assert.equal(image.buffer.toString("utf8"), "png");
+  assert.equal(captures[0].metadata.actual_model, "configured-image-model");
+  assert.equal(captures[0].response, "[image:image/png:3]");
 });
 
 test("generateContextPack uses fake response only when explicitly allowed", async () => {
