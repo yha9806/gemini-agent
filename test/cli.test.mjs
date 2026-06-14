@@ -368,6 +368,20 @@ const fakeDesignPrototype = JSON.stringify({
     { path: "review-notes.md", content: "# Review\n" },
   ],
 });
+const fakeDesignHandoff = JSON.stringify({
+  kind: "design_handoff",
+  run_id: "20260614T120000000Z-fakeid",
+  selected_candidate: null,
+  implementation_summary: "Update dashboard cards.",
+  file_hints: ["src/dashboard.tsx"],
+  component_tasks: ["Add status row"],
+  style_tokens: [{ name: "--surface", value: "#ffffff" }],
+  responsive_tasks: ["Check mobile"],
+  asset_tasks: [],
+  verification: ["npm test"],
+  open_questions: [],
+  risk_notes: ["Shared CSS"],
+});
 
 test("auth status reports env source without exposing key", async () => {
   const { stdout } = await execFileAsync(bin, ["auth", "status"], {
@@ -396,6 +410,11 @@ test("design perceive help documents run file targets and provider", async () =>
 test("design prototype help documents run candidate and target stack", async () => {
   const { stdout } = await execBin(["--help"]);
   assert.match(stdout, /gemini-agent design prototype --run <path> \[--candidate <id>\] \[--target-stack html\|react\|tailwind\|auto\]/);
+});
+
+test("design handoff help documents run and candidate", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design handoff --run <path> \[--candidate <id>\]/);
 });
 
 test("design brief rejects empty input before auth lookup", async () => {
@@ -656,6 +675,89 @@ test("design prototype writes isolated preview with fake Gemini response", async
     assert.equal(manifest.run_id, runId);
     assert.equal(manifest.selected_candidate, "candidate-a");
     assert.equal(manifest.target_stack, "html");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design handoff rejects missing run before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "handoff", "--candidate", "candidate-a"], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--run requires a path\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design handoff rejects unsafe run path before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "handoff", "--run", "../outside"], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Design run path must stay under \.gemini-agent\/design\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design handoff writes implementation artifacts with fake Gemini response", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-handoff-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({
+      kind: "design_brief",
+      run_id: runId,
+      goal: "Dashboard",
+      target_user: "Operator",
+      screens: [],
+      visual_direction: [],
+      design_system: { tokens: [] },
+      accessibility: [],
+      responsive_requirements: [],
+      acceptance_criteria: [],
+      implementation_risks: [],
+      metadata: {},
+    })}\n`);
+
+    const { stdout } = await execBin([
+      "design",
+      "handoff",
+      "--run",
+      runId,
+      "--candidate",
+      "candidate-a",
+    ], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignHandoff,
+      },
+    });
+    const parsed = JSON.parse(stdout);
+    assert.deepEqual(parsed, {
+      handoff: "handoff.json",
+      tasks: "codex-tasks.md",
+    });
+
+    const handoff = JSON.parse(await readFile(join(runDir, "handoff.json"), "utf8"));
+    assert.equal(handoff.run_id, runId);
+    assert.equal(handoff.selected_candidate, "candidate-a");
+    assert.equal(handoff.implementation_summary, "Update dashboard cards.");
+    assert.match(await readFile(join(runDir, "codex-tasks.md"), "utf8"), /# Codex Tasks: Update dashboard cards\./);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

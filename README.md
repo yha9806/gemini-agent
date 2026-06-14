@@ -26,6 +26,7 @@ Global Gemini review gate for Codex.
 ./bin/gemini-agent design generate --run .gemini-agent/design/<run-id> --variants 2 --quality fast
 ./bin/gemini-agent design perceive --run .gemini-agent/design/<run-id> --file screenshot.png --target "hero: main area"
 ./bin/gemini-agent design prototype --run .gemini-agent/design/<run-id> --target-stack html
+./bin/gemini-agent design handoff --run .gemini-agent/design/<run-id>
 ./bin/gemini-agent telemetry enable --global --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --user-label local-admin --confirm-raw-content
 ./bin/gemini-agent telemetry status --global
 ./bin/gemini-agent telemetry summary --global
@@ -101,6 +102,7 @@ Global Gemini review gate for Codex.
 - `design generate` reads a run `brief.json`, calls the configured image model, and writes PNG candidates plus `candidates/manifest.json`.
 - `design perceive` reads a target screenshot, chooses palette masks when `--target` values are supplied, and writes `perceive/perception.json`.
 - `design prototype` writes reviewable prototype code under `prototype/` only; Codex decides actual project integration.
+- `design handoff` reads the normalized design brief and writes `handoff.json` plus `codex-tasks.md` for implementation.
 - Generated context/review artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - Telemetry raw mode is explicit and requires `--confirm-raw-content`.
 - Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.

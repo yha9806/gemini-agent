@@ -12,6 +12,7 @@ import {
 import { runContextPack } from "./context-pack.mjs";
 import { runDesignBrief } from "./design-brief.mjs";
 import { runDesignGenerate } from "./design-generate.mjs";
+import { runDesignHandoff } from "./design-handoff.mjs";
 import { runDesignPerceive, selectPerceptionProvider } from "./design-perceive.mjs";
 import { runDesignPrototype, validatePrototypeTargetStack } from "./design-prototype.mjs";
 import { resolveDesignRun } from "./design-run-store.mjs";
@@ -169,6 +170,7 @@ function printUsage() {
     "  gemini-agent design generate --run <path> [--variants <n>] [--quality fast|pro]",
     "  gemini-agent design perceive --run <path> --file <path> [--target <name: description> ...] [--provider auto|palette-mask|gemini-vision|vision-banana]",
     "  gemini-agent design prototype --run <path> [--candidate <id>] [--target-stack html|react|tailwind|auto]",
+    "  gemini-agent design handoff --run <path> [--candidate <id>]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent diff-review (--file <path> | --stdin | --diff | --smart-diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1671,6 +1673,32 @@ function parseDesignPrototypeArgs(args) {
   return options;
 }
 
+function parseDesignHandoffArgs(args) {
+  const options = {
+    selectedCandidate: null,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--candidate") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--candidate requires an id.");
+      options.selectedCandidate = value;
+      index += 1;
+    } else {
+      throw new Error(`Unknown design handoff argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  return options;
+}
+
 function validateDesignPerceiveTarget(target) {
   const value = String(target ?? "");
   const separator = value.indexOf(":");
@@ -2107,6 +2135,30 @@ async function runDesignCommand(args) {
       prototype: "prototype",
       manifest: "prototype/manifest.json",
       preview_entry: join("prototype", result.manifest.preview_entry),
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "handoff") {
+    const options = parseDesignHandoffArgs(subArgs);
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+    }
+    const key = await resolveApiKey();
+    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    await runDesignHandoff({
+      runDir,
+      apiKey: key.key,
+      env: process.env,
+      selectedCandidate: options.selectedCandidate,
+      allowFakeResponse: fakeAllowed,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-handoff" },
+    });
+    output.write(`${JSON.stringify({
+      handoff: "handoff.json",
+      tasks: "codex-tasks.md",
     }, null, 2)}\n`);
     return;
   }
