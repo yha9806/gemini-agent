@@ -454,7 +454,7 @@ test("collectVisualGateSmoke returns safe media summary for readable screenshot"
     media_kind: "screenshot",
   }]);
   assert.ok(smoke.checks.some((check) => check.name === "file_readable" && check.status === "pass"));
-  assert.doesNotMatch(JSON.stringify(smoke), /after\.png|\/tmp|\/Users/);
+  assert.doesNotMatch(JSON.stringify(smoke), /after\.png|\/tmp|LOCAL_HOME_PATH/);
 });
 
 test("collectVisualGateSmoke blocks unsupported files before Gemini", async () => {
@@ -736,7 +736,7 @@ test("runVisualGate uses quick comparison review for target and actual screensho
   assert.equal(result.verdict, "pass");
   assert.equal(result.review_posture, "comparison_review");
   assert.equal(result.artifact_review.scorecard.implementation_readiness_score, 81);
-  assert.doesNotMatch(JSON.stringify(result), /target\.png|after\.png|\/tmp|\/Users/);
+  assert.doesNotMatch(JSON.stringify(result), /target\.png|after\.png|\/tmp|LOCAL_HOME_PATH/);
 });
 
 test("runVisualGate maps weak artifact scorecard to caution", async () => {
@@ -1062,7 +1062,7 @@ test("visual gate target actual comparison uses fake artifact review", async () 
   assert.equal(parsed.review_posture, "comparison_review");
   assert.equal(parsed.artifact_review.mode, "comparison");
   assert.equal(parsed.artifact_review.depth, "quick");
-  assert.doesNotMatch(stdout, /target\.png|after\.png|\/tmp|\/Users/);
+  assert.doesNotMatch(stdout, /target\.png|after\.png|\/tmp|LOCAL_HOME_PATH/);
 });
 
 test("visual gate rejects missing actual screenshot before auth lookup", async () => {
