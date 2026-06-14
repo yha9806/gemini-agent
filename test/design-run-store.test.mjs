@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
@@ -85,6 +85,29 @@ test("prototype writes publish complete versions by symlink pointer swap", async
     assert.equal((await lstat(join(run.dir, "prototype"))).isSymbolicLink(), true);
     assert.deepEqual((await readdir(join(run.dir, "prototype"))).sort(), ["new.html", "shared.txt"]);
     assert.equal(await readFile(join(run.dir, "prototype", "shared.txt"), "utf8"), "new");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("writePrototypeFiles rejects unmanaged prototype directories before writing a version", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-run-store-"));
+  try {
+    const run = await createDesignRun({ cwd, now: new Date("2026-06-14T12:00:00.000Z"), random: () => "abcdef" });
+    await mkdir(join(run.dir, "prototype", "old"), { recursive: true });
+    await writeFile(join(run.dir, "prototype", "old", "old.txt"), "legacy");
+
+    await assert.rejects(
+      () => writePrototypeFiles({ runDir: run.dir, files: { "preview.html": "<!doctype html>" } }),
+      /unmanaged prototype directory|cannot safely replace/i,
+    );
+
+    assert.equal(await readFile(join(run.dir, "prototype", "old", "old.txt"), "utf8"), "legacy");
+    assert.deepEqual(await readdir(join(run.dir, "prototype")), ["old"]);
+    const prototypeStat = await lstat(join(run.dir, "prototype"));
+    assert.equal(prototypeStat.isDirectory(), true);
+    assert.equal(prototypeStat.isSymbolicLink(), false);
+    await assert.rejects(() => lstat(join(run.dir, ".prototype-versions")), { code: "ENOENT" });
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

@@ -39,6 +39,18 @@ async function rejectSymlink(path, message) {
   }
 }
 
+async function rejectUnmanagedPrototypeDirectory(path) {
+  try {
+    const stat = await lstat(path);
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      throw new Error(`Cannot safely replace unmanaged prototype directory: ${path}`);
+    }
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+}
+
 async function assertNoSymlinkPathComponents({ root, target, message }) {
   const resolvedRoot = resolve(root);
   const resolvedTarget = resolve(target);
@@ -138,6 +150,7 @@ export async function writePrototypeFiles({ runDir, files }) {
   const versionDir = resolve(versionsDir, versionName);
   const tmpLink = resolve(runDir, `prototype.link-${versionName}`);
   await rejectSymlink(runDir, "Prototype version path must not include symlinks.");
+  await rejectUnmanagedPrototypeDirectory(prototypeDir);
   await assertNoSymlinkPathComponents({ root: runDir, target: versionsDir, message: "Prototype version path must not include symlinks." });
   await rm(tmpLink, { force: true });
   await mkdir(versionsDir, { recursive: true });
