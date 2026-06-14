@@ -74,6 +74,7 @@ controls intentionally.
 ./bin/gemini-agent artifact-review --file before.png --file after.png --kind ui --review-mode comparison
 ./bin/gemini-agent palette-split slide.png --target "product: the red product card" --target "chart: the blue chart panel" --output /tmp/palette-split
 ./bin/gemini-agent design brief --stdin --write-artifact
+./bin/gemini-agent design draft --stdin --variants 2 --quality fast --target-stack html
 ./bin/gemini-agent design generate --run .gemini-agent/design/<run-id> --variants 2 --quality fast
 ./bin/gemini-agent design perceive --run .gemini-agent/design/<run-id> --file screenshot.png --target "hero: main area"
 ./bin/gemini-agent design prototype --run .gemini-agent/design/<run-id> --target-stack html
@@ -153,6 +154,7 @@ controls intentionally.
 - multi-file artifact-review records media metadata without printing raw image bytes in ordinary telemetry output.
 - `palette-split` writes palette masks, decoded layers, a manifest, a quality scorecard, and a contact sheet to the explicit output directory selected by the caller.
 - `design brief` starts a design run under `.gemini-agent/design/<run-id>/` and writes `brief.json` plus `DESIGN.md`.
+- `design draft` orchestrates brief, candidate generation, prototype, and handoff artifacts under `.gemini-agent/design/<run-id>/`; Codex still performs real repository edits, tests, commits, and final verification.
 - `design generate` reads a run `brief.json`, calls the configured image model, and writes PNG candidates plus `candidates/manifest.json`.
 - `design perceive` reads a target screenshot, chooses palette masks when `--target` values are supplied, and writes `perceive/perception.json`.
 - `design prototype` writes reviewable prototype code under `prototype/` only; Codex decides actual project integration.
