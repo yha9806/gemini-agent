@@ -130,6 +130,37 @@ test("writeDesignJson rejects symlinked path components inside run directory", a
   }
 });
 
+test("failed writeDesignJson before rename preserves existing JSON artifact", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-run-store-"));
+  try {
+    const run = await createDesignRun({ cwd, now: new Date("2026-06-14T12:00:00.000Z"), random: () => "abcdef" });
+    const target = join(run.dir, "brief.json");
+    await writeDesignJson({ runDir: run.dir, relativePath: "brief.json", value: { version: "old" } });
+
+    await assert.rejects(
+      () => writeDesignJson({
+        runDir: run.dir,
+        relativePath: "brief.json",
+        value: { version: "new" },
+        testHooks: {
+          beforeRename: () => {
+            throw new Error("simulated interruption before rename");
+          },
+        },
+      }),
+      /simulated interruption before rename/,
+    );
+
+    assert.deepEqual(JSON.parse(await readFile(target, "utf8")), { version: "old" });
+    assert.deepEqual(
+      (await readdir(run.dir)).filter((name) => name.includes(".tmp")),
+      [],
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("createDesignRun rejects a symlinked design root", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "design-run-store-"));
   const outside = await mkdtemp(join(tmpdir(), "design-run-store-outside-"));

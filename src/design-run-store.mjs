@@ -1,4 +1,5 @@
-import { lstat, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const DESIGN_ROOT = join(".gemini-agent", "design");
@@ -118,14 +119,43 @@ export async function createDesignRun({ cwd = process.cwd(), now = new Date(), r
   throw new Error("Unable to create a unique design run directory.");
 }
 
-export async function writeDesignJson({ runDir, relativePath, value }) {
+export async function writeDesignJson({ runDir, relativePath, value, testHooks = {} }) {
   const target = assertContained(runDir, resolve(runDir, relativePath), "Design artifact path must stay inside the run directory.");
   const parent = dirname(target);
+  const body = `${JSON.stringify(value, null, 2)}\n`;
+  const tmpPath = assertContained(
+    runDir,
+    resolve(parent, `.${basename(target)}.${process.pid}.${randomUUID()}.tmp`),
+    "Design artifact path must stay inside the run directory.",
+  );
   await rejectSymlink(runDir, "Design artifact path must not include symlinks.");
   await assertNoSymlinkPathComponents({ root: runDir, target: parent, message: "Design artifact path must not include symlinks." });
   await mkdir(parent, { recursive: true });
   await assertNoSymlinkPathComponents({ root: runDir, target: target, message: "Design artifact path must not include symlinks." });
-  await writeFile(target, `${JSON.stringify(value, null, 2)}\n`);
+  let tempCreated = false;
+  let tempHandle = null;
+  try {
+    tempHandle = await open(tmpPath, "wx");
+    tempCreated = true;
+    await tempHandle.writeFile(body);
+    await tempHandle.close();
+    tempHandle = null;
+    await testHooks.beforeRename?.({ target, tmpPath });
+    await rename(tmpPath, target);
+    tempCreated = false;
+  } catch (error) {
+    if (tempHandle) {
+      try {
+        await tempHandle.close();
+      } catch {}
+    }
+    if (tempCreated) {
+      try {
+        await rm(tmpPath, { force: true });
+      } catch {}
+    }
+    throw error;
+  }
   return target;
 }
 
