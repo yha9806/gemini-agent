@@ -31,7 +31,7 @@ test("normalizes a design brief with required fields", () => {
   assert.equal(brief.screens[0].id, "admin");
 });
 
-test("normalizes perception with nullable normalized coordinates", () => {
+test("normalizes perception with numeric and null bounding boxes", () => {
   const perception = normalizeDesignPerception({
     kind: "design_perception",
     run_id: "20260614T120000Z-abc123",
@@ -45,6 +45,14 @@ test("normalizes perception with nullable normalized coordinates", () => {
       bbox: { x: 0.1, y: 0.2, width: 0.8, height: 0.3 },
       mask_ref: "layers/hero.png",
       confidence: 0.8,
+    }, {
+      id: "unknown",
+      label: "Unknown",
+      role: "unclassified",
+      importance: 0.2,
+      bbox: null,
+      mask_ref: null,
+      confidence: null,
     }],
     hierarchy: ["hero"],
     layout_observations: ["Hero spans most of the viewport"],
@@ -53,6 +61,7 @@ test("normalizes perception with nullable normalized coordinates", () => {
     warnings: [],
   });
   assert.equal(perception.regions[0].bbox.width, 0.8);
+  assert.equal(perception.regions[1].bbox, null);
 });
 
 test("rejects out-of-range perception coordinates", () => {
