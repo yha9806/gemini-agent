@@ -350,6 +350,24 @@ const fakeDesignBrief = JSON.stringify({
     generated_at: "2026-06-14T12:00:00.000Z",
   },
 });
+const fakeDesignPrototype = JSON.stringify({
+  manifest: {
+    kind: "design_prototype",
+    run_id: "20260614T120000000Z-fakeid",
+    selected_candidate: null,
+    target_stack: "html",
+    model: "gemini-3.5-flash",
+    files: ["preview.html", "review-notes.md"],
+    preview_entry: "preview.html",
+    review_notes: ["Review only"],
+    limitations: ["Not production source"],
+    integration_recommendation: "Use as a visual reference.",
+  },
+  files: [
+    { path: "preview.html", content: "<!doctype html><title>Preview</title>" },
+    { path: "review-notes.md", content: "# Review\n" },
+  ],
+});
 
 test("auth status reports env source without exposing key", async () => {
   const { stdout } = await execFileAsync(bin, ["auth", "status"], {
@@ -373,6 +391,11 @@ test("design generate help documents run variants and quality", async () => {
 test("design perceive help documents run file targets and provider", async () => {
   const { stdout } = await execBin(["--help"]);
   assert.match(stdout, /gemini-agent design perceive --run <path> --file <path> \[--target <name: description> \.\.\.\] \[--provider auto\|palette-mask\|gemini-vision\|vision-banana\]/);
+});
+
+test("design prototype help documents run candidate and target stack", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design prototype --run <path> \[--candidate <id>\] \[--target-stack html\|react\|tailwind\|auto\]/);
 });
 
 test("design brief rejects empty input before auth lookup", async () => {
@@ -556,6 +579,84 @@ test("design perceive vision-banana writes perception without Gemini auth", asyn
     assert.equal(perception.regions[0].id, "hero");
   } finally {
     if (serverListening) await new Promise((resolve) => server.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design prototype rejects invalid target stack before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "prototype",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--target-stack",
+      "vue",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--target-stack must be html, react, tailwind, or auto\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design prototype writes isolated preview with fake Gemini response", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-prototype-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({
+      kind: "design_brief",
+      run_id: runId,
+      goal: "Dashboard",
+      target_user: "Operator",
+      screens: [],
+      visual_direction: [],
+      design_system: { tokens: [] },
+      accessibility: [],
+      responsive_requirements: [],
+      acceptance_criteria: [],
+      implementation_risks: [],
+      metadata: {},
+    })}\n`);
+
+    const { stdout } = await execBin([
+      "design",
+      "prototype",
+      "--run",
+      runId,
+      "--candidate",
+      "candidate-a",
+      "--target-stack",
+      "html",
+    ], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignPrototype,
+      },
+    });
+    const parsed = JSON.parse(stdout);
+    assert.deepEqual(parsed, {
+      prototype: "prototype",
+      manifest: "prototype/manifest.json",
+      preview_entry: "prototype/preview.html",
+    });
+    assert.match(await readFile(join(runDir, "prototype", "preview.html"), "utf8"), /Preview/);
+    const manifest = JSON.parse(await readFile(join(runDir, "prototype", "manifest.json"), "utf8"));
+    assert.equal(manifest.run_id, runId);
+    assert.equal(manifest.selected_candidate, "candidate-a");
+    assert.equal(manifest.target_stack, "html");
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -13,6 +13,7 @@ import { runContextPack } from "./context-pack.mjs";
 import { runDesignBrief } from "./design-brief.mjs";
 import { runDesignGenerate } from "./design-generate.mjs";
 import { runDesignPerceive, selectPerceptionProvider } from "./design-perceive.mjs";
+import { runDesignPrototype, validatePrototypeTargetStack } from "./design-prototype.mjs";
 import { resolveDesignRun } from "./design-run-store.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
@@ -167,6 +168,7 @@ function printUsage() {
     "  gemini-agent design brief [--stdin|--file <path>] [--write-artifact]",
     "  gemini-agent design generate --run <path> [--variants <n>] [--quality fast|pro]",
     "  gemini-agent design perceive --run <path> --file <path> [--target <name: description> ...] [--provider auto|palette-mask|gemini-vision|vision-banana]",
+    "  gemini-agent design prototype --run <path> [--candidate <id>] [--target-stack html|react|tailwind|auto]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent diff-review (--file <path> | --stdin | --diff | --smart-diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1634,6 +1636,41 @@ function parseDesignGenerateArgs(args) {
   return options;
 }
 
+function parseDesignPrototypeArgs(args) {
+  const options = {
+    targetStack: "html",
+    selectedCandidate: null,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--candidate") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--candidate requires an id.");
+      options.selectedCandidate = value;
+      index += 1;
+    } else if (arg === "--target-stack") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--target-stack must be html, react, tailwind, or auto.");
+      }
+      options.targetStack = validatePrototypeTargetStack(value);
+      index += 1;
+    } else {
+      throw new Error(`Unknown design prototype argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  validatePrototypeTargetStack(options.targetStack);
+  return options;
+}
+
 function validateDesignPerceiveTarget(target) {
   const value = String(target ?? "");
   const separator = value.indexOf(":");
@@ -2044,6 +2081,32 @@ async function runDesignCommand(args) {
     output.write(`${JSON.stringify({
       candidates: result.manifest.candidates.length,
       manifest: "candidates/manifest.json",
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (subcommand === "prototype") {
+    const options = parseDesignPrototypeArgs(subArgs);
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+    }
+    const key = await resolveApiKey();
+    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    const result = await runDesignPrototype({
+      runDir,
+      apiKey: key.key,
+      env: process.env,
+      targetStack: options.targetStack,
+      selectedCandidate: options.selectedCandidate,
+      allowFakeResponse: fakeAllowed,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-prototype" },
+    });
+    output.write(`${JSON.stringify({
+      prototype: "prototype",
+      manifest: "prototype/manifest.json",
+      preview_entry: join("prototype", result.manifest.preview_entry),
     }, null, 2)}\n`);
     return;
   }
