@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const DESIGN_ROOT = join(".gemini-agent", "design");
@@ -95,20 +95,25 @@ export function assertPrototypeRelativePath(path) {
 
 export async function writePrototypeFiles({ runDir, files }) {
   const prototypeDir = resolve(runDir, "prototype");
-  const tmpDir = resolve(runDir, `prototype.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  await rm(tmpDir, { recursive: true, force: true });
-  await mkdir(tmpDir, { recursive: true });
+  const versionsDir = resolve(runDir, ".prototype-versions");
+  const versionName = `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  const versionDir = resolve(versionsDir, versionName);
+  const tmpLink = resolve(runDir, `prototype.link-${versionName}`);
+  await rm(tmpLink, { force: true });
+  await mkdir(versionsDir, { recursive: true });
+  await mkdir(versionDir, { recursive: false });
   try {
     for (const [name, body] of Object.entries(files)) {
       const safeName = assertPrototypeRelativePath(name);
-      const target = resolve(tmpDir, safeName);
+      const target = resolve(versionDir, safeName);
       await mkdir(resolve(target, ".."), { recursive: true });
       await writeFile(target, String(body));
     }
-    await rm(prototypeDir, { recursive: true, force: true });
-    await rename(tmpDir, prototypeDir);
+    await symlink(versionDir, tmpLink);
+    await rename(tmpLink, prototypeDir);
   } catch (error) {
-    await rm(tmpDir, { recursive: true, force: true });
+    await rm(tmpLink, { force: true });
+    await rm(versionDir, { recursive: true, force: true });
     throw error;
   }
   return prototypeDir;

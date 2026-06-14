@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
@@ -56,6 +56,35 @@ test("writes JSON artifacts and prototype files atomically", async () => {
       },
     });
     assert.deepEqual((await readdir(join(run.dir, "prototype"))).sort(), ["preview.html", "review-notes.md"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("prototype writes publish complete versions by symlink pointer swap", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-run-store-"));
+  try {
+    const run = await createDesignRun({ cwd, now: new Date("2026-06-14T12:00:00.000Z"), random: () => "abcdef" });
+    await writePrototypeFiles({
+      runDir: run.dir,
+      files: {
+        "old.html": "<!doctype html><title>Old</title>",
+        "shared.txt": "old",
+      },
+    });
+    assert.equal((await lstat(join(run.dir, "prototype"))).isSymbolicLink(), true);
+
+    await writePrototypeFiles({
+      runDir: run.dir,
+      files: {
+        "new.html": "<!doctype html><title>New</title>",
+        "shared.txt": "new",
+      },
+    });
+
+    assert.equal((await lstat(join(run.dir, "prototype"))).isSymbolicLink(), true);
+    assert.deepEqual((await readdir(join(run.dir, "prototype"))).sort(), ["new.html", "shared.txt"]);
+    assert.equal(await readFile(join(run.dir, "prototype", "shared.txt"), "utf8"), "new");
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
