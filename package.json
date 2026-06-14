@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Global Gemini review gate for Codex",
+  "license": "MIT",
   "bin": {
     "gemini-agent": "./bin/gemini-agent",
     "gemini-agent-mcp": "./bin/gemini-agent-mcp",

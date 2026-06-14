@@ -1,6 +1,57 @@
 # gemini-agent
 
-Global Gemini review gate for Codex.
+Global Gemini coprocessor for Codex: compact context, independent review,
+multimodal artifact inspection, design iteration, and opt-in telemetry for
+improving agent workflows.
+
+## What this project is
+
+`gemini-agent` is a local-first CLI and MCP server that lets Codex call Gemini
+only where Gemini is useful: summarizing large context, reviewing diffs,
+critiquing plans, inspecting screenshots, generating design candidates, and
+analyzing aggregate usage telemetry. Codex remains the execution authority for
+editing files, running tests, committing, deploying, and making final product
+decisions.
+
+The default runtime model policy is `gemini-3.5-flash` for text and review
+calls. Image and design generation use explicit image model environment
+variables so teams can decide when higher-cost multimodal routes are allowed.
+
+## Key capabilities
+
+- Context compression with reusable project context packs.
+- Independent `diff-review`, `plan-critique`, and `patch-precheck` gates.
+- Screenshot, UI, diagram, and image review through `artifact-review`.
+- Design workflows for briefs, image candidates, perception, prototypes,
+  handoff tasks, and visual implementation loops.
+- Palette-mask splitting for extracting target regions from generated masks.
+- Local or global telemetry with raw-content controls, delivery diagnostics,
+  economics, priorities, and reliability reports.
+- MCP entrypoint for Codex and other clients that want a Gemini-backed helper.
+
+## Quick start
+
+```bash
+git clone https://github.com/yha9806/gemini-agent.git
+cd gemini-agent
+npm install
+./bin/gemini-agent auth status
+./bin/gemini-agent ask "Reply with exactly: gemini-agent-ok"
+```
+
+Use `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or the macOS Keychain service
+`GEMINI_API_KEY` for Gemini credentials. The package keeps `"private": true`
+to avoid accidental npm publishing; the repository itself is public and can be
+used directly from GitHub.
+
+## Open source
+
+This repository is released under the MIT License. See [LICENSE](LICENSE).
+
+Raw telemetry mode can capture prompts and responses when explicitly enabled.
+Before using raw telemetry with other users or customer data, review the safety
+notes below and configure retention, export, reveal, delete, and preflight
+controls intentionally.
 
 ## Commands
 
