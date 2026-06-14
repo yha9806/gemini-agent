@@ -1,5 +1,5 @@
-import { mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { lstat, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const DESIGN_ROOT = join(".gemini-agent", "design");
 const RUN_ID_PATTERN = /^[0-9TzZ._-]+-[A-Za-z0-9]{6,}$/;
@@ -24,6 +24,38 @@ function assertContained(root, candidate, message) {
     throw new Error(message);
   }
   return resolvedCandidate;
+}
+
+async function rejectSymlink(path, message) {
+  try {
+    const stat = await lstat(path);
+    if (stat.isSymbolicLink()) {
+      throw new Error(message);
+    }
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function assertNoSymlinkPathComponents({ root, target, message }) {
+  const resolvedRoot = resolve(root);
+  const resolvedTarget = resolve(target);
+  const rel = relative(resolvedRoot, resolvedTarget);
+  if (!rel) {
+    await rejectSymlink(resolvedRoot, message);
+    return;
+  }
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(message);
+  }
+  let current = resolvedRoot;
+  for (const part of rel.split(sep)) {
+    current = resolve(current, part);
+    const exists = await rejectSymlink(current, message);
+    if (!exists) break;
+  }
 }
 
 export function safeRunId(value) {
@@ -56,7 +88,9 @@ export async function readDesignRunId(runDir) {
 
 export async function createDesignRun({ cwd = process.cwd(), now = new Date(), random = Math.random } = {}) {
   const root = designRunRoot(cwd);
+  await assertNoSymlinkPathComponents({ root: cwd, target: root, message: "Design run path must not include symlinks." });
   await mkdir(root, { recursive: true });
+  await assertNoSymlinkPathComponents({ root: cwd, target: root, message: "Design run path must not include symlinks." });
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const suffix = attempt === 0 ? randomSuffix(random) : `${randomSuffix(random)}${attempt}`;
     const runId = safeRunId(`${stamp(now)}-${suffix}`);
@@ -74,7 +108,11 @@ export async function createDesignRun({ cwd = process.cwd(), now = new Date(), r
 
 export async function writeDesignJson({ runDir, relativePath, value }) {
   const target = assertContained(runDir, resolve(runDir, relativePath), "Design artifact path must stay inside the run directory.");
-  await mkdir(resolve(target, ".."), { recursive: true });
+  const parent = dirname(target);
+  await rejectSymlink(runDir, "Design artifact path must not include symlinks.");
+  await assertNoSymlinkPathComponents({ root: runDir, target: parent, message: "Design artifact path must not include symlinks." });
+  await mkdir(parent, { recursive: true });
+  await assertNoSymlinkPathComponents({ root: runDir, target: target, message: "Design artifact path must not include symlinks." });
   await writeFile(target, `${JSON.stringify(value, null, 2)}\n`);
   return target;
 }
@@ -99,14 +137,20 @@ export async function writePrototypeFiles({ runDir, files }) {
   const versionName = `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
   const versionDir = resolve(versionsDir, versionName);
   const tmpLink = resolve(runDir, `prototype.link-${versionName}`);
+  await rejectSymlink(runDir, "Prototype version path must not include symlinks.");
+  await assertNoSymlinkPathComponents({ root: runDir, target: versionsDir, message: "Prototype version path must not include symlinks." });
   await rm(tmpLink, { force: true });
   await mkdir(versionsDir, { recursive: true });
+  await assertNoSymlinkPathComponents({ root: runDir, target: versionsDir, message: "Prototype version path must not include symlinks." });
   await mkdir(versionDir, { recursive: false });
   try {
     for (const [name, body] of Object.entries(files)) {
       const safeName = assertPrototypeRelativePath(name);
       const target = resolve(versionDir, safeName);
-      await mkdir(resolve(target, ".."), { recursive: true });
+      const parent = dirname(target);
+      await assertNoSymlinkPathComponents({ root: versionDir, target: parent, message: "Prototype file path must not include symlinks." });
+      await mkdir(parent, { recursive: true });
+      await assertNoSymlinkPathComponents({ root: versionDir, target, message: "Prototype file path must not include symlinks." });
       await writeFile(target, String(body));
     }
     await symlink(versionDir, tmpLink);

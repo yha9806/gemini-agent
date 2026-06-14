@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
@@ -85,6 +85,81 @@ test("prototype writes publish complete versions by symlink pointer swap", async
     assert.equal((await lstat(join(run.dir, "prototype"))).isSymbolicLink(), true);
     assert.deepEqual((await readdir(join(run.dir, "prototype"))).sort(), ["new.html", "shared.txt"]);
     assert.equal(await readFile(join(run.dir, "prototype", "shared.txt"), "utf8"), "new");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("writeDesignJson rejects symlinked path components inside run directory", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-run-store-"));
+  const outside = await mkdtemp(join(tmpdir(), "design-run-store-outside-"));
+  try {
+    const run = await createDesignRun({ cwd, now: new Date("2026-06-14T12:00:00.000Z"), random: () => "abcdef" });
+    await symlink(outside, join(run.dir, "link"));
+
+    await assert.rejects(
+      () => writeDesignJson({ runDir: run.dir, relativePath: "link/leak.json", value: { leaked: true } }),
+      /Design artifact path must not include symlinks/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("createDesignRun rejects a symlinked design root", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-run-store-"));
+  const outside = await mkdtemp(join(tmpdir(), "design-run-store-outside-"));
+  try {
+    await mkdir(join(cwd, ".gemini-agent"), { recursive: true });
+    await symlink(outside, join(cwd, ".gemini-agent", "design"));
+
+    await assert.rejects(
+      () => createDesignRun({ cwd, now: new Date("2026-06-14T12:00:00.000Z"), random: () => "abcdef" }),
+      /Design run path must not include symlinks/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("writePrototypeFiles rejects symlinked version storage", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-run-store-"));
+  const outside = await mkdtemp(join(tmpdir(), "design-run-store-outside-"));
+  try {
+    const run = await createDesignRun({ cwd, now: new Date("2026-06-14T12:00:00.000Z"), random: () => "abcdef" });
+    await symlink(outside, join(run.dir, ".prototype-versions"));
+
+    await assert.rejects(
+      () => writePrototypeFiles({ runDir: run.dir, files: { "preview.html": "<!doctype html>" } }),
+      /Prototype version path must not include symlinks/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("failed prototype version write preserves existing published prototype", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-run-store-"));
+  try {
+    const run = await createDesignRun({ cwd, now: new Date("2026-06-14T12:00:00.000Z"), random: () => "abcdef" });
+    await writePrototypeFiles({ runDir: run.dir, files: { "shared.txt": "old" } });
+
+    await assert.rejects(
+      () => writePrototypeFiles({
+        runDir: run.dir,
+        files: {
+          "nested/file.txt": "new",
+          "nested": "conflict",
+        },
+      }),
+      /EISDIR|illegal operation|directory/i,
+    );
+
+    assert.equal(await readFile(join(run.dir, "prototype", "shared.txt"), "utf8"), "old");
+    assert.deepEqual(await readdir(join(run.dir, "prototype")), ["shared.txt"]);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
