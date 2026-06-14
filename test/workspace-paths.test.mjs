@@ -48,3 +48,15 @@ test("resolveWorkspaceFilePath rejects symlink escapes", async () => {
     await rm(outside, { recursive: true, force: true });
   }
 });
+
+test("resolveWorkspaceFilePath reports missing reference files clearly", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "workspace-paths-"));
+  try {
+    await assert.rejects(
+      () => resolveWorkspaceFilePath("missing.png", { cwd }),
+      /Reference file not found/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

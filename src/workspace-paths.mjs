@@ -17,7 +17,15 @@ export async function resolveWorkspaceFilePath(path, { cwd = process.cwd() } = {
     throw new Error("Reference path must stay inside cwd.");
   }
 
-  const physicalCandidate = await realpath(lexicalCandidate);
+  let physicalCandidate;
+  try {
+    physicalCandidate = await realpath(lexicalCandidate);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error("Reference file not found.");
+    }
+    throw error;
+  }
   if (!contained(physicalCwd, physicalCandidate)) {
     throw new Error("Reference path must stay inside cwd.");
   }

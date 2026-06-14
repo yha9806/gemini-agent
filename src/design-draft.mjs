@@ -42,7 +42,12 @@ async function directorySizeBytes(path) {
       return;
     }
     if (!info.isDirectory()) return;
-    const children = await readdir(entry);
+    let children;
+    try {
+      children = await readdir(entry);
+    } catch {
+      return;
+    }
     for (const child of children) await walk(join(entry, child));
   }
 
