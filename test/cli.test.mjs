@@ -397,6 +397,13 @@ test("design brief help documents stdin and file input", async () => {
   assert.match(stdout, /gemini-agent design brief \[--stdin\|--file <path>\] \[--write-artifact\]/);
 });
 
+test("design draft help is listed", async () => {
+  const { stdout } = await execBin(["--help"], {
+    env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+  });
+  assert.match(stdout, /gemini-agent design draft \[--stdin\|--file <path>\|text\]/);
+});
+
 test("design generate help documents run variants and quality", async () => {
   const { stdout } = await execBin(["--help"]);
   assert.match(stdout, /gemini-agent design generate --run <path> \[--variants <n>\] \[--quality fast\|pro\]/);
@@ -530,6 +537,37 @@ test("design brief rejects empty input before auth lookup", async () => {
   );
 });
 
+test("design draft rejects empty input before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "draft", "--stdin"], {
+      input: "",
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Context input is empty\.|design draft input is empty/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design draft missing image model gives doctor and skip guidance before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "draft", "Design a dashboard"], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /GEMINI_IMAGE_MODEL is required/);
+      assert.match(error.stderr, /design doctor --json/);
+      assert.match(error.stderr, /--skip-generate/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
 test("design brief writes run artifacts with fake Gemini response", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-brief-cli-"));
   try {
@@ -555,6 +593,41 @@ test("design brief writes run artifacts with fake Gemini response", async () => 
     assert.equal(brief.run_id, parsed.run_id);
     assert.equal(brief.goal, "Improve dashboard");
     assert.match(await readFile(join(parsed.run_dir, "DESIGN.md"), "utf8"), /# Design Brief: Improve dashboard/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design draft writes text-only draft with fake Gemini response", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-draft-cli-"));
+  try {
+    const { stdout } = await execBin([
+      "design",
+      "draft",
+      "--stdin",
+      "--skip-generate",
+      "--skip-prototype",
+      "--skip-handoff",
+      "--json",
+    ], {
+      cwd: dir,
+      input: "Design a dashboard",
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignBrief,
+      },
+    });
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "success");
+    assert.match(parsed.run_dir, /\.gemini-agent\/design\//);
+    assert.equal(parsed.steps.find((step) => step.name === "generate").status, "skipped");
+    assert.equal(parsed.steps.find((step) => step.name === "prototype").status, "skipped");
+    assert.equal(parsed.steps.find((step) => step.name === "handoff").status, "skipped");
+    assert.match(await readFile(join(parsed.run_dir, "draft-summary.json"), "utf8"), /design_draft_summary/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

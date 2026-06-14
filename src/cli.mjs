@@ -11,6 +11,7 @@ import {
 } from "./context-pack-doctor.mjs";
 import { runContextPack } from "./context-pack.mjs";
 import { runDesignBrief } from "./design-brief.mjs";
+import { runDesignDraft, validateDesignDraftModelPreflight } from "./design-draft.mjs";
 import { runDesignGenerate } from "./design-generate.mjs";
 import { runDesignHandoff } from "./design-handoff.mjs";
 import { runDesignLoop } from "./design-loop.mjs";
@@ -18,6 +19,7 @@ import { designDoctor } from "./design-model-router.mjs";
 import { runDesignPerceive, selectPerceptionProvider } from "./design-perceive.mjs";
 import { runDesignPrototype, validatePrototypeTargetStack } from "./design-prototype.mjs";
 import { resolveDesignRun } from "./design-run-store.mjs";
+import { resolveWorkspaceFilePath } from "./workspace-paths.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
 import {
@@ -173,6 +175,7 @@ function printUsage() {
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--telemetry-purpose production|validation] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent design brief [--stdin|--file <path>] [--write-artifact]",
+    "  gemini-agent design draft [--stdin|--file <path>|text] [--reference <path> ...] [--target <name: description> ...] [--variants <n>] [--quality fast|pro] [--target-stack html|react|tailwind|auto] [--skip-generate] [--skip-perceive] [--skip-prototype] [--skip-handoff] [--json]",
     "  gemini-agent design generate --run <path> [--variants <n>] [--quality fast|pro]",
     "  gemini-agent design perceive --run <path> --file <path> [--target <name: description> ...] [--provider auto|palette-mask|gemini-vision|vision-banana]",
     "  gemini-agent design prototype --run <path> [--candidate <id>] [--target-stack html|react|tailwind|auto]",
@@ -1638,6 +1641,102 @@ function parseDesignBriefArgs(args) {
   return options;
 }
 
+function parseDesignDraftArgs(args) {
+  const options = {
+    stdin: false,
+    files: [],
+    text: [],
+    references: [],
+    targets: [],
+    variants: 1,
+    quality: "fast",
+    targetStack: "html",
+    skipGenerate: false,
+    skipPerceive: false,
+    skipPrototype: false,
+    skipHandoff: false,
+    json: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--stdin") {
+      options.stdin = true;
+    } else if (arg === "--file") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--file requires a path.");
+      options.files.push(value);
+      index += 1;
+    } else if (arg === "--reference") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--reference requires a path.");
+      options.references.push(value);
+      index += 1;
+    } else if (arg === "--target") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--target requires a value.");
+      validateDesignPerceiveTarget(value);
+      options.targets.push(value);
+      index += 1;
+    } else if (arg === "--variants") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--variants must be between 1 and 4.");
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 4) {
+        throw new Error("--variants must be between 1 and 4.");
+      }
+      options.variants = parsed;
+      index += 1;
+    } else if (arg === "--quality") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--") || !["fast", "pro"].includes(value)) {
+        throw new Error("--quality must be fast or pro.");
+      }
+      options.quality = value;
+      index += 1;
+    } else if (arg === "--target-stack") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--target-stack must be html, react, tailwind, or auto.");
+      }
+      options.targetStack = validatePrototypeTargetStack(value);
+      index += 1;
+    } else if (arg === "--skip-generate") {
+      options.skipGenerate = true;
+    } else if (arg === "--skip-perceive") {
+      options.skipPerceive = true;
+    } else if (arg === "--skip-prototype") {
+      options.skipPrototype = true;
+    } else if (arg === "--skip-handoff") {
+      options.skipHandoff = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      options.text.push(arg);
+    }
+  }
+
+  return options;
+}
+
+function withDesignDraftContext(inputText, { references = [], targets = [] } = {}) {
+  const additions = [];
+  if (references.length > 0) {
+    additions.push([
+      "Reference files:",
+      ...references.map((reference) => `- ${reference}`),
+    ].join("\n"));
+  }
+  if (targets.length > 0) {
+    additions.push([
+      "Targets:",
+      ...targets.map((target) => `- ${target}`),
+    ].join("\n"));
+  }
+  if (additions.length === 0) return inputText;
+  return `${inputText.trim()}\n\n${additions.join("\n\n")}\n`;
+}
+
 function parseDesignGenerateArgs(args) {
   const options = { variants: 1, quality: "fast" };
 
@@ -2162,6 +2261,54 @@ async function runDesignCommand(args) {
     output.write(options.json
       ? `${JSON.stringify(report, null, 2)}\n`
       : `Design doctor: ${report.ok ? "ok" : "caution"}\n`);
+    return;
+  }
+
+  if (subcommand === "draft") {
+    const options = parseDesignDraftArgs(subArgs);
+    const stdinText = options.stdin ? await readStdin() : "";
+    const textInput = [
+      stdinText,
+      options.text.join(" "),
+    ].filter((text) => text.trim()).join("\n");
+    const collected = await collectTextInput({
+      stdinText: textInput,
+      files: options.files,
+      cwd: process.cwd(),
+    });
+    for (const reference of options.references) {
+      await resolveWorkspaceFilePath(reference, { cwd: process.cwd() });
+    }
+    validateDesignDraftModelPreflight({
+      env: process.env,
+      quality: options.quality,
+      skipGenerate: options.skipGenerate,
+    });
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+    }
+    const key = await resolveApiKey();
+    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    const result = await runDesignDraft({
+      cwd: process.cwd(),
+      inputText: withDesignDraftContext(collected.input, {
+        references: options.references,
+        targets: options.targets,
+      }),
+      apiKey: key.key,
+      env: process.env,
+      variants: options.variants,
+      quality: options.quality,
+      targetStack: options.targetStack,
+      skipGenerate: options.skipGenerate,
+      skipPerceive: options.skipPerceive,
+      skipPrototype: options.skipPrototype,
+      skipHandoff: options.skipHandoff,
+      allowFakeResponse: fakeAllowed,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-draft" },
+    });
+    output.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
 
