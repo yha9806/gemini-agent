@@ -365,6 +365,11 @@ test("design brief help documents stdin and file input", async () => {
   assert.match(stdout, /gemini-agent design brief \[--stdin\|--file <path>\] \[--write-artifact\]/);
 });
 
+test("design generate help documents run variants and quality", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design generate --run <path> \[--variants <n>\] \[--quality fast\|pro\]/);
+});
+
 test("design brief rejects empty input before auth lookup", async () => {
   await assert.rejects(
     () => execBin(["design", "brief", "--stdin"], {
@@ -405,6 +410,64 @@ test("design brief writes run artifacts with fake Gemini response", async () => 
     assert.equal(brief.run_id, parsed.run_id);
     assert.equal(brief.goal, "Improve dashboard");
     assert.match(await readFile(join(parsed.run_dir, "DESIGN.md"), "utf8"), /# Design Brief: Improve dashboard/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design generate rejects invalid variants before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin(["design", "generate", "--run", "20260614T120000000Z-abcdef", "--variants", "0"], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--variants must be between 1 and 4\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design generate fails clearly when image model is missing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-generate-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({
+      kind: "design_brief",
+      run_id: runId,
+      goal: "Dashboard",
+      target_user: "Operator",
+      screens: [],
+      visual_direction: [],
+      design_system: { tokens: [] },
+      accessibility: [],
+      responsive_requirements: [],
+      acceptance_criteria: [],
+      implementation_risks: [],
+      metadata: {},
+    })}\n`);
+
+    await assert.rejects(
+      () => execBin(["design", "generate", "--run", runId], {
+        cwd: dir,
+        env: {
+          ...process.env,
+          HOME: CLI_TEST_HOME,
+          USERPROFILE: CLI_TEST_HOME,
+          GEMINI_API_KEY: "fake-key",
+          GEMINI_IMAGE_MODEL: "",
+          GEMINI_IMAGE_PRO_MODEL: "",
+        },
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /GEMINI_IMAGE_MODEL is required/);
+        return true;
+      },
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

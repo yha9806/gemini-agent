@@ -11,6 +11,8 @@ import {
 } from "./context-pack-doctor.mjs";
 import { runContextPack } from "./context-pack.mjs";
 import { runDesignBrief } from "./design-brief.mjs";
+import { runDesignGenerate } from "./design-generate.mjs";
+import { resolveDesignRun } from "./design-run-store.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
 import {
@@ -162,6 +164,7 @@ function printUsage() {
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--telemetry-purpose production|validation] [--write-artifact]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent design brief [--stdin|--file <path>] [--write-artifact]",
+    "  gemini-agent design generate --run <path> [--variants <n>] [--quality fast|pro]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent diff-review (--file <path> | --stdin | --diff | --smart-diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1594,6 +1597,41 @@ function parseDesignBriefArgs(args) {
   return options;
 }
 
+function parseDesignGenerateArgs(args) {
+  const options = { variants: 1, quality: "fast" };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--variants") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--variants must be between 1 and 4.");
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 4) {
+        throw new Error("--variants must be between 1 and 4.");
+      }
+      options.variants = parsed;
+      index += 1;
+    } else if (arg === "--quality") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--") || !["fast", "pro"].includes(value)) {
+        throw new Error("--quality must be fast or pro.");
+      }
+      options.quality = value;
+      index += 1;
+    } else {
+      throw new Error(`Unknown design generate argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  return options;
+}
+
 function parseContextPackDoctorOptions(args) {
   const options = {
     json: false,
@@ -1903,6 +1941,26 @@ async function runPaletteSplitCommand(args) {
 
 async function runDesignCommand(args) {
   const [subcommand, ...subArgs] = args;
+  if (subcommand === "generate") {
+    const options = parseDesignGenerateArgs(subArgs);
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    const key = await resolveApiKey();
+    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    const result = await runDesignGenerate({
+      runDir,
+      variants: options.variants,
+      quality: options.quality,
+      apiKey: key.key,
+      env: process.env,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-generate" },
+    });
+    output.write(`${JSON.stringify({
+      candidates: result.manifest.candidates.length,
+      manifest: "candidates/manifest.json",
+    }, null, 2)}\n`);
+    return;
+  }
+
   if (subcommand !== "brief") throw new Error("Unknown design command.");
 
   const options = parseDesignBriefArgs(subArgs);
