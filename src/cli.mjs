@@ -13,6 +13,8 @@ import { runContextPack } from "./context-pack.mjs";
 import { runDesignBrief } from "./design-brief.mjs";
 import { runDesignGenerate } from "./design-generate.mjs";
 import { runDesignHandoff } from "./design-handoff.mjs";
+import { runDesignLoop } from "./design-loop.mjs";
+import { designDoctor } from "./design-model-router.mjs";
 import { runDesignPerceive, selectPerceptionProvider } from "./design-perceive.mjs";
 import { runDesignPrototype, validatePrototypeTargetStack } from "./design-prototype.mjs";
 import { resolveDesignRun } from "./design-run-store.mjs";
@@ -171,6 +173,8 @@ function printUsage() {
     "  gemini-agent design perceive --run <path> --file <path> [--target <name: description> ...] [--provider auto|palette-mask|gemini-vision|vision-banana]",
     "  gemini-agent design prototype --run <path> [--candidate <id>] [--target-stack html|react|tailwind|auto]",
     "  gemini-agent design handoff --run <path> [--candidate <id>]",
+    "  gemini-agent design loop --run <path> [--target-screenshot <path>] [--actual-screenshot <path>] [--max-iterations <n>]",
+    "  gemini-agent design doctor [--json]",
     "  gemini-agent plan-critique (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent patch-precheck (--file <path> | --stdin | --diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
     "  gemini-agent diff-review (--file <path> | --stdin | --diff | --smart-diff | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
@@ -1699,6 +1703,60 @@ function parseDesignHandoffArgs(args) {
   return options;
 }
 
+function parseDesignLoopArgs(args) {
+  const options = {
+    targetScreenshot: null,
+    actualScreenshot: null,
+    maxIterations: 2,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--run") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--run requires a path.");
+      options.run = value;
+      index += 1;
+    } else if (arg === "--target-screenshot") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--target-screenshot requires a path.");
+      options.targetScreenshot = value;
+      index += 1;
+    } else if (arg === "--actual-screenshot") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--actual-screenshot requires a path.");
+      options.actualScreenshot = value;
+      index += 1;
+    } else if (arg === "--max-iterations") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--max-iterations must be an integer between 1 and 3.");
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 3) {
+        throw new Error("--max-iterations must be an integer between 1 and 3.");
+      }
+      options.maxIterations = parsed;
+      index += 1;
+    } else {
+      throw new Error(`Unknown design loop argument: ${arg}`);
+    }
+  }
+
+  if (!options.run) throw new Error("--run requires a path.");
+  return options;
+}
+
+function parseDesignDoctorArgs(args) {
+  const options = { json: false };
+  for (const arg of args) {
+    if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown design doctor argument: ${arg}`);
+    }
+  }
+  return options;
+}
+
 function validateDesignPerceiveTarget(target) {
   const value = String(target ?? "");
   const separator = value.indexOf(":");
@@ -2064,6 +2122,44 @@ async function runPaletteSplitCommand(args) {
 
 async function runDesignCommand(args) {
   const [subcommand, ...subArgs] = args;
+  if (subcommand === "doctor") {
+    const options = parseDesignDoctorArgs(subArgs);
+    const report = await designDoctor({
+      env: process.env,
+      probe: async () => ({ ok: null, status: "not_probed" }),
+    });
+    output.write(options.json
+      ? `${JSON.stringify(report, null, 2)}\n`
+      : `Design doctor: ${report.ok ? "ok" : "caution"}\n`);
+    return;
+  }
+
+  if (subcommand === "loop") {
+    const options = parseDesignLoopArgs(subArgs);
+    const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    let apiKey;
+    if (options.actualScreenshot && options.targetScreenshot) {
+      const key = await resolveApiKey();
+      if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+      apiKey = key.key;
+    }
+    const result = await runDesignLoop({
+      runDir,
+      targetScreenshot: options.targetScreenshot,
+      actualScreenshot: options.actualScreenshot,
+      maxIterations: options.maxIterations,
+      apiKey,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-loop" },
+    });
+    output.write(`${JSON.stringify({
+      status: result.review.status,
+      loop_review: "loop-review.json",
+      path: result.path,
+      message: result.message,
+    }, null, 2)}\n`);
+    return;
+  }
+
   if (subcommand === "perceive") {
     const options = parseDesignPerceiveArgs(subArgs);
     const selectedProvider = selectPerceptionProvider({ provider: options.provider, targets: options.targets });

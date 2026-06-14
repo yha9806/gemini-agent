@@ -417,6 +417,104 @@ test("design handoff help documents run and candidate", async () => {
   assert.match(stdout, /gemini-agent design handoff --run <path> \[--candidate <id>\]/);
 });
 
+test("design loop help documents run screenshots and iterations", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design loop --run <path> \[--target-screenshot <path>\] \[--actual-screenshot <path>\] \[--max-iterations <n>\]/);
+});
+
+test("design doctor help documents json output", async () => {
+  const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /gemini-agent design doctor \[--json\]/);
+});
+
+test("design doctor reports model state without auth lookup or live probe", async () => {
+  const { stdout } = await execBin(["design", "doctor", "--json"], {
+    env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+  });
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.probes.design_model.status, "not_probed");
+  assert.equal(parsed.probes.image_model.status, "not_configured");
+  assert.doesNotMatch(stdout, /Gemini API key/);
+});
+
+test("design doctor prints concise text", async () => {
+  const { stdout } = await execBin(["design", "doctor"], {
+    env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+  });
+  assert.equal(stdout, "Design doctor: ok\n");
+});
+
+test("design loop writes resumable review without auth when actual screenshot is missing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-loop-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    await writeFile(join(runDir, "codex-tasks.md"), "# Codex Tasks\n- Run app\n");
+    const { stdout } = await execBin(["design", "loop", "--run", runId], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "needs_screenshot");
+    assert.equal(parsed.loop_review, "loop-review.json");
+    assert.match(parsed.message, /actual screenshot/i);
+    const review = JSON.parse(await readFile(join(runDir, "loop-review.json"), "utf8"));
+    assert.equal(review.status, "needs_screenshot");
+    assert.deepEqual(review.next_actions, ["Run app"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design loop validates max iterations before auth lookup", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "loop",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--max-iterations",
+      "4",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--max-iterations must be an integer between 1 and 3\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design loop rejects actual screenshot without target before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-loop-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    await assert.rejects(
+      () => execBin(["design", "loop", "--run", runId, "--actual-screenshot", "after.png"], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /--target-screenshot is required when --actual-screenshot is provided\./);
+        assert.doesNotMatch(error.stderr, /Gemini API key/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("design brief rejects empty input before auth lookup", async () => {
   await assert.rejects(
     () => execBin(["design", "brief", "--stdin"], {

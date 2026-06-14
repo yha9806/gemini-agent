@@ -77,6 +77,8 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /^\.\/bin\/gemini-agent design perceive --run \.gemini-agent\/design\/<run-id> --file screenshot\.png --target "hero: main area"$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent design prototype --run \.gemini-agent\/design\/<run-id> --target-stack html$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent design handoff --run \.gemini-agent\/design\/<run-id>$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent design loop --run \.gemini-agent\/design\/<run-id> --actual-screenshot after\.png$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent design doctor --json$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000$/m);
   assert.match(readme, /project\/workspace attribution/);
   assert.match(readme, /multimodal MIME\/kind\/byte coverage/);
@@ -90,6 +92,8 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /`design perceive` reads a target screenshot, chooses palette masks when `--target` values are supplied, and writes `perceive\/perception\.json`/);
   assert.match(readme, /`design prototype` writes reviewable prototype code under `prototype\/` only/);
   assert.match(readme, /`design handoff` reads the normalized design brief and writes `handoff\.json` plus `codex-tasks\.md` for implementation/);
+  assert.match(readme, /`design loop` keeps Codex as the source-editing authority and uses `artifact-review` for target-vs-actual visual review/);
+  assert.match(readme, /`design doctor --json` reports design model routing and provider configuration without looking up auth or calling Gemini/);
   assert.match(readme, /Telemetry summary and report aggregate artifact-review design scorecard metrics and per-field score coverage/);
   assert.match(readme, /Telemetry summary, economics, priorities, and report expose product-adjusted analytics/);
   assert.match(readme, /The telemetry receiver `\/metrics` and `\/dashboard` endpoints expose product-adjusted analytics/);
