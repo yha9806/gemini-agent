@@ -75,6 +75,45 @@ test("budget gate fails closed on unknown cost unless allowed", () => {
     maxCostUsd: 1,
     allowUnknownCost: true,
   }), true);
+
+  assert.throws(
+    () => assertDesignBudget({
+      estimate: { usd: null, unknown: true },
+      maxCostUsd: 1,
+      allowUnknownCost: "false",
+    }),
+    /unknown cost/,
+  );
+});
+
+test("negative usage input produces unknown cost and is blocked by budget gate", () => {
+  const estimate = estimateDesignCost({
+    model: "gemini-3.5-flash",
+    inputTokens: -1,
+  });
+
+  assert.equal(estimate.usd, null);
+  assert.equal(estimate.unknown, true);
+  assert.match(estimate.reason, /inputTokens/);
+  assert.throws(
+    () => assertDesignBudget({
+      estimate,
+      maxCostUsd: 1,
+      allowUnknownCost: false,
+    }),
+    /unknown cost/,
+  );
+});
+
+test("nonnumeric string usage input produces unknown cost", () => {
+  const estimate = estimateDesignCost({
+    model: "gemini-3.5-flash",
+    outputTokens: "1000",
+  });
+
+  assert.equal(estimate.usd, null);
+  assert.equal(estimate.unknown, true);
+  assert.match(estimate.reason, /outputTokens/);
 });
 
 test("budget gate rejects invalid max budget values", () => {

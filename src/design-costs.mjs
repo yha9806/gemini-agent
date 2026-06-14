@@ -44,12 +44,17 @@ function sanitizeOverrideModels(models) {
   return safeModels;
 }
 
-function nonnegativeNumberOrZero(value) {
-  return nonnegativeFiniteNumber(value) ? value : 0;
-}
-
 function roundUsd(value) {
   return Math.round((value + Number.EPSILON) * 1_000_000_000_000) / 1_000_000_000_000;
+}
+
+function invalidUsageReason(usage) {
+  for (const [field, value] of Object.entries(usage)) {
+    if (!nonnegativeFiniteNumber(value)) {
+      return `Invalid design usage: ${field} must be a finite nonnegative number.`;
+    }
+  }
+  return null;
 }
 
 export function loadDesignPricing({ env = process.env } = {}) {
@@ -79,12 +84,15 @@ export function estimateDesignCost({
   imageUnits = 0,
   pricing = loadDesignPricing(),
 } = {}) {
+  const usageError = invalidUsageReason({ inputTokens, outputTokens, imageUnits });
+  if (usageError) return { usd: null, unknown: true, model, reason: usageError };
+
   const row = pricing?.models?.[model];
   if (!validPricingRow(row)) return { usd: null, unknown: true, model };
 
-  const usd = (nonnegativeNumberOrZero(inputTokens) / 1_000_000) * row.input_per_million
-    + (nonnegativeNumberOrZero(outputTokens) / 1_000_000) * row.output_per_million
-    + nonnegativeNumberOrZero(imageUnits) * row.image_per_unit;
+  const usd = (inputTokens / 1_000_000) * row.input_per_million
+    + (outputTokens / 1_000_000) * row.output_per_million
+    + imageUnits * row.image_per_unit;
 
   return { usd: roundUsd(usd), unknown: false, model };
 }
@@ -100,7 +108,7 @@ export function assertDesignBudget({
   }
 
   if (estimate?.unknown || !nonnegativeFiniteNumber(estimate?.usd)) {
-    if (allowUnknownCost) return true;
+    if (allowUnknownCost === true) return true;
     throw new Error("Design cost estimate has unknown cost; pass --allow-unknown-cost to continue.");
   }
 
