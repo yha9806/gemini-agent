@@ -179,3 +179,49 @@ test("runDesignDraft ensures .gemini-agent is ignored before writing draft artif
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("runDesignDraft captures aggregate design-draft telemetry", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-draft-"));
+  const events = [];
+  try {
+    const result = await runDesignDraft({
+      cwd,
+      inputText: "Design a dashboard",
+      apiKey: "key",
+      env: { GEMINI_DESIGN_MODEL: "configured-design-model" },
+      skipGenerate: true,
+      skipPrototype: true,
+      skipHandoff: true,
+      telemetry: {
+        cwd,
+        source: "cli",
+        command: "design-draft",
+        capture: async (event) => events.push(event),
+      },
+      runners: { brief: () => makeBriefRun(cwd) },
+    });
+    assert.equal(result.status, "success");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].command, "design-draft");
+    assert.equal(events[0].status, "success");
+    assert.equal(events[0].metadata.design_stage, "draft");
+    assert.deepEqual(events[0].metadata.draft_steps_completed, [
+      "brief",
+      "generate",
+      "perceive",
+      "prototype",
+      "handoff",
+    ]);
+    assert.deepEqual(events[0].metadata.draft_steps_requested, [
+      "brief",
+      "generate",
+      "perceive",
+      "prototype",
+      "handoff",
+    ]);
+    assert.equal(events[0].metadata.actual_design_model, "configured-design-model");
+    assert.equal(events[0].metadata.vision_banana_provider, "missing");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
