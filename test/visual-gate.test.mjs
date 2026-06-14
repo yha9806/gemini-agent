@@ -62,6 +62,17 @@ test("visualGateVerdictFromSignals cautions weak accessibility", () => {
   assert.equal(verdict, "caution");
 });
 
+test("visualGateVerdictFromSignals tolerates null issues", () => {
+  const verdict = visualGateVerdictFromSignals({
+    routing: "recommended",
+    smokeStatus: "pass",
+    scorecard: { implementation_readiness_score: 92, accessibility_score: 91 },
+    issues: null,
+  });
+
+  assert.equal(verdict, "pass");
+});
+
 test("normalizeVisualGateResult rejects unsafe media names and paths", () => {
   assert.throws(
     () => normalizeVisualGateResult({
@@ -106,4 +117,39 @@ test("visualGateToPrettyJson emits stable safe JSON", () => {
 
   assert.match(text, /"kind": "visual_review_gate"/);
   assert.doesNotMatch(text, /private|\/Users|event_id|prompt|response/);
+});
+
+test("visualGateToPrettyJson sanitizes unsafe free-text fields", () => {
+  const text = visualGateToPrettyJson({
+    kind: "visual_review_gate",
+    verdict: "caution",
+    review_posture: "quick_review",
+    risk_level: "medium",
+    risk_reasons: ["visible_css_change", "review /Users/alice/project"],
+    smoke: {
+      status: "caution",
+      checks: [{
+        name: "file_readable",
+        status: "caution",
+        evidence: "prompt event_id evt_private at /Users/alice/project",
+      }],
+    },
+    artifact_review: { used: false, mode: null, depth: null, fallback_used: false, scorecard: null },
+    issues: [{
+      category: "uncertain_visual_evidence",
+      severity: "medium",
+      summary: "response mentioned Authorization: Bearer secret-token",
+      recommended_action: "inspect prompt output before release",
+    }],
+    next_actions: ["check response event_id before release"],
+    limitations: ["raw prompt unavailable"],
+    metadata: {
+      generated_at: "2026-06-15T00:00:00.000Z",
+      artifact_review_readiness_status: "unknown",
+      media_summary: [],
+    },
+  });
+
+  assert.doesNotMatch(text, /\/Users|event_id|prompt|response|Authorization|secret-token/);
+  assert.match(text, /redacted unsafe visual gate text/);
 });

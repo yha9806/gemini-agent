@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { hasUnsafeTelemetryDimensionContent } from "./telemetry-dimension-safety.mjs";
 
 export const VISUAL_GATE_VERDICTS = ["pass", "caution", "block"];
 export const VISUAL_GATE_REVIEW_POSTURES = [
@@ -32,6 +33,18 @@ const HARD_BLOCK_CATEGORIES = new Set([
   "asset_rendering_failure",
 ]);
 
+const RAW_CONTENT_LABEL_PATTERN = /\b(?:event[\s_-]*id|prompt|response)\b/iu;
+const SAFE_TEXT_REDACTION = "redacted unsafe visual gate text";
+
+function sanitizeVisualGateText(value) {
+  const text = value.trim();
+  if (RAW_CONTENT_LABEL_PATTERN.test(text) || hasUnsafeTelemetryDimensionContent(text)) {
+    return SAFE_TEXT_REDACTION;
+  }
+  return text;
+}
+
+const SafeText = z.string().transform(sanitizeVisualGateText);
 const NullableScore = z.number().int().min(0).max(100).nullable().default(null);
 
 export const VisualGateScorecardZodSchema = z.object({
@@ -46,14 +59,14 @@ export const VisualGateScorecardZodSchema = z.object({
 export const VisualGateIssueZodSchema = z.object({
   category: z.enum(VISUAL_GATE_ISSUE_CATEGORIES),
   severity: z.enum(["low", "medium", "high"]),
-  summary: z.string(),
-  recommended_action: z.string(),
+  summary: SafeText,
+  recommended_action: SafeText,
 });
 
 export const VisualGateSmokeCheckZodSchema = z.object({
-  name: z.string(),
+  name: SafeText,
   status: z.enum(VISUAL_GATE_VERDICTS),
-  evidence: z.string(),
+  evidence: SafeText,
 });
 
 export const VisualGateMediaSummaryZodSchema = z.object({
@@ -70,7 +83,7 @@ export const VisualGateResultZodSchema = z.object({
   verdict: z.enum(VISUAL_GATE_VERDICTS),
   review_posture: z.enum(VISUAL_GATE_REVIEW_POSTURES),
   risk_level: z.enum(VISUAL_GATE_RISK_LEVELS),
-  risk_reasons: z.array(z.string()).default([]),
+  risk_reasons: z.array(SafeText).default([]),
   smoke: z.object({
     status: z.enum(VISUAL_GATE_VERDICTS),
     checks: z.array(VisualGateSmokeCheckZodSchema).default([]),
@@ -83,8 +96,8 @@ export const VisualGateResultZodSchema = z.object({
     scorecard: VisualGateScorecardZodSchema.nullable().default(null),
   }),
   issues: z.array(VisualGateIssueZodSchema).default([]),
-  next_actions: z.array(z.string()).default([]),
-  limitations: z.array(z.string()).default([]),
+  next_actions: z.array(SafeText).default([]),
+  limitations: z.array(SafeText).default([]),
   metadata: z.object({
     generated_at: z.string(),
     artifact_review_readiness_status: z.enum(["ready", "collect_more_samples", "blocked", "unknown"]).default("unknown"),
@@ -98,8 +111,9 @@ export function visualGateVerdictFromSignals({
   scorecard = null,
   issues = [],
 } = {}) {
+  const safeIssues = Array.isArray(issues) ? issues : [];
   if (smokeStatus === "block") return "block";
-  if (issues.some((issue) => HARD_BLOCK_CATEGORIES.has(issue.category) && issue.severity !== "low")) return "block";
+  if (safeIssues.some((issue) => HARD_BLOCK_CATEGORIES.has(issue.category) && issue.severity !== "low")) return "block";
 
   const readiness = scorecard?.implementation_readiness_score;
   if (routing === "required" && Number.isInteger(readiness) && readiness < 50) return "block";
@@ -107,7 +121,7 @@ export function visualGateVerdictFromSignals({
   const accessibility = scorecard?.accessibility_score;
   if (Number.isInteger(accessibility) && accessibility < 60) return "caution";
   if (smokeStatus === "caution") return "caution";
-  if (issues.some((issue) => issue.severity === "medium" || issue.severity === "high")) return "caution";
+  if (safeIssues.some((issue) => issue.severity === "medium" || issue.severity === "high")) return "caution";
   return "pass";
 }
 
