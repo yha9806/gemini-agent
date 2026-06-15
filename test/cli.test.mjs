@@ -2063,6 +2063,33 @@ test("visual gate smoke-only outputs safe JSON without auth", async () => {
   assert.doesNotMatch(stdout, /after\.png|\/tmp|\/Users|event_id/);
 });
 
+test("visual gate skip route outputs local JSON without auth", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await writeFile(join(dir, "after.png"), onePixelPng());
+
+  const { stdout } = await execFileAsync(bin, [
+    "visual",
+    "gate",
+    "--actual-screenshot",
+    "after.png",
+    "--kind",
+    "image",
+    "--risk",
+    "backend-only",
+    "--json",
+  ], {
+    cwd: dir,
+    env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.verdict, "pass");
+  assert.deepEqual(parsed.risk_reasons, ["backend_only"]);
+  assert.equal(parsed.artifact_review.used, false);
+  assert.match(parsed.limitations.join("\n"), /skipped Gemini artifact review/);
+  assert.doesNotMatch(stdout, /Gemini API key|after\.png|\/tmp|\/Users|event_id/);
+});
+
 test("visual gate target actual comparison uses fake artifact review", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
   const png = onePixelPng();

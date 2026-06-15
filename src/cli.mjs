@@ -2293,31 +2293,37 @@ async function runVisualCommand(args) {
   if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
     throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
   }
-  let key = { ok: false, key: null };
   if (!options.smokeOnly) {
     const smokeProbe = await runVisualGate({ cwd, ...options, smokeOnly: true, telemetry: null });
     if (smokeProbe.review_posture === "blocked_before_gemini") {
       throw new Error("visual gate blocked before Gemini: capture a readable supported screenshot and retry.");
     }
-    key = await resolveApiKey();
-    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
   }
+  let keyResult = null;
+  const resolveVisualGateKey = async () => {
+    if (!keyResult) keyResult = await resolveApiKey();
+    if (!keyResult.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    return keyResult;
+  };
   const result = await runVisualGate({
     ...options,
-    apiKey: key.key,
     cwd,
-    artifactReview: (artifactOptions) => runArtifactReview({
-      ...artifactOptions,
-      env: process.env,
-      allowFakeResponse: fakeAllowed,
-    }),
+    artifactReview: async (artifactOptions) => {
+      const key = await resolveVisualGateKey();
+      return runArtifactReview({
+        ...artifactOptions,
+        apiKey: key.key,
+        env: process.env,
+        allowFakeResponse: fakeAllowed,
+      });
+    },
     telemetry: {
       cwd,
       source: "cli",
       command: "visual-gate",
     },
   });
-  output.write(options.json ? visualGateToPrettyJson(result) : visualGateToPrettyJson(result));
+  output.write(visualGateToPrettyJson(result));
 }
 
 async function runPaletteSplitCommand(args) {
