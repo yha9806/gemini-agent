@@ -212,6 +212,24 @@ export const DesignCandidateManifestZodSchema = z.object({
   })).default([]),
 });
 
+export const DesignCandidateQualityZodSchema = z.object({
+  kind: Kind("design_candidate_quality"),
+  run_id: RunId,
+  selected_candidate: z.string().nullable().default(null),
+  candidates: z.array(z.object({
+    id: NonEmptyString,
+    file: NonEmptyString,
+    score: z.number().int().min(0).max(100).nullable().default(null),
+    status: z.enum(["pass", "warn", "fail", "unavailable"]),
+    strengths: StringList,
+    issues: StringList,
+    recommended_actions: StringList,
+    warnings: StringList,
+  })).default([]),
+  warnings: StringList,
+  metadata: Metadata,
+});
+
 export const DesignPerceptionZodSchema = z.object({
   kind: Kind("design_perception"),
   run_id: RunId,
@@ -282,6 +300,10 @@ export function normalizeDesignBrief(value) {
 
 export function normalizeDesignCandidateManifest(value) {
   return normalizeWith(DesignCandidateManifestZodSchema, value, "design candidate manifest");
+}
+
+export function normalizeDesignCandidateQuality(value) {
+  return normalizeWith(DesignCandidateQualityZodSchema, value, "design candidate quality");
 }
 
 export function normalizeDesignPerception(value) {
