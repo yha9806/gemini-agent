@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import {
   runDesignCandidateQualityGate,
   scoreCandidateReview,
@@ -11,35 +11,35 @@ import {
 
 const runId = "20260614T120000000Z-abcdef";
 
-async function writeManifest(dir) {
+function successfulCandidate(overrides = {}) {
+  return {
+    id: "candidate-a",
+    file: "candidate-a.png",
+    model: "image-model",
+    prompt_hash: "aaa",
+    status: "success",
+    image_size: null,
+    aspect_ratio: null,
+    warnings: [],
+    ...overrides,
+  };
+}
+
+async function writeManifest(dir, candidates = [
+  successfulCandidate(),
+  successfulCandidate({
+    id: "candidate-b",
+    file: "candidate-b.png",
+    prompt_hash: "bbb",
+  }),
+]) {
   await mkdir(join(dir, "candidates"), { recursive: true });
   await writeFile(join(dir, "candidates", "candidate-a.png"), "a");
   await writeFile(join(dir, "candidates", "candidate-b.png"), "b");
   await writeFile(join(dir, "candidates", "manifest.json"), `${JSON.stringify({
     kind: "design_candidates",
     run_id: runId,
-    candidates: [
-      {
-        id: "candidate-a",
-        file: "candidate-a.png",
-        model: "image-model",
-        prompt_hash: "aaa",
-        status: "success",
-        image_size: null,
-        aspect_ratio: null,
-        warnings: [],
-      },
-      {
-        id: "candidate-b",
-        file: "candidate-b.png",
-        model: "image-model",
-        prompt_hash: "bbb",
-        status: "success",
-        image_size: null,
-        aspect_ratio: null,
-        warnings: [],
-      },
-    ],
+    candidates,
   })}\n`);
 }
 
@@ -105,6 +105,79 @@ test("runDesignCandidateQualityGate writes quality artifact and selects best pas
     const written = JSON.parse(await readFile(join(dir, "candidates", "quality.json"), "utf8"));
     assert.equal(written.kind, "design_candidate_quality");
     assert.equal(written.selected_candidate, "candidate-b");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("selectCandidateFromQuality prefers pass over higher scoring warn", () => {
+  assert.equal(selectCandidateFromQuality({
+    candidates: [
+      { id: "candidate-a", score: 80, status: "pass" },
+      { id: "candidate-b", score: 99, status: "warn" },
+    ],
+  }), "candidate-a");
+});
+
+test("runDesignCandidateQualityGate passes safe cwd file and filePath to reviewCandidate", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-quality-"));
+  try {
+    await writeManifest(dir, [successfulCandidate()]);
+    const calls = [];
+    await runDesignCandidateQualityGate({
+      runDir: dir,
+      reviewCandidate: async (input) => {
+        calls.push(input);
+        return review();
+      },
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].cwd, join(dir, "candidates"));
+    assert.equal(calls[0].file, "candidate-a.png");
+    assert.equal(calls[0].filePath, join(calls[0].cwd, "candidate-a.png"));
+    assert.equal(calls[0].filePath.startsWith(`${calls[0].cwd}${sep}`), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runDesignCandidateQualityGate marks unsafe manifest file paths unavailable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-quality-"));
+  try {
+    await writeManifest(dir, [successfulCandidate({ file: "../outside.png" })]);
+    let reviewed = false;
+    const result = await runDesignCandidateQualityGate({
+      runDir: dir,
+      reviewCandidate: async () => {
+        reviewed = true;
+        return review();
+      },
+    });
+
+    assert.equal(reviewed, false);
+    assert.equal(result.quality.candidates[0].status, "unavailable");
+    assert.deepEqual(result.quality.candidates[0].warnings, [
+      "Candidate file path is outside the candidates directory.",
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runDesignCandidateQualityGate stringifies non Error review failures", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-quality-"));
+  try {
+    await writeManifest(dir, [successfulCandidate()]);
+    const result = await runDesignCandidateQualityGate({
+      runDir: dir,
+      reviewCandidate: async () => {
+        throw "string failure";
+      },
+    });
+
+    assert.equal(result.quality.candidates[0].status, "unavailable");
+    assert.match(result.quality.candidates[0].warnings[0], /string failure/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

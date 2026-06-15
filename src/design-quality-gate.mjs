@@ -1,5 +1,5 @@
 import { mkdir, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { normalizeDesignCandidateManifest, normalizeDesignCandidateQuality } from "./design-schemas.mjs";
 import { writeDesignJson } from "./design-run-store.mjs";
 
@@ -38,6 +38,10 @@ function stringList(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.trim()) : [];
 }
 
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function scoreCandidateReview({ candidateId, file, review }) {
   const scorecard = review?.design_scorecard && typeof review.design_scorecard === "object"
     ? review.design_scorecard
@@ -58,10 +62,16 @@ export function scoreCandidateReview({ candidateId, file, review }) {
 
 export function selectCandidateFromQuality(quality) {
   const candidates = Array.isArray(quality?.candidates) ? quality.candidates : [];
+  const statusRank = { pass: 0, warn: 1 };
   const usable = candidates
-    .filter((candidate) => candidate.status === "pass" || candidate.status === "warn")
-    .sort((left, right) => (right.score ?? -1) - (left.score ?? -1));
-  return usable[0]?.id ?? null;
+    .map((candidate, index) => ({ candidate, index }))
+    .filter((entry) => entry.candidate.status === "pass" || entry.candidate.status === "warn")
+    .sort((left, right) => (
+      statusRank[left.candidate.status] - statusRank[right.candidate.status]
+      || (right.candidate.score ?? -1) - (left.candidate.score ?? -1)
+      || left.index - right.index
+    ));
+  return usable[0]?.candidate.id ?? null;
 }
 
 export async function runDesignCandidateQualityGate({
@@ -76,12 +86,27 @@ export async function runDesignCandidateQualityGate({
   const manifest = normalizeDesignCandidateManifest(JSON.parse(
     await readFile(join(resolvedRunDir, "candidates", "manifest.json"), "utf8"),
   ));
-  const outputDir = join(resolvedRunDir, "candidates");
+  const outputDir = resolve(resolvedRunDir, "candidates");
   await mkdir(outputDir, { recursive: true });
 
   const qualityCandidates = [];
   const warnings = [];
   for (const candidate of manifest.candidates) {
+    const resolvedFilePath = isAbsolute(candidate.file) ? null : resolve(outputDir, candidate.file);
+    const fileIsContained = resolvedFilePath?.startsWith(`${outputDir}${sep}`) ?? false;
+    if (!fileIsContained) {
+      qualityCandidates.push({
+        id: candidate.id,
+        file: candidate.file,
+        score: null,
+        status: "unavailable",
+        strengths: [],
+        issues: [],
+        recommended_actions: [],
+        warnings: ["Candidate file path is outside the candidates directory."],
+      });
+      continue;
+    }
     if (candidate.status !== "success") {
       qualityCandidates.push({
         id: candidate.id,
@@ -98,7 +123,9 @@ export async function runDesignCandidateQualityGate({
     try {
       const review = await reviewCandidate({
         candidate,
-        filePath: join(outputDir, candidate.file),
+        cwd: outputDir,
+        file: candidate.file,
+        filePath: resolvedFilePath,
         telemetry,
       });
       qualityCandidates.push(scoreCandidateReview({
@@ -107,7 +134,7 @@ export async function runDesignCandidateQualityGate({
         review,
       }));
     } catch (error) {
-      const message = `Candidate quality review failed for ${candidate.id}: ${error.message}`;
+      const message = `Candidate quality review failed for ${candidate.id}: ${errorMessage(error)}`;
       warnings.push(message);
       qualityCandidates.push({
         id: candidate.id,
