@@ -1742,7 +1742,12 @@ function withDesignDraftContext(inputText, { references = [], targets = [] } = {
   return `${inputText.trim()}\n\n${additions.join("\n\n")}\n`;
 }
 
-function designCandidateQualityGate({ apiKey, env, telemetry }) {
+function designCandidateQualityGate({
+  apiKey,
+  env,
+  telemetry,
+  allowFakeResponse = false,
+}) {
   return ({ runDir }) => runDesignCandidateQualityGate({
     runDir,
     telemetry: {
@@ -1753,14 +1758,15 @@ function designCandidateQualityGate({ apiKey, env, telemetry }) {
         design_stage: "candidate-quality",
       },
     },
-    reviewCandidate: async ({ cwd, file }) => runArtifactReview({
+    reviewCandidate: async ({ cwd, file, telemetry: gateTelemetry }) => runArtifactReview({
       apiKey,
       cwd,
       env,
       file,
       artifactKind: "design",
       reviewDepth: "quick",
-      telemetry,
+      allowFakeResponse,
+      telemetry: gateTelemetry,
     }),
   });
 }
@@ -2426,6 +2432,7 @@ async function runDesignCommand(args) {
         apiKey: key.key,
         env: process.env,
         telemetry: { cwd: process.cwd(), source: "cli", command: "design-generate" },
+        allowFakeResponse: fakeAllowed,
       }),
       telemetry: { cwd: process.cwd(), source: "cli", command: "design-draft" },
     });
@@ -2526,6 +2533,10 @@ async function runDesignCommand(args) {
   if (subcommand === "generate") {
     const options = parseDesignGenerateArgs(subArgs);
     const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+    }
     const key = await resolveApiKey();
     if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
     const result = await runDesignGenerate({
@@ -2538,6 +2549,7 @@ async function runDesignCommand(args) {
         apiKey: key.key,
         env: process.env,
         telemetry: { cwd: process.cwd(), source: "cli", command: "design-generate" },
+        allowFakeResponse: fakeAllowed,
       }),
       telemetry: { cwd: process.cwd(), source: "cli", command: "design-generate" },
     });
