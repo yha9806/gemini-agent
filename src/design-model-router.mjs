@@ -1,6 +1,7 @@
 import { DEFAULT_GEMINI_MODEL } from "./gemini-client.mjs";
 
 export const DEFAULT_DESIGN_MODEL = DEFAULT_GEMINI_MODEL;
+export const DEFAULT_NANO_BANANA_MODEL = "gemini-3.1-flash-image";
 
 const SECRET_VALUE_PATTERN = /(AIza[0-9A-Za-z_-]+|secret|token|bearer\s+[0-9A-Za-z._-]+)/gi;
 
@@ -88,6 +89,8 @@ export async function designDoctor({
       image_model: models.image_model ? "present" : "missing",
       image_pro_model: models.image_pro_model ? "present" : "missing",
       vision_banana_endpoint: envString(env, "VISION_BANANA_ENDPOINT") ? "present" : "missing",
+      vision_banana_provider: envString(env, "VISION_BANANA_ENDPOINT") ? "configured" : "nano-banana-palette-mask",
+      nano_banana_model: envString(env, "GEMINI_IMAGE_MODEL") || DEFAULT_NANO_BANANA_MODEL,
     },
   };
 }

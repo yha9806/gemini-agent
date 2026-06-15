@@ -56,3 +56,14 @@ test("doctor reports safe model state without secrets", async () => {
   assert.equal(report.required_env.gemini_auth, "keychain or GEMINI_API_KEY");
   assert.doesNotMatch(JSON.stringify(report), /AIza|secret|token/i);
 });
+
+test("doctor reports Nano Banana as the Vision Banana compatible fallback", async () => {
+  const report = await designDoctor({
+    env: {},
+    probe: async () => ({ ok: null, status: "not_probed" }),
+  });
+
+  assert.equal(report.required_env.vision_banana_endpoint, "missing");
+  assert.equal(report.required_env.vision_banana_provider, "nano-banana-palette-mask");
+  assert.equal(report.required_env.nano_banana_model, "gemini-3.1-flash-image");
+});
