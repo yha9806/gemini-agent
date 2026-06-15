@@ -341,6 +341,40 @@ const fakeArtifactReview = JSON.stringify({
     omitted_sources: [],
   },
 });
+function fakeDesignArtifactReview({
+  implementationReadinessScore = 80,
+  recommendedActions = ["Proceed with normal verification."],
+  issues = [],
+} = {}) {
+  return JSON.stringify({
+    kind: "artifact_review",
+    artifact_type: "design",
+    summary: ["Dashboard screenshot"],
+    important_details: ["Primary action is visible"],
+    design_or_research_findings: ["Layout is readable"],
+    implementation_hints_for_codex: ["Use existing button styles"],
+    risks_or_ambiguities: [],
+    questions_for_user: [],
+    limitations: [],
+    design_scorecard: {
+      overall_score: implementationReadinessScore,
+      visual_hierarchy_score: 80,
+      clarity_score: 80,
+      accessibility_score: 80,
+      consistency_score: 80,
+      implementation_readiness_score: implementationReadinessScore,
+      strengths: [],
+      issues,
+      recommended_actions: recommendedActions,
+    },
+    metadata: {
+      model: "gemini-3.5-flash",
+      generated_at: "2026-06-15T00:00:00.000Z",
+      sources: [],
+      omitted_sources: [],
+    },
+  });
+}
 const fakeDesignBrief = JSON.stringify({
   kind: "design_brief",
   run_id: "20260614T120000000Z-fakeid",
@@ -525,6 +559,101 @@ test("design loop rejects actual screenshot without target before auth lookup", 
         return true;
       },
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design loop target actual comparison uses fake artifact review through visual gate", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-loop-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    const png = onePixelPng();
+    await writeFile(join(dir, "target.png"), png);
+    await writeFile(join(dir, "actual.png"), png);
+
+    const { stdout } = await execBin([
+      "design",
+      "loop",
+      "--run",
+      runId,
+      "--target-screenshot",
+      "target.png",
+      "--actual-screenshot",
+      "actual.png",
+    ], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignArtifactReview({
+          recommendedActions: ["Tighten spacing"],
+        }),
+      },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "reviewed");
+    assert.equal(parsed.visual_gate_verdict, "pass");
+    assert.equal(parsed.visual_gate_artifact_review_used, true);
+    assert.equal(parsed.visual_gate_fallback_used, false);
+    assert.equal(parsed.message, "Design loop review complete.");
+    const review = JSON.parse(await readFile(join(runDir, "loop-review.json"), "utf8"));
+    assert.equal(review.visual_gate.artifact_review.used, true);
+    assert.deepEqual(review.artifact_review.summary, ["Visual gate verdict: pass"]);
+    assert.deepEqual(review.artifact_review.suggested_changes, ["Tighten spacing"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design loop CLI surfaces blocking visual gate verdict", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-loop-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    const png = onePixelPng();
+    await writeFile(join(dir, "target.png"), png);
+    await writeFile(join(dir, "actual.png"), png);
+
+    const { stdout } = await execBin([
+      "design",
+      "loop",
+      "--run",
+      runId,
+      "--target-screenshot",
+      "target.png",
+      "--actual-screenshot",
+      "actual.png",
+    ], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignArtifactReview({
+          implementationReadinessScore: 40,
+          recommendedActions: ["Fix target drift"],
+        }),
+      },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "reviewed");
+    assert.equal(parsed.visual_gate_verdict, "block");
+    assert.equal(parsed.visual_gate_artifact_review_used, true);
+    assert.equal(parsed.visual_gate_fallback_used, false);
+    assert.match(parsed.message, /blocked/i);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

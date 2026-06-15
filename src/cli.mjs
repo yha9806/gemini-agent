@@ -2406,8 +2406,13 @@ async function runDesignCommand(args) {
   if (subcommand === "loop") {
     const options = parseDesignLoopArgs(subArgs);
     const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
+    const shouldReviewScreenshots = options.actualScreenshot && options.targetScreenshot;
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (shouldReviewScreenshots && process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+    }
     let apiKey;
-    if (options.actualScreenshot && options.targetScreenshot) {
+    if (shouldReviewScreenshots) {
       const key = await resolveApiKey();
       if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
       apiKey = key.key;
@@ -2418,12 +2423,32 @@ async function runDesignCommand(args) {
       actualScreenshot: options.actualScreenshot,
       maxIterations: options.maxIterations,
       apiKey,
+      visualGate: shouldReviewScreenshots
+        ? (gateInput) => runVisualGate({
+          ...gateInput,
+          artifactReview: (artifactOptions) => runArtifactReview({
+            ...artifactOptions,
+            env: process.env,
+            allowFakeResponse: fakeAllowed,
+          }),
+        })
+        : undefined,
       telemetry: { cwd: process.cwd(), source: "cli", command: "design-loop" },
     });
+    const gate = result.review.visual_gate
+      && typeof result.review.visual_gate === "object"
+      && !Array.isArray(result.review.visual_gate)
+      ? result.review.visual_gate
+      : null;
     output.write(`${JSON.stringify({
       status: result.review.status,
       loop_review: "loop-review.json",
       path: result.path,
+      ...(gate ? {
+        visual_gate_verdict: gate.verdict ?? null,
+        visual_gate_artifact_review_used: gate.artifact_review?.used === true,
+        visual_gate_fallback_used: gate.artifact_review?.fallback_used === true,
+      } : {}),
       message: result.message,
     }, null, 2)}\n`);
     return;

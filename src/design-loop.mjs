@@ -26,8 +26,21 @@ async function readNextActions(runDir) {
   return [
     "Run the target app or prototype.",
     "Capture the implemented UI screenshot.",
-    "Resume with --actual-screenshot <path>.",
+    "Resume with --target-screenshot <path> --actual-screenshot <path>.",
   ];
+}
+
+function messageForGate(gate) {
+  if (gate?.verdict === "block") {
+    return "Design loop visual gate blocked; inspect loop-review.json.";
+  }
+  if (gate?.verdict === "caution") {
+    return "Design loop review completed with visual cautions; inspect loop-review.json.";
+  }
+  if (gate?.artifact_review?.fallback_used === true) {
+    return "Design loop visual gate used fallback evidence; inspect loop-review.json.";
+  }
+  return "Design loop review complete.";
 }
 
 export async function runDesignLoop({
@@ -62,7 +75,7 @@ export async function runDesignLoop({
     return {
       review,
       path,
-      message: "Provide an actual screenshot with --actual-screenshot to resume design loop review.",
+      message: "Provide target screenshot and actual screenshot with --target-screenshot and --actual-screenshot to resume design loop review.",
     };
   }
 
@@ -88,7 +101,7 @@ export async function runDesignLoop({
   const nextActions = Array.isArray(gate?.next_actions) ? gate.next_actions : [];
   const artifact = gate?.artifact_review?.used ? {
     verdict: gate.verdict,
-    summary: nextActions,
+    summary: [`Visual gate verdict: ${gate.verdict}`],
     suggested_changes: nextActions,
   } : null;
 
@@ -108,6 +121,6 @@ export async function runDesignLoop({
   return {
     review,
     path,
-    message: "Design loop review complete.",
+    message: messageForGate(gate),
   };
 }

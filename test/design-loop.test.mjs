@@ -26,6 +26,24 @@ test("runDesignLoop exits resumable when actual screenshot is missing", async ()
   }
 });
 
+test("runDesignLoop default resume guidance requires target and actual screenshots", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-loop-"));
+  try {
+    await writeFile(join(dir, "brief.json"), JSON.stringify({ run_id: "20260614T120000000Z-abcdef" }));
+    const result = await runDesignLoop({ runDir: dir, maxIterations: 2 });
+
+    assert.match(result.message, /target screenshot/i);
+    assert.match(result.message, /actual screenshot/i);
+    assert.deepEqual(result.review.next_actions, [
+      "Run the target app or prototype.",
+      "Capture the implemented UI screenshot.",
+      "Resume with --target-screenshot <path> --actual-screenshot <path>.",
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runDesignLoop compares target and actual screenshots", async () => {
   const dir = await mkdtemp(join(tmpdir(), "design-loop-"));
   try {
@@ -86,6 +104,8 @@ test("runDesignLoop compares target and actual screenshots", async () => {
     assert.equal(result.review.visual_gate.verdict, "caution");
     assert.equal(result.review.summary[0], "Visual gate verdict: caution");
     assert.deepEqual(result.review.next_actions, ["Tighten spacing"]);
+    assert.deepEqual(result.review.artifact_review.summary, ["Visual gate verdict: caution"]);
+    assert.deepEqual(result.review.artifact_review.suggested_changes, ["Tighten spacing"]);
     assert.equal(JSON.parse(await readFile(join(dir, "loop-review.json"), "utf8")).visual_gate.verdict, "caution");
   } finally {
     await rm(dir, { recursive: true, force: true });
