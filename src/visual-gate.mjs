@@ -73,6 +73,12 @@ function limitationsFor({ smokeOnly, route, artifactReview }) {
   return limitations.slice(0, LIMITATION_LIMIT);
 }
 
+function fallbackLimitations({ smokeOnly, route, artifactReviewFailed }) {
+  const limitations = limitationsFor({ smokeOnly, route, artifactReview: null });
+  if (artifactReviewFailed) limitations.unshift("Gemini artifact review failed; using local smoke evidence only.");
+  return limitations.slice(0, LIMITATION_LIMIT);
+}
+
 function smokeCheckCounts(checks) {
   const counts = {};
   for (const check of Array.isArray(checks) ? checks : []) {
@@ -144,6 +150,7 @@ async function captureVisualGateTelemetry({
   artifactReviewUsed,
   artifactReviewMode,
   artifactReviewDepth,
+  fallbackUsed = false,
   now,
 }) {
   if (!telemetry) return;
@@ -165,11 +172,12 @@ async function captureVisualGateTelemetry({
       artifactReviewUsed,
       artifactReviewMode,
       artifactReviewDepth,
+      fallbackUsed,
       issues: result.issues,
       verdict: result.verdict,
       phase: "final",
     }),
-  });
+  }).catch(() => null);
 }
 
 export async function runVisualGate({
@@ -213,40 +221,46 @@ export async function runVisualGate({
   let review = null;
   let scorecard = null;
   let issues = [];
+  let artifactReviewFailed = false;
 
   if (!smokeOnly && smoke.status !== "block" && route.routing !== "skip") {
-    review = await artifactReview({
-      apiKey,
-      cwd,
-      file: screenshots[0]?.path,
-      files: screenshots.map((item) => item.path),
-      artifactKind: kind,
-      reviewMode: mode,
-      reviewDepth: depth,
-      telemetry: telemetry ? {
-        ...telemetry,
-        command: telemetry.command || "visual-gate",
-        metadata: {
-          ...(telemetry.metadata && typeof telemetry.metadata === "object" ? telemetry.metadata : {}),
-          ...visualGateTelemetryMetadata({
-            route,
-            posture,
-            smoke,
-            artifactReviewUsed: true,
-            artifactReviewMode: mode,
-            artifactReviewDepth: depth,
-            issues,
-          }),
-        },
-      } : telemetry,
-    });
-    scorecard = artifactScorecard(review);
-    issues = issuesFromArtifactReview(review);
+    try {
+      review = await artifactReview({
+        apiKey,
+        cwd,
+        file: screenshots[0]?.path,
+        files: screenshots.map((item) => item.path),
+        artifactKind: kind,
+        reviewMode: mode,
+        reviewDepth: depth,
+        telemetry: telemetry ? {
+          ...telemetry,
+          command: telemetry.command || "visual-gate",
+          metadata: {
+            ...(telemetry.metadata && typeof telemetry.metadata === "object" ? telemetry.metadata : {}),
+            ...visualGateTelemetryMetadata({
+              route,
+              posture,
+              smoke,
+              artifactReviewUsed: true,
+              artifactReviewMode: mode,
+              artifactReviewDepth: depth,
+              issues,
+            }),
+          },
+        } : telemetry,
+      });
+      scorecard = artifactScorecard(review);
+      issues = issuesFromArtifactReview(review);
+    } catch {
+      artifactReviewFailed = true;
+      posture = "standard_fallback";
+    }
   }
 
-  const verdict = visualGateVerdictFromSignals({
+  const verdict = artifactReviewFailed && route.routing === "required" ? "block" : visualGateVerdictFromSignals({
     routing: route.routing,
-    smokeStatus: smoke.status,
+    smokeStatus: artifactReviewFailed && smoke.status === "pass" ? "caution" : smoke.status,
     scorecard,
     issues,
   });
@@ -261,12 +275,12 @@ export async function runVisualGate({
       used: Boolean(review),
       mode: review ? mode : null,
       depth: review ? depth : null,
-      fallback_used: false,
+      fallback_used: artifactReviewFailed,
       scorecard,
     },
     issues,
     next_actions: nextActions({ verdict, artifactReview: review }),
-    limitations: limitationsFor({ smokeOnly, route, artifactReview: review }),
+    limitations: fallbackLimitations({ smokeOnly, route, artifactReviewFailed }),
     metadata: {
       generated_at: now.toISOString(),
       artifact_review_readiness_status: "unknown",
@@ -284,6 +298,7 @@ export async function runVisualGate({
     artifactReviewUsed: Boolean(review),
     artifactReviewMode: review ? mode : null,
     artifactReviewDepth: review ? depth : null,
+    fallbackUsed: artifactReviewFailed,
     now,
   });
 

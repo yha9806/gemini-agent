@@ -342,20 +342,25 @@ test("runVisualGate uses quick comparison review for target and actual screensho
   assert.equal(seenInput.reviewMode, "comparison");
   assert.equal(seenInput.reviewDepth, "quick");
   assert.equal(seenInput.telemetry.command, "visual-gate");
-  assert.deepEqual(seenInput.telemetry.metadata.visual_gate, {
+  assert.deepEqual({
+    ...seenInput.telemetry.metadata.visual_gate,
+    smoke_check_counts: undefined,
+  }, {
     phase: "pre_gemini",
     risk_level: "high",
     risk_reasons: ["design_implementation", "target_actual_comparison"],
     routing: "required",
     review_posture: "comparison_review",
     smoke_status: "pass",
-    smoke_check_counts: { pass: 8 },
+    smoke_check_counts: undefined,
     artifact_review_used: true,
     artifact_review_mode: "comparison",
     artifact_review_depth: "quick",
     fallback_used: false,
     issue_category_counts: {},
   });
+  assert.ok(seenInput.telemetry.metadata.visual_gate.smoke_check_counts.pass >= 8);
+  assert.equal(seenInput.telemetry.metadata.visual_gate.smoke_check_counts.block, undefined);
   assert.equal(result.verdict, "pass");
   assert.equal(result.review_posture, "comparison_review");
   assert.equal(result.artifact_review.scorecard.implementation_readiness_score, 81);
@@ -423,4 +428,60 @@ test("runVisualGate final telemetry records post-review issue counts", async () 
   assert.equal(captures[0].metadata.visual_gate.review_posture, "quick_review");
   assert.equal(captures[0].metadata.visual_gate.artifact_review_used, true);
   assert.doesNotMatch(JSON.stringify(captures[0].metadata), /after\.png|\/tmp|\/Users|prompt|response/);
+});
+
+test("runVisualGate returns normalized fallback when artifact review fails", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
+  await writeFile(join(dir, "after.png"), minimalPng);
+  const captures = [];
+
+  const result = await runVisualGate({
+    apiKey: "fake-key",
+    cwd: dir,
+    actualScreenshot: "after.png",
+    riskHints: ["css-change"],
+    telemetry: {
+      cwd: dir,
+      source: "cli",
+      command: "visual-gate",
+      capture: async (event) => {
+        captures.push(event);
+        return { queued: true };
+      },
+    },
+    artifactReview: async () => {
+      throw new Error("Gemini timeout /Users/alice/private.png");
+    },
+  });
+
+  assert.equal(result.verdict, "caution");
+  assert.equal(result.review_posture, "standard_fallback");
+  assert.equal(result.artifact_review.used, false);
+  assert.equal(result.artifact_review.fallback_used, true);
+  assert.match(result.limitations.join("\n"), /Gemini artifact review failed/);
+  assert.equal(captures[0].metadata.visual_gate.fallback_used, true);
+  assert.equal(captures[0].metadata.visual_gate.verdict, "caution");
+  assert.doesNotMatch(JSON.stringify(result), /Gemini timeout|\/Users|private\.png/);
+});
+
+test("runVisualGate ignores final telemetry capture failures", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
+  await writeFile(join(dir, "after.png"), minimalPng);
+
+  const result = await runVisualGate({
+    cwd: dir,
+    actualScreenshot: "after.png",
+    smokeOnly: true,
+    telemetry: {
+      cwd: dir,
+      source: "cli",
+      command: "visual-gate",
+      capture: async () => {
+        throw new Error("telemetry failed");
+      },
+    },
+  });
+
+  assert.equal(result.kind, "visual_review_gate");
+  assert.equal(result.verdict, "pass");
 });
