@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PNG } from "pngjs";
+import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
+import { runTelemetrySummary } from "../src/telemetry-summary.mjs";
 import { runVisualGate } from "../src/visual-gate.mjs";
 import { collectVisualGateSmoke } from "../src/visual-gate-smoke.mjs";
 import {
@@ -482,7 +484,40 @@ test("runVisualGate smoke-only telemetry records final safe metadata", async () 
   assert.equal(captures[0].metadata.visual_gate.review_posture, "smoke_only");
   assert.equal(captures[0].metadata.visual_gate.smoke_status, "pass");
   assert.equal(captures[0].metadata.visual_gate.phase, "final");
+  assert.deepEqual(captures[0].outcome, {
+    task_outcome: "success",
+    user_acceptance: "not_applicable",
+    followup_required: false,
+  });
   assert.doesNotMatch(JSON.stringify(captures[0].metadata), /after\.png|\/tmp|\/Users|prompt|response/);
+});
+
+test("runVisualGate queues final telemetry into configured summary", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
+  await writeFile(join(dir, "after.png"), minimalPng);
+  await saveTelemetryConfig({
+    cwd: dir,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: "GEMINI_AGENT_TEST_TOKEN",
+    deploymentId: "gemini-agent-test",
+    now: new Date("2026-06-15T00:00:00.000Z"),
+  });
+
+  const result = await runVisualGate({
+    cwd: dir,
+    actualScreenshot: "after.png",
+    smokeOnly: true,
+    now: new Date("2026-06-15T00:00:00.000Z"),
+  });
+
+  assert.equal(result.verdict, "pass");
+  const summary = await runTelemetrySummary({ cwd: dir, scope: "local" });
+  assert.deepEqual(summary.visual_gate, {
+    event_count: 1,
+    verdict_counts: [{ verdict: "pass", event_count: 1 }],
+    review_postures: [{ review_posture: "smoke_only", event_count: 1 }],
+    issue_categories: [],
+  });
 });
 
 test("runVisualGate returns normalized fallback when artifact review fails", async () => {

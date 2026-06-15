@@ -140,6 +140,35 @@ function visualGateTelemetryMetadata({
   return { visual_gate: metadata };
 }
 
+function visualGateTelemetryOutcome(verdict) {
+  if (verdict === "pass") {
+    return {
+      task_outcome: "success",
+      user_acceptance: "not_applicable",
+      followup_required: false,
+    };
+  }
+  if (verdict === "caution") {
+    return {
+      task_outcome: "partial",
+      user_acceptance: "not_applicable",
+      followup_required: true,
+    };
+  }
+  if (verdict === "block") {
+    return {
+      task_outcome: "blocked",
+      user_acceptance: "not_applicable",
+      followup_required: true,
+    };
+  }
+  return {
+    task_outcome: "unknown",
+    user_acceptance: "not_applicable",
+    followup_required: null,
+  };
+}
+
 async function captureVisualGateTelemetry({
   cwd,
   telemetry,
@@ -164,7 +193,7 @@ async function captureVisualGateTelemetry({
     status: "success",
     latencyMs: 0,
     now,
-    outcome: { verdict: result.verdict },
+    outcome: visualGateTelemetryOutcome(result.verdict),
     metadata: visualGateTelemetryMetadata({
       route,
       posture,
