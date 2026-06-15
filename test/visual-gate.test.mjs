@@ -342,7 +342,20 @@ test("runVisualGate uses quick comparison review for target and actual screensho
   assert.equal(seenInput.reviewMode, "comparison");
   assert.equal(seenInput.reviewDepth, "quick");
   assert.equal(seenInput.telemetry.command, "visual-gate");
-  assert.equal(seenInput.telemetry.metadata.visual_gate.risk_level, "high");
+  assert.deepEqual(seenInput.telemetry.metadata.visual_gate, {
+    phase: "pre_gemini",
+    risk_level: "high",
+    risk_reasons: ["design_implementation", "target_actual_comparison"],
+    routing: "required",
+    review_posture: "comparison_review",
+    smoke_status: "pass",
+    smoke_check_counts: { pass: 8 },
+    artifact_review_used: true,
+    artifact_review_mode: "comparison",
+    artifact_review_depth: "quick",
+    fallback_used: false,
+    issue_category_counts: {},
+  });
   assert.equal(result.verdict, "pass");
   assert.equal(result.review_posture, "comparison_review");
   assert.equal(result.artifact_review.scorecard.implementation_readiness_score, 81);
@@ -370,4 +383,44 @@ test("runVisualGate maps weak artifact scorecard to caution", async () => {
 
   assert.equal(result.verdict, "caution");
   assert.equal(result.review_posture, "quick_review");
+});
+
+test("runVisualGate final telemetry records post-review issue counts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
+  await writeFile(join(dir, "after.png"), minimalPng);
+  const captures = [];
+
+  const result = await runVisualGate({
+    apiKey: "fake-key",
+    cwd: dir,
+    actualScreenshot: "after.png",
+    riskHints: ["css-change"],
+    telemetry: {
+      cwd: dir,
+      source: "cli",
+      command: "visual-gate",
+      capture: async (event) => {
+        captures.push(event);
+        return { queued: true };
+      },
+    },
+    artifactReview: async () => ({
+      ...fakeArtifactReview,
+      design_scorecard: {
+        ...fakeArtifactReview.design_scorecard,
+        issues: ["label overlaps /Users/alice/private.png"],
+      },
+    }),
+  });
+
+  assert.equal(result.verdict, "caution");
+  assert.equal(captures.length, 1);
+  assert.deepEqual(captures[0].metadata.visual_gate.issue_category_counts, {
+    uncertain_visual_evidence: 1,
+  });
+  assert.equal(captures[0].metadata.visual_gate.verdict, "caution");
+  assert.equal(captures[0].metadata.visual_gate.phase, "final");
+  assert.equal(captures[0].metadata.visual_gate.review_posture, "quick_review");
+  assert.equal(captures[0].metadata.visual_gate.artifact_review_used, true);
+  assert.doesNotMatch(JSON.stringify(captures[0].metadata), /after\.png|\/tmp|\/Users|prompt|response/);
 });

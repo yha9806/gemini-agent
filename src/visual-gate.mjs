@@ -113,25 +113,39 @@ function visualGateTelemetryMetadata({
   artifactReviewDepth,
   fallbackUsed = false,
   issues = [],
+  verdict = null,
+  phase = "pre_gemini",
 }) {
-  return {
-    visual_gate: {
-      risk_level: route.risk_level,
-      risk_reasons: route.risk_reasons,
-      routing: route.routing,
-      review_posture: posture,
-      smoke_status: smoke.status,
-      smoke_check_counts: smokeCheckCounts(smoke.checks),
-      artifact_review_used: Boolean(artifactReviewUsed),
-      artifact_review_mode: artifactReviewUsed ? artifactReviewMode : null,
-      artifact_review_depth: artifactReviewUsed ? artifactReviewDepth : null,
-      fallback_used: Boolean(fallbackUsed),
-      issue_category_counts: issueCategoryCounts(issues),
-    },
+  const metadata = {
+    phase,
+    risk_level: route.risk_level,
+    risk_reasons: route.risk_reasons,
+    routing: route.routing,
+    review_posture: posture,
+    smoke_status: smoke.status,
+    smoke_check_counts: smokeCheckCounts(smoke.checks),
+    artifact_review_used: Boolean(artifactReviewUsed),
+    artifact_review_mode: artifactReviewUsed ? artifactReviewMode : null,
+    artifact_review_depth: artifactReviewUsed ? artifactReviewDepth : null,
+    fallback_used: Boolean(fallbackUsed),
+    issue_category_counts: issueCategoryCounts(issues),
   };
+  if (verdict) metadata.verdict = verdict;
+  return { visual_gate: metadata };
 }
 
-async function captureSmokeOnlyTelemetry({ cwd, telemetry, route, posture, smoke, result, now }) {
+async function captureVisualGateTelemetry({
+  cwd,
+  telemetry,
+  route,
+  posture,
+  smoke,
+  result,
+  artifactReviewUsed,
+  artifactReviewMode,
+  artifactReviewDepth,
+  now,
+}) {
   if (!telemetry) return;
   const capture = telemetry.capture ?? captureGeminiTelemetry;
   await capture({
@@ -139,18 +153,21 @@ async function captureSmokeOnlyTelemetry({ cwd, telemetry, route, posture, smoke
     source: telemetry.source ?? "cli",
     command: telemetry.command ?? "visual-gate",
     prompt: "",
-    response: JSON.stringify({ verdict: result.verdict }),
+    response: "",
     status: "success",
     latencyMs: 0,
     now,
+    outcome: { verdict: result.verdict },
     metadata: visualGateTelemetryMetadata({
       route,
       posture,
       smoke,
-      artifactReviewUsed: false,
-      artifactReviewMode: null,
-      artifactReviewDepth: null,
+      artifactReviewUsed,
+      artifactReviewMode,
+      artifactReviewDepth,
       issues: result.issues,
+      verdict: result.verdict,
+      phase: "final",
     }),
   });
 }
@@ -257,9 +274,18 @@ export async function runVisualGate({
     },
   });
 
-  if (smokeOnly && telemetry) {
-    await captureSmokeOnlyTelemetry({ cwd, telemetry, route, posture, smoke, result, now });
-  }
+  await captureVisualGateTelemetry({
+    cwd,
+    telemetry,
+    route,
+    posture,
+    smoke,
+    result,
+    artifactReviewUsed: Boolean(review),
+    artifactReviewMode: review ? mode : null,
+    artifactReviewDepth: review ? depth : null,
+    now,
+  });
 
   return result;
 }
