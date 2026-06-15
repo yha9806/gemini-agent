@@ -2485,6 +2485,10 @@ async function runDesignCommand(args) {
     });
     output.write(`${JSON.stringify({
       provider: result.provider,
+      requested_provider: result.requestedProvider,
+      resolved_provider: result.resolvedProvider,
+      fallback_used: result.fallbackUsed,
+      ...(result.fallbackReason ? { fallback_reason: result.fallbackReason } : {}),
       perception: "perceive/perception.json",
     }, null, 2)}\n`);
     return;

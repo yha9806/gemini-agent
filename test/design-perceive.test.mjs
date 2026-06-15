@@ -96,7 +96,15 @@ test("vision-banana provider falls back to palette-mask when endpoint is missing
     });
 
     assert.equal(result.provider, "palette-mask");
+    assert.equal(result.requestedProvider, "vision-banana");
+    assert.equal(result.resolvedProvider, "palette-mask");
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackReason, "missing_vision_banana_endpoint");
     assert.equal(result.perception.provider, "palette-mask");
+    assert.equal(result.perception.metadata.requested_provider, "vision-banana");
+    assert.equal(result.perception.metadata.resolved_provider, "palette-mask");
+    assert.equal(result.perception.metadata.provider_fallback_used, true);
+    assert.equal(result.perception.metadata.provider_fallback_reason, "missing_vision_banana_endpoint");
     assert.equal(result.perception.regions[0].id, "hero");
     assert.match(result.perception.warnings.join("\n"), /Vision Banana endpoint missing.*palette-mask fallback/);
   } finally {
@@ -104,13 +112,13 @@ test("vision-banana provider falls back to palette-mask when endpoint is missing
   }
 });
 
-test("vision-banana provider fails clearly when unconfigured", async () => {
+test("vision-banana provider fails clearly when unconfigured without targets", async () => {
   await assert.rejects(() => runDesignPerceive({
     runDir: "/tmp/run",
     file: "screen.png",
     provider: "vision-banana",
     env: {},
-  }), /Vision Banana provider is not configured/);
+  }), /Vision Banana provider is not configured.*--provider gemini-vision.*--target "header: top navigation and primary controls"/s);
 });
 
 test("vision-banana provider reports HTTP failures", async () => {

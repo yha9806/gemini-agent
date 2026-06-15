@@ -977,6 +977,9 @@ test("design perceive vision-banana writes perception without Gemini auth", asyn
     const parsed = JSON.parse(stdout);
     assert.deepEqual(parsed, {
       provider: "vision-banana",
+      requested_provider: "vision-banana",
+      resolved_provider: "vision-banana",
+      fallback_used: false,
       perception: "perceive/perception.json",
     });
     assert.deepEqual(requestBody, {

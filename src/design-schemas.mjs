@@ -223,6 +223,7 @@ export const DesignPerceptionZodSchema = z.object({
   implementation_constraints: StringList,
   confidence: NullableUnitNumber.default(null),
   warnings: StringList,
+  metadata: Metadata,
 });
 
 export const DesignPrototypeManifestZodSchema = z.object({

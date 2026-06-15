@@ -34,7 +34,7 @@ function layerByName(layers = []) {
     .map((layer) => [String(layer.name), layer]));
 }
 
-function perceptionDefaults({ runId, provider, source }) {
+function perceptionDefaults({ runId, provider, source, metadata = {} }) {
   return {
     kind: "design_perception",
     run_id: runId,
@@ -46,7 +46,25 @@ function perceptionDefaults({ runId, provider, source }) {
     implementation_constraints: [],
     confidence: null,
     warnings: [],
+    metadata,
   };
+}
+
+function routeMetadata({ provider, selected, providerFallbackWarning }) {
+  return {
+    requested_provider: provider,
+    resolved_provider: selected,
+    provider_fallback_used: Boolean(providerFallbackWarning),
+    ...(providerFallbackWarning ? { provider_fallback_reason: "missing_vision_banana_endpoint" } : {}),
+  };
+}
+
+function unconfiguredVisionBananaMessage() {
+  return [
+    "Vision Banana provider is not configured.",
+    "Set VISION_BANANA_ENDPOINT, choose --provider gemini-vision, or add at least one quoted target for the Nano Banana palette-mask fallback:",
+    "  --target \"header: top navigation and primary controls\"",
+  ].join("\n");
 }
 
 function perceptionTelemetry({ telemetry, provider, selected, providerFallbackWarning }) {
@@ -70,6 +88,7 @@ async function callVisionBanana({
   file,
   runId,
   targets,
+  metadata,
   fetchImpl,
   timeoutMs = VISION_BANANA_TIMEOUT_MS,
 }) {
@@ -99,12 +118,17 @@ async function callVisionBanana({
     }
 
     const generated = await response.json();
+    const generatedObject = plainObject(generated);
     return normalizeDesignPerception({
-      ...perceptionDefaults({ runId, provider: "vision-banana", source: file }),
-      ...plainObject(generated),
-      run_id: plainObject(generated).run_id ?? runId,
+      ...perceptionDefaults({ runId, provider: "vision-banana", source: file, metadata }),
+      ...generatedObject,
+      run_id: generatedObject.run_id ?? runId,
       provider: "vision-banana",
-      source: plainObject(generated).source ?? file,
+      source: generatedObject.source ?? file,
+      metadata: {
+        ...plainObject(generatedObject.metadata),
+        ...metadata,
+      },
     });
   } catch (error) {
     if (error?.name === "AbortError") {
@@ -147,7 +171,7 @@ export async function runDesignPerceive({
   }
   if (selected === "vision-banana" && !env.VISION_BANANA_ENDPOINT) {
     if (targets.length === 0) {
-      throw new Error("Vision Banana provider is not configured; set VISION_BANANA_ENDPOINT or choose another provider.");
+      throw new Error(unconfiguredVisionBananaMessage());
     }
     selected = "palette-mask";
     providerFallbackWarning = "Vision Banana endpoint missing; used palette-mask fallback.";
@@ -186,7 +210,12 @@ export async function runDesignPerceive({
       };
     });
     perception = normalizeDesignPerception({
-      ...perceptionDefaults({ runId, provider: "palette-mask", source: file }),
+      ...perceptionDefaults({
+        runId,
+        provider: "palette-mask",
+        source: file,
+        metadata: routeMetadata({ provider, selected, providerFallbackWarning }),
+      }),
       regions,
       hierarchy: regions.map((region) => region.id),
       warnings: [
@@ -200,6 +229,7 @@ export async function runDesignPerceive({
       file,
       runId,
       targets,
+      metadata: routeMetadata({ provider, selected, providerFallbackWarning }),
       fetchImpl,
       timeoutMs,
     });
@@ -213,12 +243,18 @@ export async function runDesignPerceive({
       targets,
       telemetry,
     });
+    const generatedObject = plainObject(generated);
+    const metadata = routeMetadata({ provider, selected, providerFallbackWarning });
     perception = normalizeDesignPerception({
-      ...perceptionDefaults({ runId, provider: selected, source: file }),
-      ...plainObject(generated),
-      run_id: plainObject(generated).run_id ?? runId,
+      ...perceptionDefaults({ runId, provider: selected, source: file, metadata }),
+      ...generatedObject,
+      run_id: generatedObject.run_id ?? runId,
       provider: selected,
-      source: plainObject(generated).source ?? file,
+      source: generatedObject.source ?? file,
+      metadata: {
+        ...plainObject(generatedObject.metadata),
+        ...metadata,
+      },
     });
   }
 
@@ -230,6 +266,10 @@ export async function runDesignPerceive({
 
   return {
     provider: selected,
+    requestedProvider: provider,
+    resolvedProvider: selected,
+    fallbackUsed: Boolean(providerFallbackWarning),
+    fallbackReason: providerFallbackWarning ? "missing_vision_banana_endpoint" : null,
     perception,
     outputDir,
     perceptionPath,
