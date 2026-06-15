@@ -827,6 +827,55 @@ test("design perceive rejects invalid provider before auth lookup", async () => 
   );
 });
 
+test("design perceive target format error explains quoting", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "perceive",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--file",
+      "screen.png",
+      "--target",
+      "hero:",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Target must use "name: description" format/);
+      assert.match(error.stderr, /quote targets with spaces/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
+test("design perceive invalid provider is rejected after parsing all args", async () => {
+  await assert.rejects(
+    () => execBin([
+      "design",
+      "perceive",
+      "--provider",
+      "unknown",
+      "--run",
+      "20260614T120000000Z-abcdef",
+      "--file",
+      "screen.png",
+      "--target",
+      "hero: main area",
+    ], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--provider must be auto, palette-mask, gemini-vision, or vision-banana\./);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
+});
+
 test("design perceive rejects palette-mask missing target before auth lookup", async () => {
   await assert.rejects(
     () => execBin([

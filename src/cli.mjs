@@ -1891,16 +1891,18 @@ function parseDesignDoctorArgs(args) {
   return options;
 }
 
+const DESIGN_PERCEIVE_TARGET_HELP = "Target values must be quoted when they contain spaces; quote targets with spaces, for example: --target \"hero: main area\".";
+
 function validateDesignPerceiveTarget(target) {
   const value = String(target ?? "");
   const separator = value.indexOf(":");
   if (separator < 1) {
-    throw new Error(`Target must use "name: description" format: ${value}`);
+    throw new Error(`Target must use "name: description" format: ${value}. ${DESIGN_PERCEIVE_TARGET_HELP}`);
   }
   const name = value.slice(0, separator).trim();
   const description = value.slice(separator + 1).trim();
   if (!name || !description || !/^[A-Za-z0-9_-]+$/u.test(name)) {
-    throw new Error(`Target must use "name: description" format: ${value}`);
+    throw new Error(`Target must use "name: description" format: ${value}. ${DESIGN_PERCEIVE_TARGET_HELP}`);
   }
 }
 
@@ -1934,7 +1936,6 @@ function parseDesignPerceiveArgs(args) {
         throw new Error("--provider must be auto, palette-mask, gemini-vision, or vision-banana.");
       }
       options.provider = value;
-      selectPerceptionProvider({ provider: options.provider, targets: options.targets });
       index += 1;
     } else {
       throw new Error(`Unknown design perceive argument: ${arg}`);
