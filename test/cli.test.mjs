@@ -484,6 +484,8 @@ test("design doctor reports model state without auth lookup or live probe", asyn
   assert.equal(parsed.ok, true);
   assert.equal(parsed.probes.design_model.status, "not_probed");
   assert.equal(parsed.probes.image_model.status, "not_configured");
+  assert.equal(parsed.required_env.vision_banana_compatible_fallback, "available");
+  assert.equal(parsed.required_env.visual_quality_gate, "available");
   assert.doesNotMatch(stdout, /Gemini API key/);
 });
 

@@ -65,5 +65,7 @@ test("doctor reports Nano Banana as the Vision Banana compatible fallback", asyn
 
   assert.equal(report.required_env.vision_banana_endpoint, "missing");
   assert.equal(report.required_env.vision_banana_provider, "nano-banana-palette-mask");
+  assert.equal(report.required_env.vision_banana_compatible_fallback, "available");
+  assert.equal(report.required_env.visual_quality_gate, "available");
   assert.equal(report.required_env.nano_banana_model, "gemini-3.1-flash-image");
 });

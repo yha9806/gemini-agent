@@ -90,6 +90,8 @@ export async function designDoctor({
       image_pro_model: models.image_pro_model ? "present" : "missing",
       vision_banana_endpoint: envString(env, "VISION_BANANA_ENDPOINT") ? "present" : "missing",
       vision_banana_provider: envString(env, "VISION_BANANA_ENDPOINT") ? "configured" : "nano-banana-palette-mask",
+      vision_banana_compatible_fallback: "available",
+      visual_quality_gate: "available",
       nano_banana_model: envString(env, "GEMINI_IMAGE_MODEL") || DEFAULT_NANO_BANANA_MODEL,
     },
   };
