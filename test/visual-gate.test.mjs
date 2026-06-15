@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { collectVisualGateSmoke } from "../src/visual-gate-smoke.mjs";
 import {
   normalizeVisualGateResult,
   visualGateToPrettyJson,
@@ -152,4 +156,69 @@ test("visualGateToPrettyJson sanitizes unsafe free-text fields", () => {
 
   assert.doesNotMatch(text, /\/Users|event_id|prompt|response|Authorization|secret-token/);
   assert.match(text, /redacted unsafe visual gate text/);
+});
+
+const minimalPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+test("collectVisualGateSmoke returns safe media summary for readable screenshot", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-smoke-"));
+  await writeFile(join(dir, "after.png"), minimalPng);
+
+  const smoke = await collectVisualGateSmoke({
+    cwd: dir,
+    screenshots: [{ role: "actual", path: "after.png" }],
+  });
+
+  assert.equal(smoke.status, "pass");
+  assert.deepEqual(smoke.media_summary, [{
+    role: "actual",
+    mime_type: "image/png",
+    byte_size: minimalPng.length,
+    width: null,
+    height: null,
+    media_kind: "screenshot",
+  }]);
+  assert.ok(smoke.checks.some((check) => check.name === "file_readable" && check.status === "pass"));
+  assert.doesNotMatch(JSON.stringify(smoke), /after\.png|\/tmp|LOCAL_HOME_PATH/);
+});
+
+test("collectVisualGateSmoke blocks unsupported files before Gemini", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-smoke-"));
+  await writeFile(join(dir, "archive.zip"), "zip");
+
+  const smoke = await collectVisualGateSmoke({
+    cwd: dir,
+    screenshots: [{ role: "actual", path: "archive.zip" }],
+  });
+
+  assert.equal(smoke.status, "block");
+  assert.ok(smoke.checks.some((check) => check.name === "mime_supported" && check.status === "block"));
+});
+
+test("collectVisualGateSmoke blocks missing actual screenshot", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-smoke-"));
+
+  const smoke = await collectVisualGateSmoke({
+    cwd: dir,
+    screenshots: [{ role: "actual", path: "missing.png" }],
+  });
+
+  assert.equal(smoke.status, "block");
+  assert.ok(smoke.checks.some((check) => check.name === "file_readable" && check.status === "block"));
+});
+
+test("collectVisualGateSmoke cautions instead of crashing when dimensions fail", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-smoke-"));
+  await writeFile(join(dir, "after.png"), minimalPng);
+
+  const smoke = await collectVisualGateSmoke({
+    cwd: dir,
+    screenshots: [{ role: "actual", path: "after.png" }],
+    readDimensions: async () => {
+      throw new Error("decode failed");
+    },
+  });
+
+  assert.equal(smoke.status, "caution");
+  assert.ok(smoke.checks.some((check) => check.name === "dimensions" && check.status === "caution"));
 });
