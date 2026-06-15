@@ -163,6 +163,7 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
   });
   assert.deepEqual(result.visual_gate, {
     command_event_count: 0,
+    command_events_missing_phase_count: 0,
     event_count: 0,
     final_event_count: 0,
     phase_counts: [],
@@ -485,6 +486,7 @@ test("runTelemetrySummary aggregates visual gate metadata safely", async () => {
 
   assert.deepEqual(summary.visual_gate, {
     command_event_count: 2,
+    command_events_missing_phase_count: 0,
     event_count: 1,
     final_event_count: 1,
     phase_counts: [

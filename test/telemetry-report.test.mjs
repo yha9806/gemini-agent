@@ -372,16 +372,31 @@ test("runTelemetryReport explains visual gate final-outcome scope", async () => 
         },
       }),
     });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(11, {
+        command: "visual-gate",
+        prompt: "private visual missing phase prompt",
+        response: "private visual missing phase response",
+        metadata: {
+          visual_gate: {
+            verdict: "block",
+            review_posture: "blocked_before_gemini",
+          },
+        },
+      }),
+    });
 
     const report = await runTelemetryReport({ cwd, scope: "local" });
     const text = formatTelemetryReportText(report);
     const serialized = `${JSON.stringify(report)}\n${text}`;
 
     assert.deepEqual(report.visual_gate, {
-      command_event_count: 2,
+      command_event_count: 3,
+      command_events_missing_phase_count: 1,
       event_count: 1,
       final_event_count: 1,
-      final_event_rate: 0.5,
+      final_event_rate: 0.3333,
       phase_counts: [
         { phase: "final", event_count: 1 },
         { phase: "pre_gemini", event_count: 1 },
@@ -392,12 +407,13 @@ test("runTelemetryReport explains visual gate final-outcome scope", async () => 
       note: "Visual gate event_count counts final gate outcomes; command_event_count counts all visual-gate command telemetry, including pre-Gemini review attempts.",
     });
     assert.match(text, /Visual gate/);
-    assert.match(text, /Command events: 2/);
-    assert.match(text, /Final gate outcomes: 1 \(50\.0% of visual-gate command telemetry\)/);
+    assert.match(text, /Command events: 3/);
+    assert.match(text, /Command events missing phase metadata: 1/);
+    assert.match(text, /Final gate outcomes: 1 \(33\.3% of visual-gate command telemetry\)/);
     assert.match(text, /text_overflow_or_occlusion 1 event/);
     assert.match(text, /final-gate scoped/);
-    assert.doesNotMatch(serialized, /private visual report prompt|private visual report response/);
-    assert.doesNotMatch(serialized, /evt_report_000009|evt_report_000010|\/Users\/example|\/tmp|after\.png|customer_secret_widget/);
+    assert.doesNotMatch(serialized, /private visual report prompt|private visual report response|private visual missing phase/);
+    assert.doesNotMatch(serialized, /evt_report_000009|evt_report_000010|evt_report_000011|\/Users\/example|\/tmp|after\.png|customer_secret_widget/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

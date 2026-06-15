@@ -245,6 +245,7 @@ export async function runTelemetryReport({
   const visualGate = summary.visual_gate ?? {};
   const visualGateFinalEventCount = visualGate.final_event_count ?? visualGate.event_count ?? 0;
   const visualGateCommandEventCount = visualGate.command_event_count ?? 0;
+  const visualGateMissingPhaseCount = visualGate.command_events_missing_phase_count ?? 0;
   const telemetryPurpose = summary.telemetry_purpose ?? {
     event_count: summary.event_counts.total,
     product_adjusted_event_count: summary.event_counts.total,
@@ -311,6 +312,7 @@ export async function runTelemetryReport({
     },
     visual_gate: {
       command_event_count: visualGateCommandEventCount,
+      command_events_missing_phase_count: visualGateMissingPhaseCount,
       event_count: visualGateFinalEventCount,
       final_event_count: visualGateFinalEventCount,
       final_event_rate: nullableRatio(visualGateFinalEventCount, visualGateCommandEventCount, 4),
@@ -430,6 +432,7 @@ export function formatTelemetryReportText(report) {
     "",
     "Visual gate:",
     `- Command events: ${formatNumber(report.visual_gate.command_event_count)}`,
+    `- Command events missing phase metadata: ${formatNumber(report.visual_gate.command_events_missing_phase_count)}`,
     `- Final gate outcomes: ${formatNumber(report.visual_gate.final_event_count)} (${formatPercent(report.visual_gate.final_event_rate)} of visual-gate command telemetry)`,
     `- Verdicts: ${formatAggregateRows(report.visual_gate.verdict_counts, "verdict")}`,
     `- Review postures: ${formatAggregateRows(report.visual_gate.review_postures, "review_posture")}`,

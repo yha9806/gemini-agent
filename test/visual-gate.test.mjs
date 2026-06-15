@@ -514,6 +514,7 @@ test("runVisualGate queues final telemetry into configured summary", async () =>
   const summary = await runTelemetrySummary({ cwd: dir, scope: "local" });
   assert.deepEqual(summary.visual_gate, {
     command_event_count: 1,
+    command_events_missing_phase_count: 0,
     event_count: 1,
     final_event_count: 1,
     phase_counts: [{ phase: "final", event_count: 1 }],

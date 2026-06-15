@@ -187,6 +187,7 @@ function zeroContextLoop() {
 function zeroVisualGate() {
   return {
     command_event_count: 0,
+    command_events_missing_phase_count: 0,
     event_count: 0,
     final_event_count: 0,
     phase_counts: [],
@@ -504,6 +505,7 @@ function safeVisualGateIssueCategory(value) {
 function createVisualGateAggregate() {
   return {
     commandEventCount: 0,
+    commandEventsMissingPhaseCount: 0,
     event_count: 0,
     phases: new Map(),
     verdicts: new Map(),
@@ -513,12 +515,17 @@ function createVisualGateAggregate() {
 }
 
 function addVisualGateEvent(aggregate, event) {
-  if (canonicalCommand(event?.command) === "visual-gate") aggregate.commandEventCount += 1;
+  const isVisualGateCommand = canonicalCommand(event?.command) === "visual-gate";
+  if (isVisualGateCommand) aggregate.commandEventCount += 1;
 
   const visualGate = event?.metadata?.visual_gate;
-  if (!isPlainObject(visualGate)) return;
+  if (!isPlainObject(visualGate)) {
+    if (isVisualGateCommand) aggregate.commandEventsMissingPhaseCount += 1;
+    return;
+  }
   const phase = safeVisualGatePhase(visualGate.phase);
   if (phase) updateSimpleCount(aggregate.phases, phase);
+  else if (isVisualGateCommand) aggregate.commandEventsMissingPhaseCount += 1;
   if (phase !== "final") return;
 
   aggregate.event_count += 1;
@@ -548,6 +555,7 @@ function buildVisualGateSummary(aggregate, topLimit) {
   }
   return {
     command_event_count: aggregate.commandEventCount,
+    command_events_missing_phase_count: aggregate.commandEventsMissingPhaseCount,
     event_count: aggregate.event_count,
     final_event_count: aggregate.event_count,
     phase_counts: topSimpleCounts(aggregate.phases, "phase", topLimit),
