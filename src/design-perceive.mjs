@@ -17,6 +17,17 @@ function stringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.trim()) : [];
 }
 
+function mergeStringArrays(...values) {
+  const seen = new Set();
+  const merged = [];
+  for (const value of values.flatMap(stringArray)) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    merged.push(value);
+  }
+  return merged;
+}
+
 function manifestContactSheetPath(outputDir, manifest) {
   return typeof manifest?.contact_sheet === "string" && manifest.contact_sheet.trim()
     ? join(outputDir, manifest.contact_sheet)
@@ -94,7 +105,7 @@ async function enrichFallbackPerception({
     }));
     return normalizeDesignPerception({
       ...perception,
-      hierarchy: stringArray(review.hierarchy).length > 0 ? stringArray(review.hierarchy) : perception.hierarchy,
+      hierarchy: mergeStringArrays(perception.hierarchy, review.hierarchy),
       layout_observations: [
         ...perception.layout_observations,
         ...stringArray(review.layout_observations),

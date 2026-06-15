@@ -123,13 +123,16 @@ test("vision-banana fallback enriches palette perception with visual review", as
       runDir: dir,
       file: image,
       provider: "vision-banana",
-      targets: ["hero: main visual area"],
+      targets: ["hero: main visual area", "cta: primary action"],
       apiKey: "key",
       env: {},
       paletteSplit: async ({ outputDir }) => {
         const manifest = {
           contact_sheet: "contact_sheet.png",
-          layers: [{ name: "hero", file: "layers/hero.png" }],
+          layers: [
+            { name: "hero", file: "layers/hero.png" },
+            { name: "cta", file: "layers/cta.png" },
+          ],
           warnings: ["mask edge is soft"],
         };
         await writeFile(join(outputDir, "manifest.json"), `${JSON.stringify(manifest)}\n`);
@@ -138,11 +141,11 @@ test("vision-banana fallback enriches palette perception with visual review", as
       reviewPerception: async ({ sourceImagePath, contactSheetPath, targets }) => {
         assert.equal(sourceImagePath, image);
         assert.match(contactSheetPath, /contact_sheet\.png$/);
-        assert.deepEqual(targets, ["hero: main visual area"]);
+        assert.deepEqual(targets, ["hero: main visual area", "cta: primary action"]);
         return {
           layout_observations: ["Hero has weak contrast against the page background"],
           implementation_constraints: ["Increase vertical spacing around the primary CTA"],
-          hierarchy: ["hero"],
+          hierarchy: ["hero", "trust-badges"],
           warnings: ["Visual review saw low contrast"],
           confidence: 0.7,
         };
@@ -154,6 +157,7 @@ test("vision-banana fallback enriches palette perception with visual review", as
     assert.match(result.perception.implementation_constraints.join("\n"), /vertical spacing/);
     assert.match(result.perception.warnings.join("\n"), /mask edge is soft/);
     assert.match(result.perception.warnings.join("\n"), /low contrast/);
+    assert.deepEqual(result.perception.hierarchy, ["hero", "cta", "trust-badges"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
