@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PNG } from "pngjs";
+import { runVisualGate } from "../src/visual-gate.mjs";
 import { collectVisualGateSmoke } from "../src/visual-gate-smoke.mjs";
 import {
   normalizeVisualGateResult,
@@ -267,4 +268,106 @@ test("collectVisualGateSmoke cautions instead of crashing when dimensions fail",
 
   assert.equal(smoke.status, "caution");
   assert.ok(smoke.checks.some((check) => check.name === "dimensions" && check.status === "caution"));
+});
+
+const fakeArtifactReview = {
+  kind: "artifact_review",
+  artifact_type: "design",
+  summary: ["Readable dashboard"],
+  important_details: [],
+  design_or_research_findings: [],
+  implementation_hints_for_codex: ["Keep labels visible"],
+  risks_or_ambiguities: [],
+  questions_for_user: [],
+  limitations: [],
+  design_scorecard: {
+    overall_score: 82,
+    visual_hierarchy_score: 84,
+    clarity_score: 80,
+    accessibility_score: 76,
+    consistency_score: 85,
+    implementation_readiness_score: 81,
+    strengths: [],
+    issues: [],
+    recommended_actions: ["Keep labels visible"],
+  },
+  metadata: {
+    model: "gemini-3.5-flash",
+    generated_at: "2026-06-15T00:00:00.000Z",
+    sources: ["target.png", "after.png"],
+    omitted_sources: [],
+  },
+};
+
+test("runVisualGate smoke-only returns block before Gemini for missing screenshot", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
+  let artifactCalled = false;
+
+  const result = await runVisualGate({
+    cwd: dir,
+    actualScreenshot: "missing.png",
+    smokeOnly: true,
+    artifactReview: async () => {
+      artifactCalled = true;
+      return fakeArtifactReview;
+    },
+    now: new Date("2026-06-15T00:00:00.000Z"),
+  });
+
+  assert.equal(artifactCalled, false);
+  assert.equal(result.verdict, "block");
+  assert.equal(result.review_posture, "blocked_before_gemini");
+});
+
+test("runVisualGate uses quick comparison review for target and actual screenshots", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
+  await writeFile(join(dir, "target.png"), minimalPng);
+  await writeFile(join(dir, "after.png"), minimalPng);
+  let seenInput = null;
+
+  const result = await runVisualGate({
+    apiKey: "fake-key",
+    cwd: dir,
+    targetScreenshot: "target.png",
+    actualScreenshot: "after.png",
+    riskHints: ["design-implementation"],
+    now: new Date("2026-06-15T00:00:00.000Z"),
+    artifactReview: async (input) => {
+      seenInput = input;
+      return fakeArtifactReview;
+    },
+  });
+
+  assert.deepEqual(seenInput.files, ["target.png", "after.png"]);
+  assert.equal(seenInput.reviewMode, "comparison");
+  assert.equal(seenInput.reviewDepth, "quick");
+  assert.equal(seenInput.telemetry.command, "visual-gate");
+  assert.equal(seenInput.telemetry.metadata.visual_gate.risk_level, "high");
+  assert.equal(result.verdict, "pass");
+  assert.equal(result.review_posture, "comparison_review");
+  assert.equal(result.artifact_review.scorecard.implementation_readiness_score, 81);
+  assert.doesNotMatch(JSON.stringify(result), /target\.png|after\.png|\/tmp|LOCAL_HOME_PATH/);
+});
+
+test("runVisualGate maps weak artifact scorecard to caution", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
+  await writeFile(join(dir, "after.png"), minimalPng);
+
+  const result = await runVisualGate({
+    apiKey: "fake-key",
+    cwd: dir,
+    actualScreenshot: "after.png",
+    riskHints: ["css-change"],
+    artifactReview: async () => ({
+      ...fakeArtifactReview,
+      design_scorecard: {
+        ...fakeArtifactReview.design_scorecard,
+        accessibility_score: 48,
+        implementation_readiness_score: 66,
+      },
+    }),
+  });
+
+  assert.equal(result.verdict, "caution");
+  assert.equal(result.review_posture, "quick_review");
 });
