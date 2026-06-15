@@ -123,13 +123,18 @@ export async function runDesignPerceive({
 } = {}) {
   if (!runDir) throw new Error("runDir is required.");
   if (!file) throw new Error("--file requires a path.");
-  const selected = selectPerceptionProvider({ provider, targets });
+  let selected = selectPerceptionProvider({ provider, targets });
+  let providerFallbackWarning = null;
 
   if (selected === "palette-mask" && targets.length === 0) {
     throw new Error("palette-mask provider requires at least one --target.");
   }
   if (selected === "vision-banana" && !env.VISION_BANANA_ENDPOINT) {
-    throw new Error("Vision Banana provider is not configured; set VISION_BANANA_ENDPOINT or choose another provider.");
+    if (targets.length === 0) {
+      throw new Error("Vision Banana provider is not configured; set VISION_BANANA_ENDPOINT or choose another provider.");
+    }
+    selected = "palette-mask";
+    providerFallbackWarning = "Vision Banana endpoint missing; used palette-mask fallback.";
   }
   if (selected === "gemini-vision" && typeof generate !== "function") {
     throw new Error("gemini-vision provider requires an injected generate function; live vision is not implemented yet.");
@@ -168,7 +173,10 @@ export async function runDesignPerceive({
       ...perceptionDefaults({ runId, provider: "palette-mask", source: file }),
       regions,
       hierarchy: regions.map((region) => region.id),
-      warnings: Array.isArray(split?.manifest?.warnings) ? split.manifest.warnings : [],
+      warnings: [
+        ...(providerFallbackWarning ? [providerFallbackWarning] : []),
+        ...(Array.isArray(split?.manifest?.warnings) ? split.manifest.warnings : []),
+      ],
     });
   } else if (selected === "vision-banana") {
     perception = await callVisionBanana({

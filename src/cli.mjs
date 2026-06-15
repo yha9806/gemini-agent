@@ -2465,7 +2465,10 @@ async function runDesignCommand(args) {
     }
     const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
     let apiKey;
-    if (selectedProvider === "palette-mask") {
+    const usesPaletteMaskFallback = selectedProvider === "vision-banana"
+      && !process.env.VISION_BANANA_ENDPOINT
+      && options.targets.length > 0;
+    if (selectedProvider === "palette-mask" || usesPaletteMaskFallback) {
       const key = await resolveApiKey();
       if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
       apiKey = key.key;

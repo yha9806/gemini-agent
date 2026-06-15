@@ -56,6 +56,41 @@ test("palette-mask provider writes perception from palette split manifest", asyn
   }
 });
 
+test("vision-banana provider falls back to palette-mask when endpoint is missing and targets are supplied", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-perceive-"));
+  try {
+    const image = join(dir, "screen.png");
+    await writeFile(image, PNG.sync.write(new PNG({ width: 2, height: 2 })));
+    await writeBrief(dir);
+
+    const result = await runDesignPerceive({
+      runDir: dir,
+      file: image,
+      provider: "vision-banana",
+      targets: ["hero: main visual area"],
+      apiKey: "key",
+      env: {},
+      paletteSplit: async ({ outputDir, sourceImagePath, targets }) => {
+        assert.equal(sourceImagePath, image);
+        assert.deepEqual(targets, ["hero: main visual area"]);
+        const manifest = {
+          layers: [{ name: "hero", file: "layers/hero.png" }],
+          warnings: [],
+        };
+        await writeFile(join(outputDir, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+        return { outputDir, manifest };
+      },
+    });
+
+    assert.equal(result.provider, "palette-mask");
+    assert.equal(result.perception.provider, "palette-mask");
+    assert.equal(result.perception.regions[0].id, "hero");
+    assert.match(result.perception.warnings.join("\n"), /Vision Banana endpoint missing.*palette-mask fallback/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("vision-banana provider fails clearly when unconfigured", async () => {
   await assert.rejects(() => runDesignPerceive({
     runDir: "/tmp/run",

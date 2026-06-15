@@ -944,6 +944,43 @@ test("design perceive vision-banana writes perception without Gemini auth", asyn
   }
 });
 
+test("design perceive vision-banana fallback resolves Gemini auth before palette-mask", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-perceive-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    await writeFile(join(runDir, "screen.png"), onePixelPng());
+
+    await assert.rejects(
+      () => execBin([
+        "design",
+        "perceive",
+        "--run",
+        runId,
+        "--file",
+        join(runDir, "screen.png"),
+        "--provider",
+        "vision-banana",
+        "--target",
+        "hero: main area",
+      ], {
+        cwd: dir,
+        env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Gemini API key is not configured\. Run: gemini-agent auth set/);
+        assert.doesNotMatch(error.stderr, /Gemini API key is missing/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("design prototype rejects invalid target stack before auth lookup", async () => {
   await assert.rejects(
     () => execBin([

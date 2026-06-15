@@ -491,6 +491,34 @@ function imageFromGenerateImagesResponse(response) {
   throw new Error("Gemini response did not include an image.");
 }
 
+function generateContentParts(response) {
+  const directParts = Array.isArray(response?.parts) ? response.parts : [];
+  const candidateParts = Array.isArray(response?.candidates)
+    ? response.candidates.flatMap((candidate) => (
+      Array.isArray(candidate?.content?.parts) ? candidate.content.parts : []
+    ))
+    : [];
+  return [...directParts, ...candidateParts];
+}
+
+function imageFromGenerateContentResponse(response) {
+  for (const part of generateContentParts(response)) {
+    const inlineData = part?.inlineData ?? part?.inline_data;
+    if (inlineData?.data) {
+      return {
+        mimeType: inlineData.mimeType || inlineData.mime_type || "image/png",
+        buffer: Buffer.from(inlineData.data, "base64"),
+      };
+    }
+  }
+  throw new Error("Gemini response did not include an image.");
+}
+
+function isGeminiNativeImageModel(model) {
+  const normalized = String(model ?? "").trim().toLowerCase();
+  return normalized.startsWith("gemini-") && normalized.includes("image");
+}
+
 export async function generateDesignImage({
   apiKey,
   model,
@@ -507,12 +535,21 @@ export async function generateDesignImage({
   const started = Date.now();
   try {
     const ai = makeAi(apiKey);
-    const response = await ai.models.generateImages({
-      model,
-      prompt: imagePrompt,
-      config: { numberOfImages: 1 },
-    });
-    const image = imageFromGenerateImagesResponse(response);
+    const nativeImageModel = isGeminiNativeImageModel(model);
+    const response = nativeImageModel
+      ? await ai.models.generateContent({
+        model,
+        contents: imagePrompt,
+        config: { responseModalities: ["TEXT", "IMAGE"] },
+      })
+      : await ai.models.generateImages({
+        model,
+        prompt: imagePrompt,
+        config: { numberOfImages: 1 },
+      });
+    const image = nativeImageModel
+      ? imageFromGenerateContentResponse(response)
+      : imageFromGenerateImagesResponse(response);
     const latencyMs = Date.now() - started;
     await captureTelemetry(telemetry, {
       command: "design-generate",

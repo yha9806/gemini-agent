@@ -235,12 +235,47 @@ test("generateDesignImage calls image model and extracts first inline image", as
   const captures = [];
   const image = await generateDesignImage({
     apiKey: "key",
-    model: "configured-image-model",
+    model: "gemini-3.1-flash-image",
     prompt: "draw",
     telemetry: {
       command: "design-generate",
       capture: async (event) => captures.push(event),
     },
+    makeAi: () => ({
+      models: {
+        async generateContent(request) {
+          seenRequest = request;
+          return {
+            candidates: [{
+              content: {
+                parts: [{
+                  inlineData: {
+                    mimeType: "image/png",
+                    data: Buffer.from("png").toString("base64"),
+                  },
+                }],
+              },
+            }],
+          };
+        },
+      },
+    }),
+  });
+
+  assert.equal(seenRequest.model, "gemini-3.1-flash-image");
+  assert.equal(seenRequest.contents, "draw");
+  assert.equal(image.mimeType, "image/png");
+  assert.equal(image.buffer.toString("utf8"), "png");
+  assert.equal(captures[0].metadata.actual_model, "gemini-3.1-flash-image");
+  assert.equal(captures[0].response, "[image:image/png:3]");
+});
+
+test("generateDesignImage keeps non-native image models on generateImages", async () => {
+  let seenRequest;
+  const image = await generateDesignImage({
+    apiKey: "key",
+    model: "configured-image-model",
+    prompt: "draw",
     makeAi: () => ({
       models: {
         async generateImages(request) {
@@ -263,8 +298,6 @@ test("generateDesignImage calls image model and extracts first inline image", as
   assert.deepEqual(seenRequest.config, { numberOfImages: 1 });
   assert.equal(image.mimeType, "image/png");
   assert.equal(image.buffer.toString("utf8"), "png");
-  assert.equal(captures[0].metadata.actual_model, "configured-image-model");
-  assert.equal(captures[0].response, "[image:image/png:3]");
 });
 
 test("generateContextPack uses fake response only when explicitly allowed", async () => {
