@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { PNG } from "pngjs";
 import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
 import {
   appendTelemetryEvent,
@@ -62,6 +63,13 @@ const CLI_TEST_ENV = {
 after(async () => {
   await rm(CLI_TEST_HOME, { recursive: true, force: true });
 });
+
+function onePixelPng() {
+  const image = new PNG({ width: 1, height: 1 });
+  image.data[0] = 255;
+  image.data[3] = 255;
+  return PNG.sync.write(image);
+}
 
 function telemetryEvent(index, overrides = {}) {
   return {
@@ -2031,6 +2039,81 @@ test("artifact-review accepts multiple image files for comparison", async () => 
   assert.equal(parsed.artifact_type, "design");
   assert.deepEqual(parsed.metadata.sources, ["before.png", "after.png"]);
   assert.equal(parsed.metadata.review_mode, "comparison");
+});
+
+test("visual gate smoke-only outputs safe JSON without auth", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  await writeFile(join(dir, "after.png"), onePixelPng());
+
+  const { stdout } = await execFileAsync(bin, [
+    "visual",
+    "gate",
+    "--actual-screenshot",
+    "after.png",
+    "--smoke-only",
+    "--json",
+  ], {
+    cwd: dir,
+    env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.kind, "visual_review_gate");
+  assert.equal(parsed.artifact_review.used, false);
+  assert.doesNotMatch(stdout, /after\.png|\/tmp|\/Users|event_id/);
+});
+
+test("visual gate target actual comparison uses fake artifact review", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+  const png = onePixelPng();
+  await writeFile(join(dir, "target.png"), png);
+  await writeFile(join(dir, "after.png"), png);
+
+  const { stdout } = await execFileAsync(bin, [
+    "visual",
+    "gate",
+    "--target-screenshot",
+    "target.png",
+    "--actual-screenshot",
+    "after.png",
+    "--kind",
+    "ui",
+    "--risk",
+    "design-implementation",
+    "--json",
+  ], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      HOME: CLI_TEST_HOME,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeArtifactReview,
+    },
+  });
+
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.review_posture, "comparison_review");
+  assert.equal(parsed.artifact_review.mode, "comparison");
+  assert.equal(parsed.artifact_review.depth, "quick");
+  assert.doesNotMatch(stdout, /target\.png|after\.png|\/tmp|LOCAL_HOME_PATH/);
+});
+
+test("visual gate rejects missing actual screenshot before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-cli-"));
+
+  await assert.rejects(
+    execFileAsync(bin, ["visual", "gate", "--actual-screenshot", "missing.png"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /visual gate blocked before Gemini/);
+      assert.doesNotMatch(error.stderr, /Gemini API key/);
+      return true;
+    },
+  );
 });
 
 test("artifact-review rejects invalid review depth before auth lookup", async () => {

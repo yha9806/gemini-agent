@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { stdin as input, stderr as errorOutput, stdout as output } from "node:process";
 import { runArtifactReview } from "./artifact-review.mjs";
+import { runVisualGate } from "./visual-gate.mjs";
+import { visualGateToPrettyJson } from "./visual-gate-schemas.mjs";
 import { applyCodexGlobalInstall } from "./codex-global-install.mjs";
 import {
   formatContextPackDoctorText,
@@ -152,6 +154,7 @@ const GATE_COMMANDS = new Map([
 const ARTIFACT_KINDS = new Set(["image", "ui", "design", "architecture", "research"]);
 const ARTIFACT_REVIEW_MODES = new Set(["single", "comparison"]);
 const ARTIFACT_REVIEW_DEPTHS = new Set(["quick", "standard"]);
+const VISUAL_GATE_KINDS = new Set(["ui", "design", "image"]);
 const MAX_ARTIFACT_REVIEW_FILES = 4;
 const DEFAULT_TELEMETRY_ENDPOINT = "http://127.0.0.1:8787/ingest";
 const DEFAULT_TELEMETRY_TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
@@ -173,6 +176,7 @@ function printUsage() {
     "  gemini-agent context-pack [--bootstrap | --stdin | --file <path> ... | --diff | text] [--write-artifact]",
     "  gemini-agent context-pack --doctor [--json] [--max-age-hours <n>]",
     "  gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--telemetry-purpose production|validation] [--write-artifact]",
+    "  gemini-agent visual gate --actual-screenshot <path> [--target-screenshot <path>] [--kind ui|design|image] [--risk <hint>] [--smoke-only] [--json]",
     "  gemini-agent palette-split <image.png> --target <name: description> [--target <name: description> ...] --output <dir> [--tolerance <n>]",
     "  gemini-agent design brief [--stdin|--file <path>] [--write-artifact]",
     "  gemini-agent design draft [--stdin|--file <path>|text] [--reference <path> ...] [--target <name: description> ...] [--variants <n>] [--quality fast|pro] [--target-stack html|react|tailwind|auto] [--skip-generate] [--skip-perceive] [--skip-prototype] [--skip-handoff] [--json]",
@@ -2023,6 +2027,51 @@ function parseArtifactArgs(args) {
   return { file: files[0], files, artifactKind, reviewMode, reviewDepth, telemetryPurpose, writeArtifact };
 }
 
+function parseVisualGateArgs(args) {
+  const options = {
+    targetScreenshot: null,
+    actualScreenshot: null,
+    kind: "ui",
+    riskHints: [],
+    smokeOnly: false,
+    json: false,
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--target-screenshot") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--target-screenshot requires a path.");
+      options.targetScreenshot = value;
+      index += 1;
+    } else if (arg === "--actual-screenshot") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--actual-screenshot requires a path.");
+      options.actualScreenshot = value;
+      index += 1;
+    } else if (arg === "--kind") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--") || !VISUAL_GATE_KINDS.has(value)) {
+        throw new Error("--kind requires one of: ui, design, image.");
+      }
+      options.kind = value;
+      index += 1;
+    } else if (arg === "--risk") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--risk requires a hint.");
+      options.riskHints.push(value);
+      index += 1;
+    } else if (arg === "--smoke-only") {
+      options.smokeOnly = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown visual gate argument: ${arg}`);
+    }
+  }
+  if (!options.actualScreenshot) throw new Error("--actual-screenshot is required.");
+  return options;
+}
+
 async function prevalidateArtifactFile(file, cwd = process.cwd()) {
   const resolvedFile = resolveCwdFilePath(file, { cwd });
   let mimeType;
@@ -2233,6 +2282,42 @@ async function runArtifactReviewCommand(args) {
     },
   });
   output.write(artifactReviewToPrettyJson(review));
+}
+
+async function runVisualCommand(args) {
+  const [subcommand, ...subArgs] = args;
+  if (subcommand !== "gate") throw new Error("Unknown visual command.");
+  const options = parseVisualGateArgs(subArgs);
+  const cwd = process.cwd();
+  const fakeAllowed = allowFakeResponse(process.env);
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  let key = { ok: false, key: null };
+  if (!options.smokeOnly) {
+    const smokeProbe = await runVisualGate({ cwd, ...options, smokeOnly: true, telemetry: null });
+    if (smokeProbe.review_posture === "blocked_before_gemini") {
+      throw new Error("visual gate blocked before Gemini: capture a readable supported screenshot and retry.");
+    }
+    key = await resolveApiKey();
+    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+  }
+  const result = await runVisualGate({
+    ...options,
+    apiKey: key.key,
+    cwd,
+    artifactReview: (artifactOptions) => runArtifactReview({
+      ...artifactOptions,
+      env: process.env,
+      allowFakeResponse: fakeAllowed,
+    }),
+    telemetry: {
+      cwd,
+      source: "cli",
+      command: "visual-gate",
+    },
+  });
+  output.write(options.json ? visualGateToPrettyJson(result) : visualGateToPrettyJson(result));
 }
 
 async function runPaletteSplitCommand(args) {
@@ -3358,6 +3443,10 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (command === "artifact-review") {
     await runArtifactReviewCommand(args);
+    return;
+  }
+  if (command === "visual") {
+    await runVisualCommand(args);
     return;
   }
   if (command === "palette-split") {
