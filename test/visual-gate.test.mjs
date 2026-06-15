@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { PNG } from "pngjs";
 import { collectVisualGateSmoke } from "../src/visual-gate-smoke.mjs";
 import {
   normalizeVisualGateResult,
@@ -158,7 +159,15 @@ test("visualGateToPrettyJson sanitizes unsafe free-text fields", () => {
   assert.match(text, /redacted unsafe visual gate text/);
 });
 
-const minimalPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+function onePixelPng() {
+  const image = new PNG({ width: 1, height: 1 });
+  image.data[0] = 255;
+  image.data[3] = 255;
+  return PNG.sync.write(image);
+}
+
+const minimalPng = onePixelPng();
+const corruptPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 test("collectVisualGateSmoke returns safe media summary for readable screenshot", async () => {
   const dir = await mkdtemp(join(tmpdir(), "visual-gate-smoke-"));
@@ -174,12 +183,49 @@ test("collectVisualGateSmoke returns safe media summary for readable screenshot"
     role: "actual",
     mime_type: "image/png",
     byte_size: minimalPng.length,
-    width: null,
-    height: null,
+    width: 1,
+    height: 1,
     media_kind: "screenshot",
   }]);
   assert.ok(smoke.checks.some((check) => check.name === "file_readable" && check.status === "pass"));
   assert.doesNotMatch(JSON.stringify(smoke), /after\.png|\/tmp|LOCAL_HOME_PATH/);
+});
+
+test("collectVisualGateSmoke cautions for corrupt image dimensions", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-smoke-"));
+  await writeFile(join(dir, "broken.png"), corruptPng);
+
+  const smoke = await collectVisualGateSmoke({
+    cwd: dir,
+    screenshots: [{ role: "actual", path: "broken.png" }],
+  });
+
+  assert.equal(smoke.status, "caution");
+  assert.deepEqual(smoke.media_summary, [{
+    role: "actual",
+    mime_type: "image/png",
+    byte_size: corruptPng.length,
+    width: null,
+    height: null,
+    media_kind: "screenshot",
+  }]);
+  assert.ok(smoke.checks.some((check) => check.name === "dimensions" && check.status === "caution"));
+  assert.doesNotMatch(JSON.stringify(smoke), /broken\.png|\/tmp|LOCAL_HOME_PATH/);
+});
+
+test("collectVisualGateSmoke blocks screenshots above byte limit", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-smoke-"));
+  await writeFile(join(dir, "large.png"), minimalPng);
+
+  const smoke = await collectVisualGateSmoke({
+    cwd: dir,
+    screenshots: [{ role: "actual", path: "large.png" }],
+    maxImageBytes: minimalPng.length - 1,
+  });
+
+  assert.equal(smoke.status, "block");
+  assert.ok(smoke.checks.some((check) => check.name === "byte_size" && check.status === "block"));
+  assert.doesNotMatch(JSON.stringify(smoke), /large\.png|\/tmp|LOCAL_HOME_PATH/);
 });
 
 test("collectVisualGateSmoke blocks unsupported files before Gemini", async () => {

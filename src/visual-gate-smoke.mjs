@@ -92,7 +92,11 @@ async function collectOneScreenshot({
     const dimensions = await readDimensions(resolvedPath);
     summary.width = positiveIntegerOrNull(dimensions?.width);
     summary.height = positiveIntegerOrNull(dimensions?.height);
-    checks.push(check("dimensions", "pass", "screenshot dimensions were inspected"));
+    if (summary.width && summary.height) {
+      checks.push(check("dimensions", "pass", "screenshot dimensions were inspected"));
+    } else {
+      checks.push(check("dimensions", "caution", "screenshot dimensions could not be inspected"));
+    }
   } catch {
     checks.push(check("dimensions", "caution", "screenshot dimensions could not be inspected"));
   }
