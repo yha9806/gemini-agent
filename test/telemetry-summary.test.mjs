@@ -450,7 +450,11 @@ test("runTelemetrySummary aggregates visual gate metadata safely", async () => {
           artifact_review_mode: "comparison",
           artifact_review_depth: "quick",
           fallback_used: false,
-          issue_category_counts: { target_actual_drift: 1 },
+          issue_category_counts: {
+            target_actual_drift: 1,
+            api_key: 4,
+            customer_acme: 2,
+          },
           private_path: "/Users/example/after.png",
           prompt: "unsafe prompt field",
           response: "unsafe response field",
@@ -483,7 +487,7 @@ test("runTelemetrySummary aggregates visual gate metadata safely", async () => {
     issue_categories: [{ category: "target_actual_drift", event_count: 1 }],
   });
   assert.doesNotMatch(serialized, /evt_000501|evt_000502|\/Users|\/tmp|after\.png|target\.png|prompt|response/);
-  assert.doesNotMatch(serialized, /ignored_private_category|pre_gemini|pass|smoke_only/);
+  assert.doesNotMatch(serialized, /api_key|customer_acme|ignored_private_category|pre_gemini|pass|smoke_only/);
 });
 
 test("runTelemetrySummary aggregates safe structured response diagnostics", async () => {

@@ -148,7 +148,7 @@ test("visualGateToPrettyJson sanitizes unsafe free-text fields", () => {
       recommended_action: "inspect prompt output before release",
     }],
     next_actions: ["check response event_id before release"],
-    limitations: ["raw prompt unavailable"],
+    limitations: ["raw prompt unavailable", "after.png includes a stale frame"],
     metadata: {
       generated_at: "2026-06-15T00:00:00.000Z",
       artifact_review_readiness_status: "unknown",
@@ -156,7 +156,7 @@ test("visualGateToPrettyJson sanitizes unsafe free-text fields", () => {
     },
   });
 
-  assert.doesNotMatch(text, /\/Users|event_id|prompt|response|Authorization|secret-token/);
+  assert.doesNotMatch(text, /\/Users|event_id|prompt|response|Authorization|secret-token|after\.png/);
   assert.match(text, /redacted unsafe visual gate text/);
 });
 
@@ -388,6 +388,32 @@ test("runVisualGate maps weak artifact scorecard to caution", async () => {
 
   assert.equal(result.verdict, "caution");
   assert.equal(result.review_posture, "quick_review");
+});
+
+test("runVisualGate redacts artifact review media filenames from ordinary output", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
+  await writeFile(join(dir, "target.png"), minimalPng);
+  await writeFile(join(dir, "after.png"), minimalPng);
+
+  const result = await runVisualGate({
+    apiKey: "fake-key",
+    cwd: dir,
+    targetScreenshot: "target.png",
+    actualScreenshot: "after.png",
+    riskHints: ["design-implementation"],
+    artifactReview: async () => ({
+      ...fakeArtifactReview,
+      design_scorecard: {
+        ...fakeArtifactReview.design_scorecard,
+        issues: ["after.png has clipped footer text"],
+        recommended_actions: ["Compare target.png and after.png before release"],
+      },
+    }),
+  });
+
+  const serialized = JSON.stringify(result);
+  assert.equal(result.verdict, "caution");
+  assert.doesNotMatch(serialized, /target\.png|after\.png|\/tmp/);
 });
 
 test("runVisualGate final telemetry records post-review issue counts", async () => {

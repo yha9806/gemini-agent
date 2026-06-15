@@ -9,6 +9,7 @@ import {
   loadTelemetryState,
   telemetryQueueDirs,
 } from "./telemetry-queue.mjs";
+import { VISUAL_GATE_ISSUE_CATEGORIES as VISUAL_GATE_ISSUE_CATEGORY_VALUES } from "./visual-gate-schemas.mjs";
 
 const QUEUE_STATES = ["pending", "inflight", "sent", "failed", "quarantine"];
 const DEFAULT_QUEUE_STATE = Object.freeze({
@@ -361,7 +362,7 @@ const VISUAL_GATE_REVIEW_POSTURES = new Set([
   "standard_fallback",
   "blocked_before_gemini",
 ]);
-const VISUAL_GATE_ISSUE_CATEGORY = /^[a-z0-9_]{1,64}$/u;
+const VISUAL_GATE_ISSUE_CATEGORIES = new Set(VISUAL_GATE_ISSUE_CATEGORY_VALUES);
 
 function safeMultimodalCommand(value) {
   const command = canonicalCommand(value);
@@ -487,7 +488,8 @@ function safeVisualGateReviewPosture(value) {
 }
 
 function safeVisualGateIssueCategory(value) {
-  return typeof value === "string" && VISUAL_GATE_ISSUE_CATEGORY.test(value) ? value : null;
+  const category = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return VISUAL_GATE_ISSUE_CATEGORIES.has(category) ? category : null;
 }
 
 function createVisualGateAggregate() {

@@ -2411,26 +2411,29 @@ async function runDesignCommand(args) {
     if (shouldReviewScreenshots && process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
       throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
     }
-    let apiKey;
-    if (shouldReviewScreenshots) {
-      const key = await resolveApiKey();
-      if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
-      apiKey = key.key;
-    }
+    let keyResult = null;
+    const resolveDesignLoopKey = async () => {
+      if (!keyResult) keyResult = await resolveApiKey();
+      if (!keyResult.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+      return keyResult;
+    };
     const result = await runDesignLoop({
       runDir,
       targetScreenshot: options.targetScreenshot,
       actualScreenshot: options.actualScreenshot,
       maxIterations: options.maxIterations,
-      apiKey,
       visualGate: shouldReviewScreenshots
         ? (gateInput) => runVisualGate({
           ...gateInput,
-          artifactReview: (artifactOptions) => runArtifactReview({
-            ...artifactOptions,
-            env: process.env,
-            allowFakeResponse: fakeAllowed,
-          }),
+          artifactReview: async (artifactOptions) => {
+            const key = await resolveDesignLoopKey();
+            return runArtifactReview({
+              ...artifactOptions,
+              apiKey: key.key,
+              env: process.env,
+              allowFakeResponse: fakeAllowed,
+            });
+          },
         })
         : undefined,
       telemetry: { cwd: process.cwd(), source: "cli", command: "design-loop" },

@@ -564,6 +564,40 @@ test("design loop rejects actual screenshot without target before auth lookup", 
   }
 });
 
+test("design loop reports missing screenshot evidence before auth lookup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-loop-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+
+    const { stdout } = await execBin([
+      "design",
+      "loop",
+      "--run",
+      runId,
+      "--target-screenshot",
+      "missing-target.png",
+      "--actual-screenshot",
+      "missing-actual.png",
+    ], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "reviewed");
+    assert.equal(parsed.visual_gate_verdict, "block");
+    assert.equal(parsed.visual_gate_artifact_review_used, false);
+    assert.match(parsed.message, /blocked/i);
+    const review = JSON.parse(await readFile(join(runDir, "loop-review.json"), "utf8"));
+    assert.equal(review.visual_gate.review_posture, "blocked_before_gemini");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("design loop target actual comparison uses fake artifact review through visual gate", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-loop-cli-"));
   const runId = "20260614T120000000Z-abcdef";

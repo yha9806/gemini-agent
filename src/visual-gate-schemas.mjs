@@ -35,13 +35,15 @@ const HARD_BLOCK_CATEGORIES = new Set([
 
 const RAW_CONTENT_LABEL_PATTERN = /\b(?:event[\s_-]*id|prompt|response)\b/iu;
 const SAFE_TEXT_REDACTION = "redacted unsafe visual gate text";
+const MEDIA_BASENAME_PATTERN = /\b[A-Za-z0-9][A-Za-z0-9._-]{0,159}\.(?:png|jpe?g|webp|gif|svg|pdf|bmp|tiff?|avif|heic)\b/giu;
+const MEDIA_BASENAME_REDACTION = "redacted media file name";
 
 function sanitizeVisualGateText(value) {
   const text = value.trim();
   if (RAW_CONTENT_LABEL_PATTERN.test(text) || hasUnsafeTelemetryDimensionContent(text)) {
     return SAFE_TEXT_REDACTION;
   }
-  return text;
+  return text.replace(MEDIA_BASENAME_PATTERN, MEDIA_BASENAME_REDACTION);
 }
 
 const SafeText = z.string().transform(sanitizeVisualGateText);
