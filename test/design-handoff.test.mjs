@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handoffToMarkdown, runDesignHandoff } from "../src/design-handoff.mjs";
@@ -77,6 +77,92 @@ test("runDesignHandoff writes handoff JSON and codex tasks with injected generat
     assert.match(markdown, /- Check mobile/);
     assert.match(markdown, /## Verification/);
     assert.match(markdown, /- npm test/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runDesignHandoff includes visual quality and perception fallback notes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-handoff-"));
+  try {
+    await writeBrief(dir);
+    await mkdir(join(dir, "candidates"), { recursive: true });
+    await mkdir(join(dir, "perceive"), { recursive: true });
+    await writeFile(join(dir, "candidates", "quality.json"), `${JSON.stringify({
+      kind: "design_candidate_quality",
+      run_id: "20260614T120000000Z-abcdef",
+      selected_candidate: "candidate-b",
+      candidates: [
+        {
+          id: "candidate-a",
+          status: "pass",
+          score: 86,
+          scorecard: { overall_score: 86 },
+          warnings: [],
+        },
+        {
+          id: "candidate-b",
+          status: "warn",
+          score: 74,
+          scorecard: {
+            overall_score: 74,
+            visual_hierarchy_score: 70,
+            implementation_readiness_score: 65,
+          },
+          warnings: ["CTA contrast needs verification"],
+        },
+      ],
+      warnings: [],
+      metadata: {},
+    })}\n`);
+    await writeFile(join(dir, "perceive", "perception.json"), `${JSON.stringify({
+      kind: "design_perception",
+      run_id: "20260614T120000000Z-abcdef",
+      provider: "palette-mask",
+      source: "candidate-b.png",
+      regions: [],
+      hierarchy: [],
+      layout_observations: ["Hero alignment may drift on mobile."],
+      implementation_constraints: ["Preserve mask-derived header spacing."],
+      confidence: null,
+      warnings: ["Palette mask cannot confirm exact text alignment."],
+      metadata: {
+        requested_provider: "vision-banana",
+        resolved_provider: "palette-mask",
+        provider_fallback_used: true,
+        provider_fallback_reason: "missing_vision_banana_endpoint",
+        perception_enrichment: "visual-review",
+      },
+    })}\n`);
+
+    const calls = [];
+    const result = await runDesignHandoff({
+      runDir: dir,
+      apiKey: "key",
+      selectedCandidate: "candidate-b",
+      generate: async (input) => {
+        calls.push(input);
+        return generatedHandoff({ risk_notes: ["Shared CSS may affect admin pages"] });
+      },
+    });
+
+    assert.match(calls[0].prompt, /Selected candidate quality: candidate-b status=warn score=74/);
+    assert.match(calls[0].prompt, /CTA contrast needs verification/);
+    assert.match(calls[0].prompt, /visual_hierarchy_score=70/);
+    assert.match(calls[0].prompt, /Perception fallback: requested=vision-banana resolved=palette-mask reason=missing_vision_banana_endpoint enrichment=visual-review/);
+    assert.match(calls[0].prompt, /Hero alignment may drift on mobile\./);
+    assert.match(calls[0].prompt, /Preserve mask-derived header spacing\./);
+
+    assert.match(result.handoff.risk_notes.join("\n"), /Candidate quality: candidate-b status=warn score=74/);
+    assert.match(result.handoff.risk_notes.join("\n"), /CTA contrast needs verification/);
+    assert.match(result.handoff.risk_notes.join("\n"), /Perception fallback: requested=vision-banana resolved=palette-mask reason=missing_vision_banana_endpoint enrichment=visual-review/);
+
+    const handoff = JSON.parse(await readFile(join(dir, "handoff.json"), "utf8"));
+    assert.deepEqual(handoff.risk_notes, result.handoff.risk_notes);
+
+    const markdown = await readFile(join(dir, "codex-tasks.md"), "utf8");
+    assert.match(markdown, /- Candidate quality: candidate-b status=warn score=74/);
+    assert.match(markdown, /- Perception fallback: requested=vision-banana resolved=palette-mask reason=missing_vision_banana_endpoint enrichment=visual-review/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
