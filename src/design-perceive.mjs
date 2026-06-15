@@ -13,6 +13,16 @@ function plainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function stringArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.trim()) : [];
+}
+
+function manifestContactSheetPath(outputDir, manifest) {
+  return typeof manifest?.contact_sheet === "string" && manifest.contact_sheet.trim()
+    ? join(outputDir, manifest.contact_sheet)
+    : null;
+}
+
 function truncateField(value) {
   const text = String(value ?? "");
   return text.length > MAX_VISION_BANANA_FIELD_CHARS
@@ -57,6 +67,65 @@ function routeMetadata({ provider, selected, providerFallbackWarning }) {
     provider_fallback_used: Boolean(providerFallbackWarning),
     ...(providerFallbackWarning ? { provider_fallback_reason: "missing_vision_banana_endpoint" } : {}),
   };
+}
+
+async function enrichFallbackPerception({
+  perception,
+  reviewPerception,
+  file,
+  outputDir,
+  manifest,
+  targets,
+}) {
+  if (typeof reviewPerception !== "function") {
+    return normalizeDesignPerception({
+      ...perception,
+      metadata: {
+        ...plainObject(perception.metadata),
+        perception_enrichment: "not_configured",
+      },
+    });
+  }
+  try {
+    const review = plainObject(await reviewPerception({
+      sourceImagePath: file,
+      contactSheetPath: manifestContactSheetPath(outputDir, manifest),
+      targets,
+    }));
+    return normalizeDesignPerception({
+      ...perception,
+      hierarchy: stringArray(review.hierarchy).length > 0 ? stringArray(review.hierarchy) : perception.hierarchy,
+      layout_observations: [
+        ...perception.layout_observations,
+        ...stringArray(review.layout_observations),
+      ],
+      implementation_constraints: [
+        ...perception.implementation_constraints,
+        ...stringArray(review.implementation_constraints),
+      ],
+      confidence: typeof review.confidence === "number" ? review.confidence : perception.confidence,
+      warnings: [
+        ...perception.warnings,
+        ...stringArray(review.warnings),
+      ],
+      metadata: {
+        ...plainObject(perception.metadata),
+        perception_enrichment: "visual-review",
+      },
+    });
+  } catch (error) {
+    return normalizeDesignPerception({
+      ...perception,
+      warnings: [
+        ...perception.warnings,
+        `Visual review enrichment failed: ${error.message}`,
+      ],
+      metadata: {
+        ...plainObject(perception.metadata),
+        perception_enrichment: "unavailable",
+      },
+    });
+  }
 }
 
 function unconfiguredVisionBananaMessage() {
@@ -160,6 +229,7 @@ export async function runDesignPerceive({
   timeoutMs = VISION_BANANA_TIMEOUT_MS,
   generate,
   telemetry,
+  reviewPerception,
 } = {}) {
   if (!runDir) throw new Error("runDir is required.");
   if (!file) throw new Error("--file requires a path.");
@@ -223,6 +293,16 @@ export async function runDesignPerceive({
         ...(Array.isArray(split?.manifest?.warnings) ? split.manifest.warnings : []),
       ],
     });
+    if (providerFallbackWarning) {
+      perception = await enrichFallbackPerception({
+        perception,
+        reviewPerception,
+        file,
+        outputDir,
+        manifest: split?.manifest,
+        targets,
+      });
+    }
   } else if (selected === "vision-banana") {
     perception = await callVisionBanana({
       endpoint: env.VISION_BANANA_ENDPOINT,

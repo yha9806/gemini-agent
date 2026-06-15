@@ -112,6 +112,85 @@ test("vision-banana provider falls back to palette-mask when endpoint is missing
   }
 });
 
+test("vision-banana fallback enriches palette perception with visual review", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-perceive-"));
+  try {
+    const image = join(dir, "screen.png");
+    await writeFile(image, PNG.sync.write(new PNG({ width: 2, height: 2 })));
+    await writeBrief(dir);
+
+    const result = await runDesignPerceive({
+      runDir: dir,
+      file: image,
+      provider: "vision-banana",
+      targets: ["hero: main visual area"],
+      apiKey: "key",
+      env: {},
+      paletteSplit: async ({ outputDir }) => {
+        const manifest = {
+          contact_sheet: "contact_sheet.png",
+          layers: [{ name: "hero", file: "layers/hero.png" }],
+          warnings: ["mask edge is soft"],
+        };
+        await writeFile(join(outputDir, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+        return { outputDir, manifest };
+      },
+      reviewPerception: async ({ sourceImagePath, contactSheetPath, targets }) => {
+        assert.equal(sourceImagePath, image);
+        assert.match(contactSheetPath, /contact_sheet\.png$/);
+        assert.deepEqual(targets, ["hero: main visual area"]);
+        return {
+          layout_observations: ["Hero has weak contrast against the page background"],
+          implementation_constraints: ["Increase vertical spacing around the primary CTA"],
+          hierarchy: ["hero"],
+          warnings: ["Visual review saw low contrast"],
+          confidence: 0.7,
+        };
+      },
+    });
+
+    assert.equal(result.perception.metadata.perception_enrichment, "visual-review");
+    assert.match(result.perception.layout_observations.join("\n"), /weak contrast/);
+    assert.match(result.perception.implementation_constraints.join("\n"), /vertical spacing/);
+    assert.match(result.perception.warnings.join("\n"), /mask edge is soft/);
+    assert.match(result.perception.warnings.join("\n"), /low contrast/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("vision-banana fallback preserves perception when visual review fails", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-perceive-"));
+  try {
+    const image = join(dir, "screen.png");
+    await writeFile(image, PNG.sync.write(new PNG({ width: 2, height: 2 })));
+    await writeBrief(dir);
+
+    const result = await runDesignPerceive({
+      runDir: dir,
+      file: image,
+      provider: "vision-banana",
+      targets: ["hero: main visual area"],
+      apiKey: "key",
+      env: {},
+      paletteSplit: async ({ outputDir }) => {
+        const manifest = { layers: [{ name: "hero", file: "layers/hero.png" }], warnings: [] };
+        await writeFile(join(outputDir, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+        return { outputDir, manifest };
+      },
+      reviewPerception: async () => {
+        throw new Error("review unavailable");
+      },
+    });
+
+    assert.equal(result.perception.regions[0].id, "hero");
+    assert.equal(result.perception.metadata.perception_enrichment, "unavailable");
+    assert.match(result.perception.warnings.join("\n"), /Visual review enrichment failed: review unavailable/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("vision-banana provider fails clearly when unconfigured without targets", async () => {
   await assert.rejects(() => runDesignPerceive({
     runDir: "/tmp/run",
