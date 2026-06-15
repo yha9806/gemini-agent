@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handoffToMarkdown, runDesignHandoff } from "../src/design-handoff.mjs";
@@ -95,20 +95,22 @@ test("runDesignHandoff includes visual quality and perception fallback notes", a
       candidates: [
         {
           id: "candidate-a",
+          file: "candidate-a.png",
           status: "pass",
           score: 86,
-          scorecard: { overall_score: 86 },
+          strengths: ["Clear telemetry hierarchy"],
+          issues: [],
+          recommended_actions: [],
           warnings: [],
         },
         {
           id: "candidate-b",
+          file: "candidate-b.png",
           status: "warn",
           score: 74,
-          scorecard: {
-            overall_score: 74,
-            visual_hierarchy_score: 70,
-            implementation_readiness_score: 65,
-          },
+          strengths: ["Dense status information remains scannable"],
+          issues: ["Primary CTA hierarchy is weak"],
+          recommended_actions: ["Increase CTA contrast before implementation"],
           warnings: ["CTA contrast needs verification"],
         },
       ],
@@ -148,13 +150,17 @@ test("runDesignHandoff includes visual quality and perception fallback notes", a
 
     assert.match(calls[0].prompt, /Selected candidate quality: candidate-b status=warn score=74/);
     assert.match(calls[0].prompt, /CTA contrast needs verification/);
-    assert.match(calls[0].prompt, /visual_hierarchy_score=70/);
+    assert.match(calls[0].prompt, /Primary CTA hierarchy is weak/);
+    assert.match(calls[0].prompt, /Increase CTA contrast before implementation/);
+    assert.match(calls[0].prompt, /Dense status information remains scannable/);
     assert.match(calls[0].prompt, /Perception fallback: requested=vision-banana resolved=palette-mask reason=missing_vision_banana_endpoint enrichment=visual-review/);
     assert.match(calls[0].prompt, /Hero alignment may drift on mobile\./);
     assert.match(calls[0].prompt, /Preserve mask-derived header spacing\./);
 
     assert.match(result.handoff.risk_notes.join("\n"), /Candidate quality: candidate-b status=warn score=74/);
     assert.match(result.handoff.risk_notes.join("\n"), /CTA contrast needs verification/);
+    assert.match(result.handoff.risk_notes.join("\n"), /Primary CTA hierarchy is weak/);
+    assert.match(result.handoff.risk_notes.join("\n"), /Increase CTA contrast before implementation/);
     assert.match(result.handoff.risk_notes.join("\n"), /Perception fallback: requested=vision-banana resolved=palette-mask reason=missing_vision_banana_endpoint enrichment=visual-review/);
 
     const handoff = JSON.parse(await readFile(join(dir, "handoff.json"), "utf8"));
@@ -163,6 +169,99 @@ test("runDesignHandoff includes visual quality and perception fallback notes", a
     const markdown = await readFile(join(dir, "codex-tasks.md"), "utf8");
     assert.match(markdown, /- Candidate quality: candidate-b status=warn score=74/);
     assert.match(markdown, /- Perception fallback: requested=vision-banana resolved=palette-mask reason=missing_vision_banana_endpoint enrichment=visual-review/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runDesignHandoff ignores optional quality JSON symlinked outside the run directory", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-handoff-"));
+  const outsideDir = await mkdtemp(join(tmpdir(), "design-handoff-outside-"));
+  try {
+    await writeBrief(dir);
+    await mkdir(join(dir, "candidates"), { recursive: true });
+    await writeFile(join(outsideDir, "quality.json"), `${JSON.stringify({
+      kind: "design_candidate_quality",
+      run_id: "20260614T120000000Z-abcdef",
+      selected_candidate: "candidate-b",
+      candidates: [
+        {
+          id: "candidate-b",
+          file: "candidate-b.png",
+          status: "warn",
+          score: 74,
+          strengths: ["OUTSIDE strength must not leak"],
+          issues: ["OUTSIDE issue must not leak"],
+          recommended_actions: ["OUTSIDE action must not leak"],
+          warnings: ["OUTSIDE warning must not leak"],
+        },
+      ],
+      warnings: [],
+      metadata: {},
+    })}\n`);
+    await symlink(join(outsideDir, "quality.json"), join(dir, "candidates", "quality.json"));
+
+    const calls = [];
+    const result = await runDesignHandoff({
+      runDir: dir,
+      apiKey: "key",
+      selectedCandidate: "candidate-b",
+      generate: async (input) => {
+        calls.push(input);
+        return generatedHandoff({ risk_notes: [] });
+      },
+    });
+
+    assert.equal(result.handoff.run_id, "20260614T120000000Z-abcdef");
+    assert.doesNotMatch(calls[0].prompt, /OUTSIDE/);
+    assert.doesNotMatch(result.handoff.risk_notes.join("\n"), /OUTSIDE/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("runDesignHandoff keeps fuller deterministic quality risk note when generated note is partial", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-handoff-"));
+  try {
+    await writeBrief(dir);
+    await mkdir(join(dir, "candidates"), { recursive: true });
+    await writeFile(join(dir, "candidates", "quality.json"), `${JSON.stringify({
+      kind: "design_candidate_quality",
+      run_id: "20260614T120000000Z-abcdef",
+      selected_candidate: "candidate-b",
+      candidates: [
+        {
+          id: "candidate-b",
+          file: "candidate-b.png",
+          status: "warn",
+          score: 74,
+          strengths: ["Telemetry density is appropriate"],
+          issues: ["Primary CTA hierarchy is weak"],
+          recommended_actions: ["Increase CTA contrast before implementation"],
+          warnings: ["CTA contrast needs verification"],
+        },
+      ],
+      warnings: [],
+      metadata: {},
+    })}\n`);
+
+    const result = await runDesignHandoff({
+      runDir: dir,
+      apiKey: "key",
+      selectedCandidate: "candidate-b",
+      generate: async () => generatedHandoff({
+        risk_notes: ["Candidate quality: candidate-b status=warn score=74"],
+      }),
+    });
+
+    const qualityNotes = result.handoff.risk_notes.filter((note) => (
+      note.includes("Candidate quality: candidate-b status=warn score=74")
+    ));
+    assert.equal(qualityNotes.length, 2);
+    assert.ok(qualityNotes.some((note) => note.includes("warnings=CTA contrast needs verification")));
+    assert.ok(qualityNotes.some((note) => note.includes("issues=Primary CTA hierarchy is weak")));
+    assert.ok(qualityNotes.some((note) => note.includes("recommended_actions=Increase CTA contrast before implementation")));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

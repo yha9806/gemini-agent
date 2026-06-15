@@ -1,5 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readFile, realpath, writeFile } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { generateDesignJson } from "./gemini-client.mjs";
 import {
   GeminiDesignHandoffSchema,
@@ -62,26 +62,24 @@ function booleanFlag(value) {
   return value === true || value === "true";
 }
 
-function scorecardSummary(scorecard, limit = 4) {
-  return Object.entries(plainObject(scorecard))
-    .filter(([, value]) => (
-      typeof value === "number"
-      || typeof value === "boolean"
-      || (typeof value === "string" && value.trim())
-    ))
-    .slice(0, limit)
-    .map(([key, value]) => `${key}=${displayValue(value)}`)
-    .join(", ");
-}
-
 function tokenMarkdown(token) {
   return `${token.name}: ${token.value}`;
 }
 
 async function readOptionalJson(runDir, relativePath) {
   try {
+    const runRoot = await realpath(runDir);
+    const candidatePath = resolve(runRoot, relativePath);
+    const candidateRealPath = await realpath(candidatePath);
+    const pathWithinRun = relative(runRoot, candidateRealPath);
+    if (!pathWithinRun || pathWithinRun.startsWith("..") || isAbsolute(pathWithinRun)) {
+      return {
+        value: null,
+        riskNote: `Optional design context ignored: ${relativePath} resolves outside the run directory.`,
+      };
+    }
     return {
-      value: JSON.parse(await readFile(join(runDir, relativePath), "utf8")),
+      value: JSON.parse(await readFile(candidateRealPath, "utf8")),
       riskNote: null,
     };
   } catch (error) {
@@ -121,8 +119,6 @@ function candidateQualitySummary(quality, selectedCandidate) {
   const details = [];
   const warnings = conciseList(candidate.warnings, 2);
   if (warnings) details.push(`warnings=${warnings}`);
-  const scorecard = scorecardSummary(candidate.scorecard);
-  if (scorecard) details.push(`scorecard=${scorecard}`);
   const issues = conciseList(candidate.issues, 2);
   if (issues) details.push(`issues=${issues}`);
   const actions = conciseList(candidate.recommended_actions, 2);
@@ -223,18 +219,15 @@ function normalizedRiskNote(value) {
 
 function appendUniqueRiskNotes(existingRiskNotes, appendedRiskNotes) {
   const riskNotes = [...existingRiskNotes];
+  const seen = new Set(riskNotes.map(normalizedRiskNote));
   for (const note of appendedRiskNotes) {
     const text = typeof note === "string" ? note : note?.text;
     if (typeof text !== "string" || !text.trim()) continue;
-    const dedupeKey = typeof note === "string" ? text : note.dedupeKey;
     const normalizedText = normalizedRiskNote(text);
-    const normalizedKey = normalizedRiskNote(dedupeKey || text);
-    const alreadyPresent = riskNotes.some((existing) => {
-      const normalizedExisting = normalizedRiskNote(existing);
-      return normalizedExisting === normalizedText
-        || (normalizedKey && normalizedExisting.includes(normalizedKey));
-    });
-    if (!alreadyPresent) riskNotes.push(text);
+    if (!seen.has(normalizedText)) {
+      riskNotes.push(text);
+      seen.add(normalizedText);
+    }
   }
   return riskNotes;
 }
