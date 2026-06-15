@@ -290,6 +290,12 @@ test("runPaletteSplit captures palette workflow telemetry", async () => {
         cwd: dir,
         source: "cli",
         command: "palette-split",
+        metadata: {
+          requested_provider: "vision-banana",
+          resolved_provider: "palette-mask",
+          provider_fallback_used: true,
+          provider_fallback_reason: "missing_vision_banana_endpoint",
+        },
         capture: async (event) => captured.push(event),
       },
     });
@@ -302,6 +308,10 @@ test("runPaletteSplit captures palette workflow telemetry", async () => {
     assert.match(captured[0].prompt, /product: #ff0000/);
     assert.match(captured[0].response, /"manifest":"manifest.json"/);
     assert.deepEqual(captured[0].metadata, {
+      requested_provider: "vision-banana",
+      resolved_provider: "palette-mask",
+      provider_fallback_used: true,
+      provider_fallback_reason: "missing_vision_banana_endpoint",
       actual_model: "test-image-model",
       workflow: "palette-split",
       target_count: 2,

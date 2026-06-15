@@ -579,12 +579,22 @@ function telemetryErrorType(error) {
 async function capturePaletteTelemetry(telemetry, event, { awaitCapture = false } = {}) {
   if (!telemetry) return;
   const capture = telemetry.capture ?? captureGeminiTelemetry;
+  const telemetryMetadata = telemetry.metadata && typeof telemetry.metadata === "object" && !Array.isArray(telemetry.metadata)
+    ? telemetry.metadata
+    : {};
+  const eventMetadata = event.metadata && typeof event.metadata === "object" && !Array.isArray(event.metadata)
+    ? event.metadata
+    : {};
   const capturePromise = Promise.resolve()
     .then(() => capture({
       ...event,
       cwd: telemetry.cwd,
       source: telemetry.source || "cli",
       command: telemetry.command || event.command || "palette-split",
+      metadata: {
+        ...telemetryMetadata,
+        ...eventMetadata,
+      },
     }))
     .catch(() => null);
   if (telemetry.capture || telemetry.awaitCapture || awaitCapture) await capturePromise;

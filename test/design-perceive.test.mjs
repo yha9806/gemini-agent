@@ -70,9 +70,22 @@ test("vision-banana provider falls back to palette-mask when endpoint is missing
       targets: ["hero: main visual area"],
       apiKey: "key",
       env: {},
-      paletteSplit: async ({ outputDir, sourceImagePath, targets }) => {
+      telemetry: {
+        command: "design-perceive",
+        metadata: { run_scope: "fallback-test" },
+      },
+      paletteSplit: async ({ outputDir, sourceImagePath, targets, telemetry }) => {
         assert.equal(sourceImagePath, image);
         assert.deepEqual(targets, ["hero: main visual area"]);
+        assert.equal(telemetry.command, "design-perceive");
+        assert.deepEqual(telemetry.metadata, {
+          run_scope: "fallback-test",
+          design_stage: "perceive",
+          requested_provider: "vision-banana",
+          resolved_provider: "palette-mask",
+          provider_fallback_used: true,
+          provider_fallback_reason: "missing_vision_banana_endpoint",
+        });
         const manifest = {
           layers: [{ name: "hero", file: "layers/hero.png" }],
           warnings: [],

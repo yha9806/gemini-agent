@@ -49,6 +49,22 @@ function perceptionDefaults({ runId, provider, source }) {
   };
 }
 
+function perceptionTelemetry({ telemetry, provider, selected, providerFallbackWarning }) {
+  if (!telemetry) return telemetry;
+  const metadata = plainObject(telemetry.metadata);
+  return {
+    ...telemetry,
+    metadata: {
+      ...metadata,
+      design_stage: "perceive",
+      requested_provider: provider,
+      resolved_provider: selected,
+      provider_fallback_used: Boolean(providerFallbackWarning),
+      ...(providerFallbackWarning ? { provider_fallback_reason: "missing_vision_banana_endpoint" } : {}),
+    },
+  };
+}
+
 async function callVisionBanana({
   endpoint,
   file,
@@ -153,7 +169,7 @@ export async function runDesignPerceive({
       outputDir,
       apiKey,
       env,
-      telemetry,
+      telemetry: perceptionTelemetry({ telemetry, provider, selected, providerFallbackWarning }),
     });
     const layers = layerByName(split?.manifest?.layers);
     const regions = targets.map((target, index) => {
