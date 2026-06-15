@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { runArtifactReview } from "./artifact-review.mjs";
 import { normalizeDesignLoopReview } from "./design-schemas.mjs";
 import { readDesignRunId, writeDesignJson } from "./design-run-store.mjs";
+import { runVisualGate } from "./visual-gate.mjs";
 
 function validateMaxIterations(value) {
   if (!Number.isInteger(value) || value < 1 || value > 3) {
@@ -30,26 +30,13 @@ async function readNextActions(runDir) {
   ];
 }
 
-function artifactSummary(artifact) {
-  if (Array.isArray(artifact?.summary)) return artifact.summary;
-  if (Array.isArray(artifact?.notes)) return artifact.notes;
-  return [];
-}
-
-function artifactNextActions(artifact) {
-  for (const key of ["suggested_changes", "implementation_hints_for_codex"]) {
-    if (Array.isArray(artifact?.[key])) return artifact[key];
-  }
-  return [];
-}
-
 export async function runDesignLoop({
   runDir,
   targetScreenshot = null,
   actualScreenshot = null,
   maxIterations = 2,
   apiKey,
-  artifactReview,
+  visualGate,
   telemetry,
 } = {}) {
   if (!runDir) throw new Error("runDir is required.");
@@ -69,6 +56,7 @@ export async function runDesignLoop({
       summary: ["Actual screenshot is required before target-vs-actual visual comparison."],
       next_actions: await readNextActions(resolvedRunDir),
       artifact_review: null,
+      visual_gate: null,
     });
     const path = await writeDesignJson({ runDir: resolvedRunDir, relativePath: "loop-review.json", value: review });
     return {
@@ -82,22 +70,27 @@ export async function runDesignLoop({
     throw new Error("--target-screenshot is required when --actual-screenshot is provided.");
   }
 
-  const reviewInput = {
+  const gateInput = {
     apiKey,
     cwd: telemetry?.cwd || process.cwd(),
-    file: targetScreenshot,
-    files: [targetScreenshot, actualScreenshot],
-    artifactKind: "ui",
-    reviewMode: "comparison",
-    reviewDepth: "quick",
+    targetScreenshot,
+    actualScreenshot,
+    kind: "ui",
+    riskHints: ["design-implementation"],
     telemetry: telemetry ? {
       ...telemetry,
       command: telemetry.command || "design-loop",
     } : { cwd: process.cwd(), source: "cli", command: "design-loop" },
   };
-  const artifact = artifactReview
-    ? await artifactReview(reviewInput)
-    : await runArtifactReview(reviewInput);
+  const gate = visualGate
+    ? await visualGate(gateInput)
+    : await runVisualGate(gateInput);
+  const nextActions = Array.isArray(gate?.next_actions) ? gate.next_actions : [];
+  const artifact = gate?.artifact_review?.used ? {
+    verdict: gate.verdict,
+    summary: nextActions,
+    suggested_changes: nextActions,
+  } : null;
 
   const review = normalizeDesignLoopReview({
     kind: "design_loop_review",
@@ -106,9 +99,10 @@ export async function runDesignLoop({
     target_screenshot: targetScreenshot,
     actual_screenshot: actualScreenshot,
     status: "reviewed",
-    summary: artifactSummary(artifact),
-    next_actions: artifactNextActions(artifact),
+    summary: [`Visual gate verdict: ${gate.verdict}`, ...nextActions.slice(0, 2)],
+    next_actions: nextActions,
     artifact_review: artifact,
+    visual_gate: gate,
   });
   const path = await writeDesignJson({ runDir: resolvedRunDir, relativePath: "loop-review.json", value: review });
   return {
