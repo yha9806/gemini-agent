@@ -186,7 +186,10 @@ function zeroContextLoop() {
 
 function zeroVisualGate() {
   return {
+    command_event_count: 0,
     event_count: 0,
+    final_event_count: 0,
+    phase_counts: [],
     verdict_counts: [],
     review_postures: [],
     issue_categories: [],
@@ -362,6 +365,7 @@ const VISUAL_GATE_REVIEW_POSTURES = new Set([
   "standard_fallback",
   "blocked_before_gemini",
 ]);
+const VISUAL_GATE_PHASES = new Set(["pre_gemini", "final"]);
 const VISUAL_GATE_ISSUE_CATEGORIES = new Set(VISUAL_GATE_ISSUE_CATEGORY_VALUES);
 
 function safeMultimodalCommand(value) {
@@ -487,6 +491,11 @@ function safeVisualGateReviewPosture(value) {
   return VISUAL_GATE_REVIEW_POSTURES.has(posture) ? posture : null;
 }
 
+function safeVisualGatePhase(value) {
+  const phase = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return VISUAL_GATE_PHASES.has(phase) ? phase : null;
+}
+
 function safeVisualGateIssueCategory(value) {
   const category = typeof value === "string" ? value.trim().toLowerCase() : "";
   return VISUAL_GATE_ISSUE_CATEGORIES.has(category) ? category : null;
@@ -494,17 +503,23 @@ function safeVisualGateIssueCategory(value) {
 
 function createVisualGateAggregate() {
   return {
+    commandEventCount: 0,
     event_count: 0,
+    phases: new Map(),
     verdicts: new Map(),
     reviewPostures: new Map(),
     issueCategories: new Map(),
   };
 }
 
-function addVisualGateEvent(aggregate, metadata) {
-  const visualGate = metadata?.visual_gate;
+function addVisualGateEvent(aggregate, event) {
+  if (canonicalCommand(event?.command) === "visual-gate") aggregate.commandEventCount += 1;
+
+  const visualGate = event?.metadata?.visual_gate;
   if (!isPlainObject(visualGate)) return;
-  if (visualGate.phase !== "final") return;
+  const phase = safeVisualGatePhase(visualGate.phase);
+  if (phase) updateSimpleCount(aggregate.phases, phase);
+  if (phase !== "final") return;
 
   aggregate.event_count += 1;
   const verdict = safeVisualGateVerdict(visualGate.verdict);
@@ -524,9 +539,18 @@ function addVisualGateEvent(aggregate, metadata) {
 }
 
 function buildVisualGateSummary(aggregate, topLimit) {
-  if (aggregate.event_count === 0) return zeroVisualGate();
+  if (
+    aggregate.commandEventCount === 0
+    && aggregate.event_count === 0
+    && aggregate.phases.size === 0
+  ) {
+    return zeroVisualGate();
+  }
   return {
+    command_event_count: aggregate.commandEventCount,
     event_count: aggregate.event_count,
+    final_event_count: aggregate.event_count,
+    phase_counts: topSimpleCounts(aggregate.phases, "phase", topLimit),
     verdict_counts: topSimpleCounts(aggregate.verdicts, "verdict", topLimit),
     review_postures: topSimpleCounts(aggregate.reviewPostures, "review_posture", topLimit),
     issue_categories: topSimpleCounts(aggregate.issueCategories, "category", topLimit),
@@ -1523,7 +1547,7 @@ function addEvent(accumulator, state, event) {
   addLatency(accumulator.latency, event.command, event.latency_ms);
   addLatencyStages(accumulator.latencyStages, event.command, event.metadata);
   addStructuredResponse(accumulator.structuredResponse, event.command, event.metadata);
-  addVisualGateEvent(accumulator.visualGate, event.metadata);
+  addVisualGateEvent(accumulator.visualGate, event);
   if (!validation) {
     if (isScheduledStructuredRetryAttempt(event)) {
       addStructuredResponseRetryOnly(accumulator.productionStructuredResponse, event.command, event.metadata);
