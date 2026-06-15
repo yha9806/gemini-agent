@@ -71,6 +71,21 @@ function validateTargetStack(targetStack) {
   }
 }
 
+function qualityCandidateById(quality, candidateId) {
+  const candidates = Array.isArray(quality?.candidates) ? quality.candidates : [];
+  return candidates.find((candidate) => candidate.id === candidateId) ?? null;
+}
+
+function chooseGeneratedCandidate(generated) {
+  const qualitySelected = typeof generated?.quality?.selected_candidate === "string"
+    ? generated.quality.selected_candidate
+    : null;
+  if (generated?.quality && qualitySelected === null) {
+    throw new Error("All generated design candidates failed the visual quality gate.");
+  }
+  return qualitySelected || generated?.manifest?.candidates?.[0]?.id || null;
+}
+
 export function validateDesignDraftModelPreflight({
   env = process.env,
   quality = "fast",
@@ -149,6 +164,7 @@ function telemetrySuccessMetadata({
   variants,
   quality,
   targetStack,
+  selectedCandidateQuality = null,
 }) {
   return {
     design_stage: "draft",
@@ -161,6 +177,8 @@ function telemetrySuccessMetadata({
     actual_image_model: models.image_model,
     actual_image_pro_model: quality === "pro" ? models.image_pro_model : null,
     vision_banana_provider: env.VISION_BANANA_ENDPOINT ? "configured" : "missing",
+    candidate_quality_status: selectedCandidateQuality?.status ?? null,
+    candidate_quality_score: selectedCandidateQuality?.score ?? null,
   };
 }
 
@@ -200,6 +218,7 @@ export async function runDesignDraft({
   skipPrototype = false,
   skipHandoff = false,
   allowFakeResponse = false,
+  qualityGate = null,
   now = new Date(),
   random = Math.random,
   telemetry,
@@ -220,6 +239,7 @@ export async function runDesignDraft({
   const steps = [];
   let run = null;
   let selectedCandidate = null;
+  let selectedCandidateQuality = null;
   let currentStep = "brief";
 
   try {
@@ -253,6 +273,7 @@ export async function runDesignDraft({
         apiKey,
         env,
         allowFakeResponse,
+        qualityGate,
         telemetry: {
           ...telemetry,
           cwd,
@@ -260,8 +281,16 @@ export async function runDesignDraft({
           command: "design-generate",
         },
       });
-      selectedCandidate = generated.manifest?.candidates?.[0]?.id ?? null;
-      steps.push(step("generate", "success", { selected_candidate: selectedCandidate }));
+      selectedCandidate = chooseGeneratedCandidate(generated);
+      const selectedQuality = qualityCandidateById(generated.quality, selectedCandidate);
+      selectedCandidateQuality = selectedQuality;
+      steps.push(step("generate", "success", {
+        selected_candidate: selectedCandidate,
+        ...(selectedQuality ? {
+          candidate_quality_status: selectedQuality.status,
+          candidate_quality_score: selectedQuality.score,
+        } : {}),
+      }));
     }
 
     currentStep = "perceive";
@@ -318,6 +347,7 @@ export async function runDesignDraft({
       steps,
       model_routes: models,
       options: { variants, quality, target_stack: targetStack },
+      ...(selectedCandidateQuality ? { candidate_quality: selectedCandidateQuality } : {}),
       local_artifact_bytes: sizeBytes,
       warnings: [],
       next_actions: nextActions({ runDir: run.dir, skipPrototype, skipHandoff }),
@@ -329,7 +359,15 @@ export async function runDesignDraft({
       inputText,
       status: "success",
       latencyMs: Date.now() - started,
-      metadata: telemetrySuccessMetadata({ env, models, steps, variants, quality, targetStack }),
+      metadata: telemetrySuccessMetadata({
+        env,
+        models,
+        steps,
+        variants,
+        quality,
+        targetStack,
+        selectedCandidateQuality,
+      }),
     });
     return summary;
   } catch (error) {

@@ -120,6 +120,90 @@ test("runDesignDraft can create a text-only draft when generation and prototype 
   }
 });
 
+test("runDesignDraft selects highest passing quality candidate", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-draft-"));
+  const calls = [];
+  try {
+    const result = await runDesignDraft({
+      cwd,
+      inputText: "Design a telemetry dashboard",
+      apiKey: "key",
+      env: {
+        GEMINI_DESIGN_MODEL: "configured-design-model",
+        GEMINI_IMAGE_MODEL: "configured-image-model",
+      },
+      runners: {
+        brief: () => makeBriefRun(cwd),
+        generate: async () => ({
+          manifest: {
+            candidates: [
+              { id: "candidate-a", file: "candidate-a.png" },
+              { id: "candidate-b", file: "candidate-b.png" },
+            ],
+          },
+          quality: {
+            selected_candidate: "candidate-b",
+            candidates: [
+              { id: "candidate-a", score: 69, status: "warn", issues: ["Flat hierarchy"] },
+              { id: "candidate-b", score: 88, status: "pass", issues: [] },
+            ],
+          },
+        }),
+        prototype: async (input) => {
+          calls.push(["prototype", input.selectedCandidate]);
+          return { manifest: { preview_entry: "preview.html" } };
+        },
+        handoff: async (input) => {
+          calls.push(["handoff", input.selectedCandidate]);
+          return { handoff: { implementation_summary: "Update dashboard cards." } };
+        },
+      },
+    });
+
+    assert.equal(result.selected_candidate, "candidate-b");
+    assert.equal(result.candidate_quality.status, "pass");
+    assert.deepEqual(calls, [["prototype", "candidate-b"], ["handoff", "candidate-b"]]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runDesignDraft preserves run when all generated candidates fail quality", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "design-draft-"));
+  try {
+    await assert.rejects(
+      () => runDesignDraft({
+        cwd,
+        inputText: "Design a telemetry dashboard",
+        apiKey: "key",
+        env: {
+          GEMINI_DESIGN_MODEL: "configured-design-model",
+          GEMINI_IMAGE_MODEL: "configured-image-model",
+        },
+        runners: {
+          brief: () => makeBriefRun(cwd),
+          generate: async () => ({
+            manifest: { candidates: [{ id: "candidate-a", file: "candidate-a.png" }] },
+            quality: {
+              selected_candidate: null,
+              candidates: [{ id: "candidate-a", score: 45, status: "fail", issues: ["Unreadable text"] }],
+            },
+          }),
+        },
+      }),
+      /All generated design candidates failed the visual quality gate/,
+    );
+    const summary = JSON.parse(await readFile(
+      join(cwd, ".gemini-agent", "design", "20260614T120000000Z-abcdef", "draft-summary.json"),
+      "utf8",
+    ));
+    assert.equal(summary.status, "partial_failure");
+    assert.match(summary.warnings.join("\n"), /visual quality gate/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("validateDesignDraftModelPreflight fails clearly when default generation lacks image model", () => {
   assert.throws(
     () => validateDesignDraftModelPreflight({ env: {}, quality: "fast", skipGenerate: false }),

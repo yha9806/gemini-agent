@@ -13,6 +13,7 @@ import {
 } from "./context-pack-doctor.mjs";
 import { runContextPack } from "./context-pack.mjs";
 import { runDesignBrief } from "./design-brief.mjs";
+import { runDesignCandidateQualityGate } from "./design-quality-gate.mjs";
 import { runDesignDraft, validateDesignDraftModelPreflight } from "./design-draft.mjs";
 import { runDesignGenerate } from "./design-generate.mjs";
 import { runDesignHandoff } from "./design-handoff.mjs";
@@ -1741,6 +1742,29 @@ function withDesignDraftContext(inputText, { references = [], targets = [] } = {
   return `${inputText.trim()}\n\n${additions.join("\n\n")}\n`;
 }
 
+function designCandidateQualityGate({ apiKey, env, telemetry }) {
+  return ({ runDir }) => runDesignCandidateQualityGate({
+    runDir,
+    telemetry: {
+      ...telemetry,
+      command: "design-candidate-quality",
+      metadata: {
+        ...(telemetry?.metadata && typeof telemetry.metadata === "object" ? telemetry.metadata : {}),
+        design_stage: "candidate-quality",
+      },
+    },
+    reviewCandidate: async ({ cwd, file }) => runArtifactReview({
+      apiKey,
+      cwd,
+      env,
+      file,
+      artifactKind: "design",
+      reviewDepth: "quick",
+      telemetry,
+    }),
+  });
+}
+
 function parseDesignGenerateArgs(args) {
   const options = { variants: 1, quality: "fast" };
 
@@ -2398,6 +2422,11 @@ async function runDesignCommand(args) {
       skipPrototype: options.skipPrototype,
       skipHandoff: options.skipHandoff,
       allowFakeResponse: fakeAllowed,
+      qualityGate: designCandidateQualityGate({
+        apiKey: key.key,
+        env: process.env,
+        telemetry: { cwd: process.cwd(), source: "cli", command: "design-generate" },
+      }),
       telemetry: { cwd: process.cwd(), source: "cli", command: "design-draft" },
     });
     output.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -2505,11 +2534,20 @@ async function runDesignCommand(args) {
       quality: options.quality,
       apiKey: key.key,
       env: process.env,
+      qualityGate: designCandidateQualityGate({
+        apiKey: key.key,
+        env: process.env,
+        telemetry: { cwd: process.cwd(), source: "cli", command: "design-generate" },
+      }),
       telemetry: { cwd: process.cwd(), source: "cli", command: "design-generate" },
     });
     output.write(`${JSON.stringify({
       candidates: result.manifest.candidates.length,
       manifest: "candidates/manifest.json",
+      ...(result.quality ? {
+        quality: "candidates/quality.json",
+        selected_candidate: result.quality.selected_candidate,
+      } : {}),
     }, null, 2)}\n`);
     return;
   }

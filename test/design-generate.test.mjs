@@ -62,6 +62,46 @@ test("runDesignGenerate writes candidate images and manifest with injected gener
   }
 });
 
+test("runDesignGenerate can run candidate quality gate after image generation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-generate-"));
+  try {
+    await writeBrief(dir);
+    const result = await runDesignGenerate({
+      runDir: dir,
+      variants: 1,
+      quality: "fast",
+      apiKey: "key",
+      generateImage: async () => ({ mimeType: "image/png", buffer: Buffer.from("image") }),
+      qualityGate: async ({ runDir }) => ({
+        quality: {
+          kind: "design_candidate_quality",
+          run_id: "20260614T120000000Z-abcdef",
+          selected_candidate: "candidate-a",
+          candidates: [{
+            id: "candidate-a",
+            file: "candidate-a.png",
+            score: 84,
+            status: "pass",
+            strengths: ["Clear hierarchy"],
+            issues: [],
+            recommended_actions: [],
+            warnings: [],
+          }],
+          warnings: [],
+          metadata: {},
+        },
+        qualityPath: join(runDir, "candidates", "quality.json"),
+      }),
+      env: { GEMINI_IMAGE_MODEL: "configured-image-model" },
+    });
+
+    assert.equal(result.quality.selected_candidate, "candidate-a");
+    assert.equal(result.qualityPath, join(dir, "candidates", "quality.json"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runDesignGenerate fails clearly when image model is not configured", async () => {
   const dir = await mkdtemp(join(tmpdir(), "design-generate-"));
   try {

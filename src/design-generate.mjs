@@ -78,6 +78,7 @@ export async function runDesignGenerate({
   apiKey,
   env = process.env,
   generateImage,
+  qualityGate,
   telemetry,
 } = {}) {
   if (!runDir) throw new Error("runDir is required.");
@@ -145,5 +146,19 @@ export async function runDesignGenerate({
     relativePath: join("candidates", "manifest.json"),
     value: manifest,
   });
-  return { manifest, outputDir, manifestPath };
+  const gate = typeof qualityGate === "function"
+    ? await qualityGate({
+      runDir: resolvedRunDir,
+      manifest,
+      apiKey,
+      env,
+      telemetry,
+    })
+    : null;
+  return {
+    manifest,
+    outputDir,
+    manifestPath,
+    ...(gate ? { quality: gate.quality, qualityPath: gate.qualityPath } : {}),
+  };
 }
