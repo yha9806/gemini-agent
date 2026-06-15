@@ -14,6 +14,7 @@ import {
 
 const TELEMETRY_ROOT = ".gemini-agent/telemetry";
 const CONFIG_FILE = "config.json";
+export const DEFAULT_TELEMETRY_DOCTOR_TIMEOUT_MS = 15000;
 const DIAGNOSTIC_CONFIG_FIELDS = [
   "enabled",
   "level",
@@ -438,7 +439,7 @@ export async function runTelemetryDoctor({
   scope = "auto",
   env = process.env,
   fetchImpl = fetch,
-  timeoutMs = 3000,
+  timeoutMs = DEFAULT_TELEMETRY_DOCTOR_TIMEOUT_MS,
 } = {}) {
   const context = await loadTelemetryConfigContextTolerant({ cwd, home, scope });
   const config = context.config ?? { enabled: false };

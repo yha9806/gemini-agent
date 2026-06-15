@@ -20,6 +20,7 @@ import {
 } from "./telemetry-schemas.mjs";
 
 const VALIDATION_FLUSH_BATCH_SIZE = 100;
+export const DEFAULT_TELEMETRY_REQUEST_TIMEOUT_MS = 30000;
 const MAX_HTTP_ERROR_BODY_BYTES = 256 * 1024;
 const RAW_CONTENT_ENCODING_ALGORITHM = "gzip+base64url";
 const RAW_CONTENT_ENCODING_MIN_BYTES = 32 * 1024;
@@ -604,7 +605,7 @@ export async function flushTelemetryQueue({
   token,
   fetchImpl = fetch,
   now = new Date(),
-  timeoutMs = 5000,
+  timeoutMs = DEFAULT_TELEMETRY_REQUEST_TIMEOUT_MS,
   batchSize = 100,
   dryRun = false,
   maxBytes,
@@ -689,7 +690,7 @@ export async function receiverMetrics({
   endpoint,
   token,
   fetchImpl = fetch,
-  timeoutMs = 5000,
+  timeoutMs = DEFAULT_TELEMETRY_REQUEST_TIMEOUT_MS,
 } = {}) {
   const ingestUrl = validateTelemetryEndpoint(endpoint);
   assertTelemetryToken(token);

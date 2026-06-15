@@ -11,6 +11,7 @@ import {
 } from "../src/telemetry-queue.mjs";
 import {
   buildTelemetryFlushPreview,
+  DEFAULT_TELEMETRY_REQUEST_TIMEOUT_MS,
   flushTelemetryQueue,
   previewTelemetryFlush,
   receiverMetrics,
@@ -163,6 +164,10 @@ test("flushTelemetryQueue sends a strict batch and completes the queue", async (
   const state = await loadTelemetryState({ cwd });
   assert.equal(state.sent_success_count, 2);
   assert.equal(state.sent_failure_count, 0);
+});
+
+test("telemetry sender default timeout covers receiver cold starts", () => {
+  assert.equal(DEFAULT_TELEMETRY_REQUEST_TIMEOUT_MS, 30000);
 });
 
 test("flushTelemetryQueue preserves correction metadata in raw upload", async () => {

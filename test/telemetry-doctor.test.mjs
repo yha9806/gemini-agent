@@ -12,7 +12,10 @@ import {
   quarantineTelemetryEvent,
   telemetryQueueDirs,
 } from "../src/telemetry-queue.mjs";
-import { runTelemetryDoctor } from "../src/telemetry-doctor.mjs";
+import {
+  DEFAULT_TELEMETRY_DOCTOR_TIMEOUT_MS,
+  runTelemetryDoctor,
+} from "../src/telemetry-doctor.mjs";
 
 const TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
 const CONFIG_RELATIVE_PATH = ".gemini-agent/telemetry/config.json";
@@ -61,6 +64,10 @@ function telemetryEvent(index, overrides = {}) {
     ...overrides,
   };
 }
+
+test("telemetry doctor default timeout covers receiver cold starts", () => {
+  assert.equal(DEFAULT_TELEMETRY_DOCTOR_TIMEOUT_MS, 15000);
+});
 
 function telemetryConfig(overrides = {}) {
   return {
