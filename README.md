@@ -72,6 +72,8 @@ controls intentionally.
 ./bin/gemini-agent artifact-review --file design.png --kind ui --review-depth quick
 ./bin/gemini-agent artifact-review --file design.png --kind ui --telemetry-purpose validation
 ./bin/gemini-agent artifact-review --file before.png --file after.png --kind ui --review-mode comparison
+./bin/gemini-agent visual gate --actual-screenshot after.png --kind ui --smoke-only --json
+./bin/gemini-agent visual gate --target-screenshot target.png --actual-screenshot after.png --kind ui --risk design-implementation --json
 ./bin/gemini-agent palette-split slide.png --target "product: the red product card" --target "chart: the blue chart panel" --output /tmp/palette-split
 ./bin/gemini-agent design brief --stdin --write-artifact
 ./bin/gemini-agent design draft --stdin --variants 2 --quality fast --target-stack html
@@ -79,7 +81,7 @@ controls intentionally.
 ./bin/gemini-agent design perceive --run .gemini-agent/design/<run-id> --file screenshot.png --target "hero: main area"
 ./bin/gemini-agent design prototype --run .gemini-agent/design/<run-id> --target-stack html
 ./bin/gemini-agent design handoff --run .gemini-agent/design/<run-id>
-./bin/gemini-agent design loop --run .gemini-agent/design/<run-id> --actual-screenshot after.png
+./bin/gemini-agent design loop --run .gemini-agent/design/<run-id> --target-screenshot target.png --actual-screenshot after.png
 ./bin/gemini-agent design doctor --json
 ./bin/gemini-agent telemetry enable --global --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --user-label local-admin --confirm-raw-content
 ./bin/gemini-agent telemetry status --global
@@ -152,6 +154,8 @@ controls intentionally.
 - `artifact-review` retries one malformed structured JSON response with a bounded larger output budget when Gemini returns `MAX_TOKENS` or misses the JSON object envelope.
 - `artifact-review --telemetry-purpose validation` marks canary or manual validation runs so delivery and latency health still count, while product multimodal, scorecard, depth, and economics usage-applicable metrics exclude that run.
 - multi-file artifact-review records media metadata without printing raw image bytes in ordinary telemetry output.
+- `visual gate` composes local screenshot smoke checks, risk-based routing, and optional quick `artifact-review` into a pass/caution/block gate for UI and design-sensitive work.
+- Visual gate outputs and telemetry do not expose raw prompts, raw responses, local paths, media file names, or image bytes in ordinary outputs.
 - `palette-split` writes palette masks, decoded layers, a manifest, a quality scorecard, and a contact sheet to the explicit output directory selected by the caller.
 - `design brief` starts a design run under `.gemini-agent/design/<run-id>/` and writes `brief.json` plus `DESIGN.md`.
 - `design draft` orchestrates brief, candidate generation, prototype, and handoff artifacts under `.gemini-agent/design/<run-id>/`; Codex still performs real repository edits, tests, commits, and final verification.
@@ -159,14 +163,14 @@ controls intentionally.
 - `design perceive` reads a target screenshot, chooses palette masks when `--target` values are supplied, and writes `perceive/perception.json`.
 - `design prototype` writes reviewable prototype code under `prototype/` only; Codex decides actual project integration.
 - `design handoff` reads the normalized design brief and writes `handoff.json` plus `codex-tasks.md` for implementation.
-- `design loop` keeps Codex as the source-editing authority and uses `artifact-review` for target-vs-actual visual review.
+- `design loop` keeps Codex as the source-editing authority and uses `visual gate` for target-vs-actual screenshot feedback.
 - `design doctor --json` reports design model routing and provider configuration without looking up auth or calling Gemini.
 - Generated context/review artifacts live under `.gemini-agent/`, which is kept ignored by git.
 - Telemetry raw mode is explicit and requires `--confirm-raw-content`.
 - Telemetry `--global` stores config and queue data under `~/.gemini-agent/telemetry`, so gemini-agent calls from different Codex project directories share one deployment queue.
 - Raw telemetry transport encoding defaults to `auto`: `context-pack` and large raw payloads encode request/prompt/response raw fields as gzip+base64url in transit so front-end WAFs do not inspect raw source text; set `GEMINI_AGENT_TELEMETRY_RAW_ENCODING=off` only as a temporary compatibility fallback, or `always` to encode all raw events.
 - Telemetry config stores a generated `install_id`; captured events add a pseudonymous hashed `workspace_id` derived from the project root when available and salted with local install metadata. `workspace_id` is not a secret. `--user-label` is optional, rejects email-shaped labels plus path, credential, and phone-like identifiers, and can be cleared with `--clear-user-label`.
-- `telemetry summary` reports aggregate usage, queue health, project/workspace attribution, latency p50/p95/p99, palette-split quality, multimodal MIME/kind/byte coverage, and backfill media-manifest source adoption; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
+- `telemetry summary` reports aggregate usage, queue health, project/workspace attribution, latency p50/p95/p99, palette-split quality, visual_gate aggregate outcomes, multimodal MIME/kind/byte coverage, and backfill media-manifest source adoption; it does not print raw prompt, response text, event ids, batch ids, paths, or media file names.
 - Telemetry summary and report aggregate artifact-review design scorecard metrics and per-field score coverage from safe numeric metadata without exposing scorecard text, raw prompts, raw responses, event ids, paths, or media file names.
 - Telemetry summary, economics, priorities, and report expose product-adjusted analytics: validation telemetry remains in health and delivery counts, while product multimodal, scorecard, depth, and product-adjusted economics exclude validation events.
 - `telemetry backfill-artifacts` carries only allowlisted numeric/null artifact-review design scorecard fields into metadata, dropping strengths, issues, recommended actions, and unknown scorecard keys.
