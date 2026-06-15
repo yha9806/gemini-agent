@@ -430,6 +430,35 @@ test("runVisualGate final telemetry records post-review issue counts", async () 
   assert.doesNotMatch(JSON.stringify(captures[0].metadata), /after\.png|\/tmp|\/Users|prompt|response/);
 });
 
+test("runVisualGate smoke-only telemetry records final safe metadata", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
+  await writeFile(join(dir, "after.png"), minimalPng);
+  const captures = [];
+
+  const result = await runVisualGate({
+    cwd: dir,
+    actualScreenshot: "after.png",
+    smokeOnly: true,
+    telemetry: {
+      cwd: dir,
+      source: "cli",
+      command: "visual-gate",
+      capture: async (event) => {
+        captures.push(event);
+        return { queued: true };
+      },
+    },
+  });
+
+  assert.equal(result.verdict, "pass");
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].command, "visual-gate");
+  assert.equal(captures[0].metadata.visual_gate.review_posture, "smoke_only");
+  assert.equal(captures[0].metadata.visual_gate.smoke_status, "pass");
+  assert.equal(captures[0].metadata.visual_gate.phase, "final");
+  assert.doesNotMatch(JSON.stringify(captures[0].metadata), /after\.png|\/tmp|\/Users|prompt|response/);
+});
+
 test("runVisualGate returns normalized fallback when artifact review fails", async () => {
   const dir = await mkdtemp(join(tmpdir(), "visual-gate-run-"));
   await writeFile(join(dir, "after.png"), minimalPng);
