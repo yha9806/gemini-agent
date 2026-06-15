@@ -1,5 +1,5 @@
-import { mkdir, readFile } from "node:fs/promises";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { mkdir, readFile, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { normalizeDesignCandidateManifest, normalizeDesignCandidateQuality } from "./design-schemas.mjs";
 import { writeDesignJson } from "./design-run-store.mjs";
 
@@ -39,7 +39,26 @@ function stringList(value) {
 }
 
 function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  try {
+    return String(error);
+  } catch {
+    return "unknown error";
+  }
+}
+
+async function resolveContainedCandidateFile(outputDir, file) {
+  if (typeof file !== "string" || !file.trim() || isAbsolute(file)) return null;
+  try {
+    const outputRoot = await realpath(outputDir);
+    const candidatePath = resolve(outputRoot, file);
+    const candidateRealPath = await realpath(candidatePath);
+    const relativePath = relative(outputRoot, candidateRealPath);
+    if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) return null;
+    return candidateRealPath;
+  } catch {
+    return null;
+  }
 }
 
 export function scoreCandidateReview({ candidateId, file, review }) {
@@ -92,9 +111,8 @@ export async function runDesignCandidateQualityGate({
   const qualityCandidates = [];
   const warnings = [];
   for (const candidate of manifest.candidates) {
-    const resolvedFilePath = isAbsolute(candidate.file) ? null : resolve(outputDir, candidate.file);
-    const fileIsContained = resolvedFilePath?.startsWith(`${outputDir}${sep}`) ?? false;
-    if (!fileIsContained) {
+    const resolvedFilePath = await resolveContainedCandidateFile(outputDir, candidate.file);
+    if (!resolvedFilePath) {
       qualityCandidates.push({
         id: candidate.id,
         file: candidate.file,
@@ -103,7 +121,7 @@ export async function runDesignCandidateQualityGate({
         strengths: [],
         issues: [],
         recommended_actions: [],
-        warnings: ["Candidate file path is outside the candidates directory."],
+        warnings: ["Candidate file path is outside the candidates directory or cannot be resolved."],
       });
       continue;
     }

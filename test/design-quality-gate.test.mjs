@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
@@ -135,8 +135,33 @@ test("runDesignCandidateQualityGate passes safe cwd file and filePath to reviewC
     assert.equal(calls.length, 1);
     assert.equal(calls[0].cwd, join(dir, "candidates"));
     assert.equal(calls[0].file, "candidate-a.png");
-    assert.equal(calls[0].filePath, join(calls[0].cwd, "candidate-a.png"));
-    assert.equal(calls[0].filePath.startsWith(`${calls[0].cwd}${sep}`), true);
+    assert.equal(calls[0].filePath, await realpath(join(calls[0].cwd, "candidate-a.png")));
+    assert.equal(calls[0].filePath.startsWith(`${await realpath(calls[0].cwd)}${sep}`), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runDesignCandidateQualityGate accepts nested candidate files under candidates directory", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-quality-"));
+  try {
+    await writeManifest(dir, [successfulCandidate({ file: "nested/candidate-a.png" })]);
+    await mkdir(join(dir, "candidates", "nested"), { recursive: true });
+    await writeFile(join(dir, "candidates", "nested", "candidate-a.png"), "a");
+    const calls = [];
+    const result = await runDesignCandidateQualityGate({
+      runDir: dir,
+      reviewCandidate: async (input) => {
+        calls.push(input);
+        return review();
+      },
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].cwd, join(dir, "candidates"));
+    assert.equal(calls[0].file, "nested/candidate-a.png");
+    assert.equal(calls[0].filePath, await realpath(join(calls[0].cwd, "nested", "candidate-a.png")));
+    assert.equal(result.quality.candidates[0].status, "pass");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -158,7 +183,40 @@ test("runDesignCandidateQualityGate marks unsafe manifest file paths unavailable
     assert.equal(reviewed, false);
     assert.equal(result.quality.candidates[0].status, "unavailable");
     assert.deepEqual(result.quality.candidates[0].warnings, [
-      "Candidate file path is outside the candidates directory.",
+      "Candidate file path is outside the candidates directory or cannot be resolved.",
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runDesignCandidateQualityGate marks symlink escaped candidate files unavailable", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "design-quality-"));
+  try {
+    await writeManifest(dir, [successfulCandidate({ file: "nested/secret.png" })]);
+    await mkdir(join(dir, "outside"), { recursive: true });
+    await writeFile(join(dir, "outside", "secret.png"), "secret");
+    await rm(join(dir, "candidates", "nested"), { recursive: true, force: true });
+    try {
+      await symlink(join(dir, "outside"), join(dir, "candidates", "nested"), "dir");
+    } catch (error) {
+      t.skip(`symlink creation failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    let reviewed = false;
+    const result = await runDesignCandidateQualityGate({
+      runDir: dir,
+      reviewCandidate: async () => {
+        reviewed = true;
+        return review();
+      },
+    });
+
+    assert.equal(reviewed, false);
+    assert.equal(result.quality.candidates[0].status, "unavailable");
+    assert.deepEqual(result.quality.candidates[0].warnings, [
+      "Candidate file path is outside the candidates directory or cannot be resolved.",
     ]);
   } finally {
     await rm(dir, { recursive: true, force: true });
