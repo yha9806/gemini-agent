@@ -326,6 +326,99 @@ test("runTelemetryReport exposes product-adjusted analytics when validation even
   }
 });
 
+test("runTelemetryReport explains visual gate final-outcome scope", async () => {
+  const cwd = await temporaryWorkspace();
+  try {
+    await saveTelemetryConfig({
+      cwd,
+      endpoint: "http://127.0.0.1:8787/ingest",
+      tokenEnv: TOKEN_ENV,
+      deploymentId: "gemini-agent-main",
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(9, {
+        command: "visual-gate",
+        prompt: "private visual report prompt /Users/example/after.png",
+        response: "private visual report response /tmp/after.png",
+        metadata: {
+          visual_gate: {
+            phase: "final",
+            verdict: "caution",
+            review_posture: "quick_review",
+            issue_category_counts: {
+              text_overflow_or_occlusion: 1,
+              customer_secret_widget: 2,
+            },
+          },
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(10, {
+        command: "visual-gate",
+        prompt: "private visual pre prompt",
+        response: "private visual pre response",
+        metadata: {
+          visual_gate: {
+            phase: "pre_gemini",
+            verdict: "pass",
+            review_posture: "quick_review",
+            issue_category_counts: {
+              uncertain_visual_evidence: 1,
+            },
+          },
+        },
+      }),
+    });
+    await appendTelemetryEvent({
+      cwd,
+      event: telemetryEvent(11, {
+        command: "visual-gate",
+        prompt: "private visual missing phase prompt",
+        response: "private visual missing phase response",
+        metadata: {
+          visual_gate: {
+            verdict: "block",
+            review_posture: "blocked_before_gemini",
+          },
+        },
+      }),
+    });
+
+    const report = await runTelemetryReport({ cwd, scope: "local" });
+    const text = formatTelemetryReportText(report);
+    const serialized = `${JSON.stringify(report)}\n${text}`;
+
+    assert.deepEqual(report.visual_gate, {
+      command_event_count: 3,
+      command_events_missing_phase_count: 1,
+      event_count: 1,
+      final_event_count: 1,
+      final_event_rate: 0.3333,
+      phase_counts: [
+        { phase: "final", event_count: 1 },
+        { phase: "pre_gemini", event_count: 1 },
+      ],
+      verdict_counts: [{ verdict: "caution", event_count: 1 }],
+      review_postures: [{ review_posture: "quick_review", event_count: 1 }],
+      issue_categories: [{ category: "text_overflow_or_occlusion", event_count: 1 }],
+      note: "Visual gate event_count counts final gate outcomes; command_event_count counts all visual-gate command telemetry, including pre-Gemini review attempts.",
+    });
+    assert.match(text, /Visual gate/);
+    assert.match(text, /Command events: 3/);
+    assert.match(text, /Command events missing phase metadata: 1/);
+    assert.match(text, /Final gate outcomes: 1 \(33\.3% of visual-gate command telemetry\)/);
+    assert.match(text, /text_overflow_or_occlusion 1 event/);
+    assert.match(text, /final-gate scoped/);
+    assert.doesNotMatch(serialized, /private visual report prompt|private visual report response|private visual missing phase/);
+    assert.doesNotMatch(serialized, /evt_report_000009|evt_report_000010|evt_report_000011|\/Users\/example|\/tmp|after\.png|customer_secret_widget/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runTelemetryReport exposes aggregate structured response diagnostics safely", async () => {
   const cwd = await temporaryWorkspace();
   try {

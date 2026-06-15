@@ -149,7 +149,7 @@ test("README documents telemetry summary and bounded scheduler examples", async 
   assert.match(readme, /deletes confirmed local raw telemetry by event id with dry-run by default/);
   assert.match(readme, /local sent-telemetry retention with dry-run by default/);
   assert.match(readme, /estimates Gemini cost, Codex token savings, and aggregate gate input byte metrics/);
-  assert.match(readme, /combines aggregate health, economics, context reuse, attribution, multimodal adoption, and top development priority into a product decision snapshot/);
+  assert.match(readme, /combines aggregate health, economics, context reuse, attribution, multimodal adoption, visual gate final-outcome scope, and top development priority into a product decision snapshot/);
   assert.match(readme, /safe MIME and media-kind corrections for historical multimodal telemetry/);
   assert.match(
     readme,

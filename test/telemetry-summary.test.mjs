@@ -162,7 +162,11 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     top_budget_cohorts: [],
   });
   assert.deepEqual(result.visual_gate, {
+    command_event_count: 0,
+    command_events_missing_phase_count: 0,
     event_count: 0,
+    final_event_count: 0,
+    phase_counts: [],
     verdict_counts: [],
     review_postures: [],
     issue_categories: [],
@@ -481,13 +485,20 @@ test("runTelemetrySummary aggregates visual gate metadata safely", async () => {
   const serialized = JSON.stringify(summary.visual_gate);
 
   assert.deepEqual(summary.visual_gate, {
+    command_event_count: 2,
+    command_events_missing_phase_count: 0,
     event_count: 1,
+    final_event_count: 1,
+    phase_counts: [
+      { phase: "final", event_count: 1 },
+      { phase: "pre_gemini", event_count: 1 },
+    ],
     verdict_counts: [{ verdict: "block", event_count: 1 }],
     review_postures: [{ review_posture: "comparison_review", event_count: 1 }],
     issue_categories: [{ category: "target_actual_drift", event_count: 1 }],
   });
   assert.doesNotMatch(serialized, /evt_000501|evt_000502|\/Users|\/tmp|after\.png|target\.png|prompt|response/);
-  assert.doesNotMatch(serialized, /api_key|customer_acme|ignored_private_category|pre_gemini|pass|smoke_only/);
+  assert.doesNotMatch(serialized, /api_key|customer_acme|ignored_private_category|pass|smoke_only/);
 });
 
 test("runTelemetrySummary aggregates safe structured response diagnostics", async () => {

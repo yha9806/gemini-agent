@@ -102,6 +102,10 @@ function compactStructuredResponseRetryCommand(row) {
   };
 }
 
+function safeAggregateRows(rows) {
+  return Array.isArray(rows) ? rows : [];
+}
+
 export function buildStructuredResponseReport(summary) {
   const structured = summary.structured_response ?? {};
   const eventCount = structured.event_count ?? 0;
@@ -238,6 +242,10 @@ export async function runTelemetryReport({
   ]);
   const priorities = buildPriorities({ summary, economics }).slice(0, topLimit);
   const multimodal = summary.multimodal_adjusted ?? summary.multimodal;
+  const visualGate = summary.visual_gate ?? {};
+  const visualGateFinalEventCount = visualGate.final_event_count ?? visualGate.event_count ?? 0;
+  const visualGateCommandEventCount = visualGate.command_event_count ?? 0;
+  const visualGateMissingPhaseCount = visualGate.command_events_missing_phase_count ?? 0;
   const telemetryPurpose = summary.telemetry_purpose ?? {
     event_count: summary.event_counts.total,
     product_adjusted_event_count: summary.event_counts.total,
@@ -302,6 +310,18 @@ export async function runTelemetryReport({
       applied_correction_event_count: multimodal.applied_correction_event_count ?? 0,
       top_command: compactMultimodalCommand(firstOrNull(multimodal.top_commands)),
     },
+    visual_gate: {
+      command_event_count: visualGateCommandEventCount,
+      command_events_missing_phase_count: visualGateMissingPhaseCount,
+      event_count: visualGateFinalEventCount,
+      final_event_count: visualGateFinalEventCount,
+      final_event_rate: nullableRatio(visualGateFinalEventCount, visualGateCommandEventCount, 4),
+      phase_counts: safeAggregateRows(visualGate.phase_counts),
+      verdict_counts: safeAggregateRows(visualGate.verdict_counts),
+      review_postures: safeAggregateRows(visualGate.review_postures),
+      issue_categories: safeAggregateRows(visualGate.issue_categories),
+      note: "Visual gate event_count counts final gate outcomes; command_event_count counts all visual-gate command telemetry, including pre-Gemini review attempts.",
+    },
     artifact_review_quality: {
       event_count: summary.artifact_review_quality.event_count,
       scorecard_event_count: summary.artifact_review_quality.scorecard_event_count,
@@ -326,6 +346,7 @@ export async function runTelemetryReport({
       "Gemini cost and Codex token savings are estimates from captured usage metadata.",
       "Reliability rates are telemetry observations and still depend on failure paths emitting telemetry.",
       "Artifact-review quality uses aggregate scorecard metadata only when scorecard capture is available.",
+      "Visual gate event_count is final-gate scoped and is not expected to match all visual-gate command telemetry.",
     ],
   };
 }
@@ -352,6 +373,13 @@ function formatTopPriority(priorities) {
 }
 
 function formatDimensionRows(rows, key) {
+  if (!rows.length) return "None";
+  return rows.map((item) => (
+    `${item[key]} ${formatNumber(item.event_count)} event${item.event_count === 1 ? "" : "s"}`
+  )).join("; ");
+}
+
+function formatAggregateRows(rows, key) {
   if (!rows.length) return "None";
   return rows.map((item) => (
     `${item[key]} ${formatNumber(item.event_count)} event${item.event_count === 1 ? "" : "s"}`
@@ -401,6 +429,15 @@ export function formatTelemetryReportText(report) {
     `- Media bytes: ${formatNumber(report.multimodal.byte_count)}`,
     `- Metadata minimum coverage: ${formatPercent(report.multimodal.metadata_coverage_min)}`,
     `- Top multimodal command: ${formatTopCommand(report.multimodal.top_command)}`,
+    "",
+    "Visual gate:",
+    `- Command events: ${formatNumber(report.visual_gate.command_event_count)}`,
+    `- Command events missing phase metadata: ${formatNumber(report.visual_gate.command_events_missing_phase_count)}`,
+    `- Final gate outcomes: ${formatNumber(report.visual_gate.final_event_count)} (${formatPercent(report.visual_gate.final_event_rate)} of visual-gate command telemetry)`,
+    `- Verdicts: ${formatAggregateRows(report.visual_gate.verdict_counts, "verdict")}`,
+    `- Review postures: ${formatAggregateRows(report.visual_gate.review_postures, "review_posture")}`,
+    `- Issue categories: ${formatAggregateRows(report.visual_gate.issue_categories, "category")}`,
+    `- Note: ${report.visual_gate.note}`,
     "",
     "Artifact-review quality:",
     `- Events: ${formatNumber(report.artifact_review_quality.event_count)}`,
