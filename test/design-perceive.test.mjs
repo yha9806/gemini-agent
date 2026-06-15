@@ -105,6 +105,7 @@ test("vision-banana provider falls back to palette-mask when endpoint is missing
     assert.equal(result.perception.metadata.resolved_provider, "palette-mask");
     assert.equal(result.perception.metadata.provider_fallback_used, true);
     assert.equal(result.perception.metadata.provider_fallback_reason, "missing_vision_banana_endpoint");
+    assert.equal(result.perception.metadata.perception_enrichment, "not_configured");
     assert.equal(result.perception.regions[0].id, "hero");
     assert.match(result.perception.warnings.join("\n"), /Vision Banana endpoint missing.*palette-mask fallback/);
   } finally {
@@ -145,7 +146,7 @@ test("vision-banana fallback enriches palette perception with visual review", as
         return {
           layout_observations: ["Hero has weak contrast against the page background"],
           implementation_constraints: ["Increase vertical spacing around the primary CTA"],
-          hierarchy: ["hero", "trust-badges"],
+          hierarchy: [" hero ", "trust-badges"],
           warnings: ["Visual review saw low contrast"],
           confidence: 0.7,
         };
@@ -158,6 +159,43 @@ test("vision-banana fallback enriches palette perception with visual review", as
     assert.match(result.perception.warnings.join("\n"), /mask edge is soft/);
     assert.match(result.perception.warnings.join("\n"), /low contrast/);
     assert.deepEqual(result.perception.hierarchy, ["hero", "cta", "trust-badges"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("vision-banana fallback does not pass escaping manifest contact sheet paths to review", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-perceive-"));
+  try {
+    const image = join(dir, "screen.png");
+    let observedContactSheetPath = "unset";
+    await writeFile(image, PNG.sync.write(new PNG({ width: 2, height: 2 })));
+    await writeBrief(dir);
+
+    const result = await runDesignPerceive({
+      runDir: dir,
+      file: image,
+      provider: "vision-banana",
+      targets: ["hero: main visual area"],
+      apiKey: "key",
+      env: {},
+      paletteSplit: async ({ outputDir }) => {
+        const manifest = {
+          contact_sheet: "../contact_sheet.png",
+          layers: [{ name: "hero", file: "layers/hero.png" }],
+          warnings: [],
+        };
+        await writeFile(join(outputDir, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+        return { outputDir, manifest };
+      },
+      reviewPerception: async ({ contactSheetPath }) => {
+        observedContactSheetPath = contactSheetPath;
+        return {};
+      },
+    });
+
+    assert.equal(result.perception.metadata.perception_enrichment, "visual-review");
+    assert.equal(observedContactSheetPath, null);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

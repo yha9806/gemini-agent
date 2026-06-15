@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { normalizeDesignPerception } from "./design-schemas.mjs";
 import { readDesignRunId, writeDesignJson } from "./design-run-store.mjs";
 import { runPaletteSplit } from "./palette-mask.mjs";
@@ -14,7 +14,11 @@ function plainObject(value) {
 }
 
 function stringArray(value) {
-  return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.trim()) : [];
+  return Array.isArray(value)
+    ? value
+      .filter((item) => typeof item === "string" && item.trim())
+      .map((item) => item.trim())
+    : [];
 }
 
 function mergeStringArrays(...values) {
@@ -29,9 +33,12 @@ function mergeStringArrays(...values) {
 }
 
 function manifestContactSheetPath(outputDir, manifest) {
-  return typeof manifest?.contact_sheet === "string" && manifest.contact_sheet.trim()
-    ? join(outputDir, manifest.contact_sheet)
-    : null;
+  if (typeof manifest?.contact_sheet !== "string") return null;
+  const contactSheet = manifest.contact_sheet.trim();
+  if (!contactSheet || isAbsolute(contactSheet)) return null;
+  const outputRoot = resolve(outputDir);
+  const candidate = resolve(outputRoot, contactSheet);
+  return candidate.startsWith(`${outputRoot}${sep}`) ? candidate : null;
 }
 
 function truncateField(value) {
