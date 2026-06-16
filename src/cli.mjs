@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { stdin as input, stderr as errorOutput, stdout as output } from "node:process";
 import { runArtifactReview } from "./artifact-review.mjs";
 import { runVisualGate } from "./visual-gate.mjs";
@@ -165,6 +165,29 @@ const DAY_MS = 24 * HOUR_MS;
 
 function allowFakeResponse(env = process.env) {
   return env.GEMINI_AGENT_ALLOW_FAKE_RESPONSE === "1";
+}
+
+function plainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function stringArray(value) {
+  return Array.isArray(value)
+    ? value
+      .filter((item) => typeof item === "string" && item.trim())
+      .map((item) => item.trim())
+    : [];
+}
+
+function mergeStringArrays(...values) {
+  const seen = new Set();
+  const merged = [];
+  for (const value of values.flatMap(stringArray)) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    merged.push(value);
+  }
+  return merged;
 }
 
 function printUsage() {
@@ -1771,6 +1794,106 @@ function designCandidateQualityGate({
   });
 }
 
+function artifactReviewConfidence(review) {
+  const scorecard = plainObject(review?.design_scorecard);
+  const score = [
+    scorecard.implementation_readiness_score,
+    scorecard.overall_score,
+  ].find((value) => Number.isInteger(value) && value >= 0 && value <= 100);
+  return Number.isInteger(score) ? Number((score / 100).toFixed(2)) : null;
+}
+
+function artifactReviewToPerceptionReview(review) {
+  const scorecard = plainObject(review?.design_scorecard);
+  return {
+    hierarchy: [],
+    layout_observations: mergeStringArrays(
+      review?.summary,
+      review?.important_details,
+      review?.design_or_research_findings,
+      scorecard.strengths,
+      review?.notes,
+    ),
+    implementation_constraints: mergeStringArrays(
+      review?.implementation_hints_for_codex,
+      review?.suggested_changes,
+      scorecard.recommended_actions,
+    ),
+    confidence: artifactReviewConfidence(review),
+    warnings: mergeStringArrays(
+      review?.risks_or_ambiguities,
+      review?.top_risks,
+      scorecard.issues,
+      review?.limitations,
+    ),
+  };
+}
+
+function safeRelativeArtifactFile(filePath, cwd) {
+  if (typeof filePath !== "string" || !filePath.trim()) return null;
+  const resolvedCwd = resolve(cwd);
+  const resolvedFile = resolve(resolvedCwd, filePath);
+  const relativePath = relative(resolvedCwd, resolvedFile);
+  if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) return null;
+  return relativePath;
+}
+
+function designPerceiveReviewEvidence({ sourceImagePath, sourceEvidencePath, contactSheetPath }) {
+  const evidenceRoot = resolve(
+    sourceEvidencePath || contactSheetPath
+      ? dirname(sourceEvidencePath ?? contactSheetPath)
+      : process.cwd(),
+  );
+  const files = mergeStringArrays(
+    [safeRelativeArtifactFile(sourceEvidencePath ?? sourceImagePath, evidenceRoot)],
+    [safeRelativeArtifactFile(contactSheetPath, evidenceRoot)],
+  );
+  return { cwd: evidenceRoot, files };
+}
+
+function designPerceiveFallbackReviewPerception({
+  apiKey,
+  env,
+  allowFakeResponse = false,
+}) {
+  return async ({
+    sourceImagePath,
+    sourceEvidencePath,
+    contactSheetPath,
+    targets,
+  }) => {
+    const { cwd, files } = designPerceiveReviewEvidence({
+      sourceImagePath,
+      sourceEvidencePath,
+      contactSheetPath,
+    });
+    if (files.length === 0) {
+      throw new Error("No safe design perception evidence files are available for visual review.");
+    }
+    const review = await runArtifactReview({
+      apiKey,
+      cwd,
+      file: files[0],
+      files,
+      artifactKind: "design",
+      reviewDepth: "quick",
+      env,
+      allowFakeResponse,
+      telemetry: {
+        cwd,
+        source: "cli",
+        command: "design-perceive-enrichment",
+        metadata: {
+          design_stage: "perceive-enrichment",
+          target_count: Array.isArray(targets) ? targets.length : 0,
+          evidence_file_count: files.length,
+        },
+      },
+    });
+    return artifactReviewToPerceptionReview(review);
+  };
+}
+
 function parseDesignGenerateArgs(args) {
   const options = { variants: 1, quality: "fast" };
 
@@ -2505,6 +2628,10 @@ async function runDesignCommand(args) {
     const usesPaletteMaskFallback = selectedProvider === "vision-banana"
       && !process.env.VISION_BANANA_ENDPOINT
       && options.targets.length > 0;
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (usesPaletteMaskFallback && process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+    }
     if (selectedProvider === "palette-mask" || usesPaletteMaskFallback) {
       const key = await resolveApiKey();
       if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
@@ -2517,6 +2644,13 @@ async function runDesignCommand(args) {
       targets: options.targets,
       apiKey,
       env: process.env,
+      reviewPerception: usesPaletteMaskFallback
+        ? designPerceiveFallbackReviewPerception({
+          apiKey,
+          env: process.env,
+          allowFakeResponse: fakeAllowed,
+        })
+        : undefined,
       telemetry: { cwd: process.cwd(), source: "cli", command: "design-perceive" },
     });
     output.write(`${JSON.stringify({

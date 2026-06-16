@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
@@ -128,6 +128,7 @@ test("vision-banana fallback enriches palette perception with visual review", as
       apiKey: "key",
       env: {},
       paletteSplit: async ({ outputDir }) => {
+        await writeFile(join(outputDir, "contact_sheet.png"), PNG.sync.write(new PNG({ width: 2, height: 2 })));
         const manifest = {
           contact_sheet: "contact_sheet.png",
           layers: [
@@ -198,6 +199,48 @@ test("vision-banana fallback does not pass escaping manifest contact sheet paths
     assert.equal(observedContactSheetPath, null);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("vision-banana fallback does not pass symlinked contact sheets outside output to review", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "design-perceive-"));
+  const outside = await mkdtemp(join(tmpdir(), "design-perceive-outside-"));
+  try {
+    const image = join(dir, "screen.png");
+    let observedContactSheetPath = "unset";
+    await writeFile(image, PNG.sync.write(new PNG({ width: 2, height: 2 })));
+    await writeBrief(dir);
+    await writeFile(join(outside, "contact_sheet.png"), PNG.sync.write(new PNG({ width: 2, height: 2 })));
+
+    const result = await runDesignPerceive({
+      runDir: dir,
+      file: image,
+      provider: "vision-banana",
+      targets: ["hero: main visual area"],
+      apiKey: "key",
+      env: {},
+      paletteSplit: async ({ outputDir }) => {
+        await mkdir(outputDir, { recursive: true });
+        await symlink(join(outside, "contact_sheet.png"), join(outputDir, "contact_sheet.png"));
+        const manifest = {
+          contact_sheet: "contact_sheet.png",
+          layers: [{ name: "hero", file: "layers/hero.png" }],
+          warnings: [],
+        };
+        await writeFile(join(outputDir, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+        return { outputDir, manifest };
+      },
+      reviewPerception: async ({ contactSheetPath }) => {
+        observedContactSheetPath = contactSheetPath;
+        return {};
+      },
+    });
+
+    assert.equal(result.perception.metadata.perception_enrichment, "visual-review");
+    assert.equal(observedContactSheetPath, null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 

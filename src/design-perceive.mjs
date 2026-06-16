@@ -1,5 +1,5 @@
-import { mkdir } from "node:fs/promises";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { mkdir, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { normalizeDesignPerception } from "./design-schemas.mjs";
 import { readDesignRunId, writeDesignJson } from "./design-run-store.mjs";
 import { runPaletteSplit } from "./palette-mask.mjs";
@@ -32,13 +32,24 @@ function mergeStringArrays(...values) {
   return merged;
 }
 
-function manifestContactSheetPath(outputDir, manifest) {
-  if (typeof manifest?.contact_sheet !== "string") return null;
-  const contactSheet = manifest.contact_sheet.trim();
-  if (!contactSheet || isAbsolute(contactSheet)) return null;
-  const outputRoot = resolve(outputDir);
-  const candidate = resolve(outputRoot, contactSheet);
-  return candidate.startsWith(`${outputRoot}${sep}`) ? candidate : null;
+async function manifestOutputPath(outputDir, manifest, field) {
+  if (typeof manifest?.[field] !== "string") return null;
+  const manifestPath = manifest[field].trim();
+  if (!manifestPath || manifestPath.includes("\0") || isAbsolute(manifestPath)) return null;
+  try {
+    const outputRoot = await realpath(outputDir);
+    const candidate = await realpath(resolve(outputRoot, manifestPath));
+    const relativePath = relative(outputRoot, candidate);
+    return relativePath && !relativePath.startsWith("..") && !isAbsolute(relativePath)
+      ? candidate
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function manifestContactSheetPath(outputDir, manifest) {
+  return manifestOutputPath(outputDir, manifest, "contact_sheet");
 }
 
 function truncateField(value) {
@@ -107,7 +118,8 @@ async function enrichFallbackPerception({
   try {
     const review = plainObject(await reviewPerception({
       sourceImagePath: file,
-      contactSheetPath: manifestContactSheetPath(outputDir, manifest),
+      sourceEvidencePath: await manifestOutputPath(outputDir, manifest, "source_image"),
+      contactSheetPath: await manifestContactSheetPath(outputDir, manifest),
       targets,
     }));
     return normalizeDesignPerception({

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import { saveTelemetryConfig } from "../src/telemetry-config.mjs";
 import {
@@ -69,6 +70,54 @@ function onePixelPng() {
   image.data[0] = 255;
   image.data[3] = 255;
   return PNG.sync.write(image);
+}
+
+async function writeGoogleGenaiImageMockLoader(dir) {
+  const mockModuleSource = `
+export const Type = Object.freeze({
+  ARRAY: "array",
+  INTEGER: "integer",
+  OBJECT: "object",
+  STRING: "string",
+});
+export function createPartFromBase64(data, mimeType) {
+  return { inlineData: { data, mimeType } };
+}
+export function createPartFromText(text) {
+  return { text };
+}
+export function createUserContent(parts) {
+  return parts;
+}
+export class GoogleGenAI {
+  constructor() {
+    this.models = {
+      generateContent: async () => ({
+        parts: [{
+          inlineData: {
+            mimeType: "image/png",
+            data: process.env.GEMINI_AGENT_FAKE_PALETTE_MASK_BASE64 || "",
+          },
+        }],
+      }),
+    };
+  }
+}
+`;
+  const loaderPath = join(dir, "mock-google-genai-loader.mjs");
+  await writeFile(loaderPath, `
+const mockModuleSource = ${JSON.stringify(mockModuleSource)};
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "@google/genai") {
+    return {
+      url: \`data:text/javascript,\${encodeURIComponent(mockModuleSource)}\`,
+      shortCircuit: true,
+    };
+  }
+  return nextResolve(specifier, context);
+}
+`);
+  return loaderPath;
 }
 
 function telemetryEvent(index, overrides = {}) {
@@ -1030,6 +1079,66 @@ test("design perceive vision-banana fallback resolves Gemini auth before palette
         return true;
       },
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("design perceive vision-banana fallback enriches perception with fake artifact review", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-design-perceive-cli-"));
+  const runId = "20260614T120000000Z-abcdef";
+  const runDir = join(dir, ".gemini-agent", "design", runId);
+  try {
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "brief.json"), `${JSON.stringify({ run_id: runId })}\n`);
+    await writeFile(join(runDir, "screen.png"), onePixelPng());
+    const loaderPath = await writeGoogleGenaiImageMockLoader(dir);
+
+    const { stdout } = await execBin([
+      "design",
+      "perceive",
+      "--run",
+      runId,
+      "--file",
+      join(runDir, "screen.png"),
+      "--provider",
+      "vision-banana",
+      "--target",
+      "hero: main area",
+    ], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        HOME: CLI_TEST_HOME,
+        USERPROFILE: CLI_TEST_HOME,
+        GEMINI_API_KEY: "fake-key",
+        GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+        GEMINI_AGENT_FAKE_RESPONSE: fakeDesignArtifactReview({
+          implementationReadinessScore: 82,
+          recommendedActions: ["Check hero spacing"],
+          issues: ["Target mask uncertain"],
+        }),
+        GEMINI_AGENT_FAKE_PALETTE_MASK_BASE64: onePixelPng().toString("base64"),
+        NODE_OPTIONS: [
+          process.env.NODE_OPTIONS,
+          `--loader=${pathToFileURL(loaderPath).href}`,
+        ].filter(Boolean).join(" "),
+      },
+    });
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.provider, "palette-mask");
+    assert.equal(parsed.requested_provider, "vision-banana");
+    assert.equal(parsed.resolved_provider, "palette-mask");
+    assert.equal(parsed.fallback_used, true);
+    const perception = JSON.parse(await readFile(join(runDir, "perceive", "perception.json"), "utf8"));
+    assert.equal(perception.metadata.perception_enrichment, "visual-review");
+    assert.match(perception.layout_observations.join("\n"), /Dashboard screenshot/);
+    assert.match(perception.layout_observations.join("\n"), /Layout is readable/);
+    assert.match(perception.implementation_constraints.join("\n"), /Use existing button styles/);
+    assert.match(perception.implementation_constraints.join("\n"), /Check hero spacing/);
+    assert.match(perception.warnings.join("\n"), /Target mask uncertain/);
+    assert.equal(perception.confidence, 0.82);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
