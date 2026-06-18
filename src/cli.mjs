@@ -163,6 +163,33 @@ function allowFakeResponse(env = process.env) {
 
 function printUsage() {
   output.write([
+    "gemini-agent: local Gemini coprocessor for Codex and agentic coding workflows.",
+    "",
+    "Common workflows:",
+    "  gemini-agent ask <prompt>",
+    "  gemini-agent context-pack --bootstrap --write-artifact",
+    "  gemini-agent diff-review --smart-diff",
+    "  gemini-agent artifact-review --file <path> --kind ui",
+    "  gemini-agent visual gate --actual-screenshot <path> --kind ui --json",
+    "  gemini-agent design draft [--stdin|--file <path>|text]",
+    "",
+    "Setup:",
+    "  gemini-agent auth status",
+    "  gemini-agent auth set",
+    "  gemini-agent install-codex-global --mode active [--dry-run|--write]",
+    "",
+    "Operator summaries:",
+    "  gemini-agent telemetry status [--global]",
+    "  gemini-agent telemetry summary [--global] [--json]",
+    "  gemini-agent telemetry report [--global] [--json]",
+    "",
+    "Run `gemini-agent --help-all` for every command and operator workflow.",
+    "",
+  ].join("\n"));
+}
+
+function printFullUsage() {
+  output.write([
     "Usage:",
     "  gemini-agent auth status",
     "  gemini-agent auth set",
@@ -3178,6 +3205,10 @@ async function main(argv = process.argv.slice(2)) {
   const [command, ...args] = argv;
   if (!command || command === "--help" || command === "-h") {
     printUsage();
+    return;
+  }
+  if (command === "--help-all") {
+    printFullUsage();
     return;
   }
   if (command === "auth") {
