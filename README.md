@@ -123,17 +123,24 @@ On macOS, store the key in Keychain instead:
 `auth status` reports only whether a key is available and where it came from.
 It never prints the key.
 
-## First Run
+## 90-Second Quick Start
+
+Use this path after `npm install`. It proves credentials, Gemini access, and the
+main review workflow without making you learn the full command surface first.
 
 ```bash
+./bin/gemini-agent auth status
 ./bin/gemini-agent ask "Reply with exactly: gemini-agent-ok"
+./bin/gemini-agent diff-review --smart-diff
 ```
 
-Expected output:
+What each command proves:
 
-```text
-gemini-agent-ok
-```
+| Command | You know it worked when... |
+| --- | --- |
+| `auth status` | It reports whether a Gemini key is available without printing the key. |
+| `ask` | The output is `gemini-agent-ok`. |
+| `diff-review --smart-diff` | It returns structured review JSON, bootstrapping a context pack first if needed. |
 
 If the command says the key is missing, set `GEMINI_API_KEY` or run
 `./bin/gemini-agent auth set`.
