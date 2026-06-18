@@ -109,8 +109,11 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /^\.\/bin\/gemini-agent --help-all$/m);
   assert.match(readme, /Default help is intentionally short/);
   assert.match(readme, /Focused help is available on common workflow commands/);
+  assert.match(readme, /^## 90-Second Quick Start$/m);
+  assert.match(readme, /main review workflow without making you learn the full command surface first/);
   assert.match(readme, /^\.\/bin\/gemini-agent auth status$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent ask "Reply with exactly: gemini-agent-ok"$/m);
+  assert.match(readme, /\| `diff-review --smart-diff` \| It returns structured review JSON, bootstrapping a context pack first if needed\. \|/);
 
   assert.match(readme, /```mermaid\nflowchart TD/);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --smart-diff$/m);
