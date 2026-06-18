@@ -54,6 +54,7 @@ test("repository includes open-source contribution and security entrypoints", as
   const contributing = await readFile(new URL("CONTRIBUTING.md", root), "utf8");
   const security = await readFile(new URL("SECURITY.md", root), "utf8");
   const telemetryDocs = await readFile(new URL("docs/telemetry.md", root), "utf8");
+  const releaseNotes = await readFile(new URL("docs/release/v0.1.0.md", root), "utf8");
   const ci = await readFile(new URL(".github/workflows/ci.yml", root), "utf8");
 
   assert.match(contributing, /^# Contributing$/m);
@@ -62,6 +63,9 @@ test("repository includes open-source contribution and security entrypoints", as
   assert.match(security, /Do not disclose vulnerabilities in a public issue/);
   assert.match(telemetryDocs, /^# Telemetry$/m);
   assert.match(telemetryDocs, /Raw telemetry governance commands are explicit and bounded/);
+  assert.match(releaseNotes, /^# gemini-agent v0\.1\.0 Release Notes$/m);
+  assert.match(releaseNotes, /first open-source source release/);
+  assert.match(releaseNotes, /npm pack --dry-run/);
   assert.match(ci, /npm ci/);
   assert.match(ci, /npm test/);
   assert.match(ci, /npm audit --omit=dev/);
@@ -129,6 +133,8 @@ test("README documents open-source setup and core workflows", async () => {
 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry summary --global --json$/m);
   assert.match(readme, /\[docs\/telemetry\.md\]\(docs\/telemetry\.md\)/);
+  assert.match(readme, /^## Release Notes$/m);
+  assert.match(readme, /\[docs\/release\/v0\.1\.0\.md\]\(docs\/release\/v0\.1\.0\.md\)/);
 
   assert.match(readme, /Raw telemetry mode can capture prompts and responses/);
   assert.match(readme, /`--confirm-raw-content` is an explicit acknowledgement/);
