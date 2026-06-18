@@ -17,7 +17,8 @@ import {
   writeManifest,
 } from "../src/palette-mask.mjs";
 
-const liveKey = await resolveApiKey();
+const runLiveTests = process.env.GEMINI_AGENT_RUN_LIVE_TESTS === "1";
+const liveKey = runLiveTests ? await resolveApiKey() : { ok: false, source: null, key: null };
 
 function pngFromPixels(width, height, pixels) {
   const png = new PNG({ width, height });
@@ -446,7 +447,9 @@ test("parsePaletteSplitArgs accepts multiple targets", () => {
 });
 
 test("live Gemini palette split smoke writes artifacts when API key is configured", {
-  skip: liveKey.ok ? false : "Gemini API key is not configured.",
+  skip: runLiveTests && liveKey.ok
+    ? false
+    : "Set GEMINI_AGENT_RUN_LIVE_TESTS=1 with a Gemini API key to run live Gemini tests.",
   timeout: 120_000,
 }, async () => {
   await withTempDir(async (dir) => {

@@ -392,38 +392,105 @@ test("auth status reports env source without exposing key", async () => {
   assert.doesNotMatch(stdout, /secret-value/);
 });
 
-test("design brief help documents stdin and file input", async () => {
+test("default help shows the small product command surface", async () => {
   const { stdout } = await execBin(["--help"]);
+  assert.match(stdout, /Common workflows:/);
+  assert.match(stdout, /gemini-agent diff-review --smart-diff/);
+  assert.match(stdout, /gemini-agent context-pack --bootstrap --write-artifact/);
+  assert.match(stdout, /gemini-agent artifact-review --file <path> --kind ui/);
+  assert.match(stdout, /gemini-agent design draft \[--stdin\|--file <path>\|text\]/);
+  assert.match(stdout, /Run `gemini-agent --help-all` for every command and operator workflow\./);
+  assert.doesNotMatch(stdout, /telemetry raw export/);
+  assert.doesNotMatch(stdout, /telemetry quarantine/);
+  assert.doesNotMatch(stdout, /design generate --run/);
+  assert.doesNotMatch(stdout, /palette-split/);
+});
+
+test("help-all shows the complete operator command surface", async () => {
+  const { stdout } = await execBin(["--help-all"]);
+  assert.match(stdout, /Usage:/);
+  assert.match(stdout, /gemini-agent design generate --run <path> \[--variants <n>\] \[--quality fast\|pro\]/);
+  assert.match(stdout, /gemini-agent telemetry raw export --state pending\|sent --output <path> --limit <n> --confirm-raw-content/);
+  assert.match(stdout, /gemini-agent telemetry quarantine retry \[--global\] --reason <reason>/);
+  assert.match(stdout, /gemini-agent palette-split <image\.png>/);
+});
+
+test("workflow subcommands expose focused help", async () => {
+  const cases = [
+    {
+      args: ["diff-review", "--help"],
+      includes: [/Usage: gemini-agent diff-review/, /--smart-diff/, /--auto-context-pack/],
+    },
+    {
+      args: ["context-pack", "--help"],
+      includes: [/Usage: gemini-agent context-pack/, /--bootstrap/, /--doctor/],
+    },
+    {
+      args: ["artifact-review", "--help"],
+      includes: [/Usage: gemini-agent artifact-review/, /--review-depth quick\|standard/],
+    },
+    {
+      args: ["visual", "gate", "--help"],
+      includes: [/Usage: gemini-agent visual gate/, /--actual-screenshot <path>/],
+    },
+    {
+      args: ["design", "draft", "--help"],
+      includes: [/Usage: gemini-agent design draft/, /--target-stack html\|react\|tailwind\|auto/],
+    },
+    {
+      args: ["telemetry", "summary", "--help"],
+      includes: [/Usage: gemini-agent telemetry summary/, /--global/, /--json/],
+    },
+  ];
+
+  for (const entry of cases) {
+    const { stdout } = await execBin(entry.args);
+    for (const pattern of entry.includes) {
+      assert.match(stdout, pattern, entry.args.join(" "));
+    }
+    assert.doesNotMatch(stdout, /Unknown command|Unknown telemetry argument/);
+  }
+});
+
+test("design brief help documents stdin and file input", async () => {
+  const { stdout } = await execBin(["--help-all"]);
   assert.match(stdout, /gemini-agent design brief \[--stdin\|--file <path>\] \[--write-artifact\]/);
 });
 
+test("design draft help is listed", async () => {
+  const { stdout } = await execBin(["--help-all"], {
+    env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+  });
+  assert.match(stdout, /gemini-agent design draft \[--stdin\|--file <path>\|text\]/);
+});
+
 test("design generate help documents run variants and quality", async () => {
-  const { stdout } = await execBin(["--help"]);
+  const { stdout } = await execBin(["--help-all"]);
   assert.match(stdout, /gemini-agent design generate --run <path> \[--variants <n>\] \[--quality fast\|pro\]/);
 });
 
 test("design perceive help documents run file targets and provider", async () => {
-  const { stdout } = await execBin(["--help"]);
+  const { stdout } = await execBin(["--help-all"]);
   assert.match(stdout, /gemini-agent design perceive --run <path> --file <path> \[--target <name: description> \.\.\.\] \[--provider auto\|palette-mask\|gemini-vision\|vision-banana\]/);
 });
 
 test("design prototype help documents run candidate and target stack", async () => {
-  const { stdout } = await execBin(["--help"]);
+  const { stdout } = await execBin(["--help-all"]);
   assert.match(stdout, /gemini-agent design prototype --run <path> \[--candidate <id>\] \[--target-stack html\|react\|tailwind\|auto\]/);
 });
 
 test("design handoff help documents run and candidate", async () => {
-  const { stdout } = await execBin(["--help"]);
+  const { stdout } = await execBin(["--help-all"]);
   assert.match(stdout, /gemini-agent design handoff --run <path> \[--candidate <id>\]/);
 });
 
 test("design loop help documents run screenshots and iterations", async () => {
-  const { stdout } = await execBin(["--help"]);
+  const { stdout } = await execBin(["--help-all"]);
   assert.match(stdout, /gemini-agent design loop --run <path> \[--target-screenshot <path>\] \[--actual-screenshot <path>\] \[--max-iterations <n>\]/);
 });
 
 test("design doctor help documents json output", async () => {
-  const { stdout } = await execBin(["--help"]);
+  const { stdout } = await execBin(["--help-all"]);
   assert.match(stdout, /gemini-agent design doctor \[--json\]/);
 });
 
