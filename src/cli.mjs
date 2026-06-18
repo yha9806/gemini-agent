@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { stdin as input, stderr as errorOutput, stdout as output } from "node:process";
 import { runArtifactReview } from "./artifact-review.mjs";
+import { runVisualGate } from "./visual-gate.mjs";
+import { visualGateToPrettyJson } from "./visual-gate-schemas.mjs";
 import { applyCodexGlobalInstall } from "./codex-global-install.mjs";
 import {
   formatContextPackDoctorText,
@@ -11,6 +13,7 @@ import {
 } from "./context-pack-doctor.mjs";
 import { runContextPack } from "./context-pack.mjs";
 import { runDesignBrief } from "./design-brief.mjs";
+import { runDesignDraft, validateDesignDraftModelPreflight } from "./design-draft.mjs";
 import { runDesignGenerate } from "./design-generate.mjs";
 import { runDesignHandoff } from "./design-handoff.mjs";
 import { runDesignLoop } from "./design-loop.mjs";
@@ -18,6 +21,7 @@ import { designDoctor } from "./design-model-router.mjs";
 import { runDesignPerceive, selectPerceptionProvider } from "./design-perceive.mjs";
 import { runDesignPrototype, validatePrototypeTargetStack } from "./design-prototype.mjs";
 import { resolveDesignRun } from "./design-run-store.mjs";
+import { resolveWorkspaceFilePath } from "./workspace-paths.mjs";
 import { deleteApiKeyFromKeychain, resolveApiKey, saveApiKeyToKeychain } from "./keychain.mjs";
 import { generateReview, generateText } from "./gemini-client.mjs";
 import {
@@ -150,6 +154,7 @@ const GATE_COMMANDS = new Map([
 const ARTIFACT_KINDS = new Set(["image", "ui", "design", "architecture", "research"]);
 const ARTIFACT_REVIEW_MODES = new Set(["single", "comparison"]);
 const ARTIFACT_REVIEW_DEPTHS = new Set(["quick", "standard"]);
+const VISUAL_GATE_KINDS = new Set(["ui", "design", "image"]);
 const MAX_ARTIFACT_REVIEW_FILES = 4;
 const DEFAULT_TELEMETRY_ENDPOINT = "http://127.0.0.1:8787/ingest";
 const DEFAULT_TELEMETRY_TOKEN_ENV = "GEMINI_AGENT_TELEMETRY_TOKEN";
@@ -1762,6 +1767,102 @@ function parseDesignBriefArgs(args) {
   return options;
 }
 
+function parseDesignDraftArgs(args) {
+  const options = {
+    stdin: false,
+    files: [],
+    text: [],
+    references: [],
+    targets: [],
+    variants: 1,
+    quality: "fast",
+    targetStack: "html",
+    skipGenerate: false,
+    skipPerceive: false,
+    skipPrototype: false,
+    skipHandoff: false,
+    json: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--stdin") {
+      options.stdin = true;
+    } else if (arg === "--file") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--file requires a path.");
+      options.files.push(value);
+      index += 1;
+    } else if (arg === "--reference") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--reference requires a path.");
+      options.references.push(value);
+      index += 1;
+    } else if (arg === "--target") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--target requires a value.");
+      validateDesignPerceiveTarget(value);
+      options.targets.push(value);
+      index += 1;
+    } else if (arg === "--variants") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--variants must be between 1 and 4.");
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 4) {
+        throw new Error("--variants must be between 1 and 4.");
+      }
+      options.variants = parsed;
+      index += 1;
+    } else if (arg === "--quality") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--") || !["fast", "pro"].includes(value)) {
+        throw new Error("--quality must be fast or pro.");
+      }
+      options.quality = value;
+      index += 1;
+    } else if (arg === "--target-stack") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--target-stack must be html, react, tailwind, or auto.");
+      }
+      options.targetStack = validatePrototypeTargetStack(value);
+      index += 1;
+    } else if (arg === "--skip-generate") {
+      options.skipGenerate = true;
+    } else if (arg === "--skip-perceive") {
+      options.skipPerceive = true;
+    } else if (arg === "--skip-prototype") {
+      options.skipPrototype = true;
+    } else if (arg === "--skip-handoff") {
+      options.skipHandoff = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      options.text.push(arg);
+    }
+  }
+
+  return options;
+}
+
+function withDesignDraftContext(inputText, { references = [], targets = [] } = {}) {
+  const additions = [];
+  if (references.length > 0) {
+    additions.push([
+      "Reference files:",
+      ...references.map((reference) => `- ${reference}`),
+    ].join("\n"));
+  }
+  if (targets.length > 0) {
+    additions.push([
+      "Targets:",
+      ...targets.map((target) => `- ${target}`),
+    ].join("\n"));
+  }
+  if (additions.length === 0) return inputText;
+  return `${inputText.trim()}\n\n${additions.join("\n\n")}\n`;
+}
+
 function parseDesignGenerateArgs(args) {
   const options = { variants: 1, quality: "fast" };
 
@@ -2048,6 +2149,51 @@ function parseArtifactArgs(args) {
   return { file: files[0], files, artifactKind, reviewMode, reviewDepth, telemetryPurpose, writeArtifact };
 }
 
+function parseVisualGateArgs(args) {
+  const options = {
+    targetScreenshot: null,
+    actualScreenshot: null,
+    kind: "ui",
+    riskHints: [],
+    smokeOnly: false,
+    json: false,
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--target-screenshot") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--target-screenshot requires a path.");
+      options.targetScreenshot = value;
+      index += 1;
+    } else if (arg === "--actual-screenshot") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--actual-screenshot requires a path.");
+      options.actualScreenshot = value;
+      index += 1;
+    } else if (arg === "--kind") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--") || !VISUAL_GATE_KINDS.has(value)) {
+        throw new Error("--kind requires one of: ui, design, image.");
+      }
+      options.kind = value;
+      index += 1;
+    } else if (arg === "--risk") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--risk requires a hint.");
+      options.riskHints.push(value);
+      index += 1;
+    } else if (arg === "--smoke-only") {
+      options.smokeOnly = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown visual gate argument: ${arg}`);
+    }
+  }
+  if (!options.actualScreenshot) throw new Error("--actual-screenshot is required.");
+  return options;
+}
+
 async function prevalidateArtifactFile(file, cwd = process.cwd()) {
   const resolvedFile = resolveCwdFilePath(file, { cwd });
   let mimeType;
@@ -2260,6 +2406,48 @@ async function runArtifactReviewCommand(args) {
   output.write(artifactReviewToPrettyJson(review));
 }
 
+async function runVisualCommand(args) {
+  const [subcommand, ...subArgs] = args;
+  if (subcommand !== "gate") throw new Error("Unknown visual command.");
+  const options = parseVisualGateArgs(subArgs);
+  const cwd = process.cwd();
+  const fakeAllowed = allowFakeResponse(process.env);
+  if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+    throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+  }
+  if (!options.smokeOnly) {
+    const smokeProbe = await runVisualGate({ cwd, ...options, smokeOnly: true, telemetry: null });
+    if (smokeProbe.review_posture === "blocked_before_gemini") {
+      throw new Error("visual gate blocked before Gemini: capture a readable supported screenshot and retry.");
+    }
+  }
+  let keyResult = null;
+  const resolveVisualGateKey = async () => {
+    if (!keyResult) keyResult = await resolveApiKey();
+    if (!keyResult.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    return keyResult;
+  };
+  const result = await runVisualGate({
+    ...options,
+    cwd,
+    artifactReview: async (artifactOptions) => {
+      const key = await resolveVisualGateKey();
+      return runArtifactReview({
+        ...artifactOptions,
+        apiKey: key.key,
+        env: process.env,
+        allowFakeResponse: fakeAllowed,
+      });
+    },
+    telemetry: {
+      cwd,
+      source: "cli",
+      command: "visual-gate",
+    },
+  });
+  output.write(visualGateToPrettyJson(result));
+}
+
 async function runPaletteSplitCommand(args) {
   const options = parsePaletteSplitArgs(args);
   const key = await resolveApiKey();
@@ -2289,27 +2477,103 @@ async function runDesignCommand(args) {
     return;
   }
 
+  if (subcommand === "draft") {
+    const options = parseDesignDraftArgs(subArgs);
+    const stdinText = options.stdin ? await readStdin() : "";
+    const textInput = [
+      stdinText,
+      options.text.join(" "),
+    ].filter((text) => text.trim()).join("\n");
+    const collected = await collectTextInput({
+      stdinText: textInput,
+      files: options.files,
+      cwd: process.cwd(),
+    });
+    for (const reference of options.references) {
+      await resolveWorkspaceFilePath(reference, { cwd: process.cwd() });
+    }
+    validateDesignDraftModelPreflight({
+      env: process.env,
+      quality: options.quality,
+      skipGenerate: options.skipGenerate,
+    });
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
+    }
+    const key = await resolveApiKey();
+    if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+    const result = await runDesignDraft({
+      cwd: process.cwd(),
+      inputText: withDesignDraftContext(collected.input, {
+        references: options.references,
+        targets: options.targets,
+      }),
+      apiKey: key.key,
+      env: process.env,
+      variants: options.variants,
+      quality: options.quality,
+      targetStack: options.targetStack,
+      skipGenerate: options.skipGenerate,
+      skipPerceive: options.skipPerceive,
+      skipPrototype: options.skipPrototype,
+      skipHandoff: options.skipHandoff,
+      allowFakeResponse: fakeAllowed,
+      telemetry: { cwd: process.cwd(), source: "cli", command: "design-draft" },
+    });
+    output.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
   if (subcommand === "loop") {
     const options = parseDesignLoopArgs(subArgs);
     const runDir = resolveDesignRun({ cwd: process.cwd(), run: options.run });
-    let apiKey;
-    if (options.actualScreenshot && options.targetScreenshot) {
-      const key = await resolveApiKey();
-      if (!key.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
-      apiKey = key.key;
+    const shouldReviewScreenshots = options.actualScreenshot && options.targetScreenshot;
+    const fakeAllowed = allowFakeResponse(process.env);
+    if (shouldReviewScreenshots && process.env.GEMINI_AGENT_FAKE_RESPONSE && !fakeAllowed) {
+      throw new Error("GEMINI_AGENT_FAKE_RESPONSE requires GEMINI_AGENT_ALLOW_FAKE_RESPONSE=1.");
     }
+    let keyResult = null;
+    const resolveDesignLoopKey = async () => {
+      if (!keyResult) keyResult = await resolveApiKey();
+      if (!keyResult.ok) throw new Error("Gemini API key is not configured. Run: gemini-agent auth set");
+      return keyResult;
+    };
     const result = await runDesignLoop({
       runDir,
       targetScreenshot: options.targetScreenshot,
       actualScreenshot: options.actualScreenshot,
       maxIterations: options.maxIterations,
-      apiKey,
+      visualGate: shouldReviewScreenshots
+        ? (gateInput) => runVisualGate({
+          ...gateInput,
+          artifactReview: async (artifactOptions) => {
+            const key = await resolveDesignLoopKey();
+            return runArtifactReview({
+              ...artifactOptions,
+              apiKey: key.key,
+              env: process.env,
+              allowFakeResponse: fakeAllowed,
+            });
+          },
+        })
+        : undefined,
       telemetry: { cwd: process.cwd(), source: "cli", command: "design-loop" },
     });
+    const gate = result.review.visual_gate
+      && typeof result.review.visual_gate === "object"
+      && !Array.isArray(result.review.visual_gate)
+      ? result.review.visual_gate
+      : null;
     output.write(`${JSON.stringify({
       status: result.review.status,
       loop_review: "loop-review.json",
       path: result.path,
+      ...(gate ? {
+        visual_gate_verdict: gate.verdict ?? null,
+        visual_gate_artifact_review_used: gate.artifact_review?.used === true,
+        visual_gate_fallback_used: gate.artifact_review?.fallback_used === true,
+      } : {}),
       message: result.message,
     }, null, 2)}\n`);
     return;
@@ -3342,6 +3606,10 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (command === "artifact-review") {
     await runArtifactReviewCommand(args);
+    return;
+  }
+  if (command === "visual") {
+    await runVisualCommand(args);
     return;
   }
   if (command === "palette-split") {

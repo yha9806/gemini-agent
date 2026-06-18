@@ -161,6 +161,12 @@ test("runTelemetrySummary returns a zero summary for an enabled empty queue with
     top_depths: [],
     top_budget_cohorts: [],
   });
+  assert.deepEqual(result.visual_gate, {
+    event_count: 0,
+    verdict_counts: [],
+    review_postures: [],
+    issue_categories: [],
+  });
   assert.deepEqual(result.multimodal_adjusted, {
     event_count: 0,
     item_count: 0,
@@ -414,6 +420,74 @@ test("runTelemetrySummary aggregates safe latency stage attribution", async () =
   assert.match(text, /pre_gemini_total: 3 events, p50 12 ms, p95 13 ms, max 13 ms/);
   assert.doesNotMatch(serialized, /private latency stage prompt|private latency stage response/);
   assert.doesNotMatch(serialized, /evt_000076|\/Users\/example|badStage|negative_value|float_value|string_value/);
+});
+
+test("runTelemetrySummary aggregates visual gate metadata safely", async () => {
+  const cwd = await temporaryWorkspace();
+  await saveTelemetryConfig({
+    cwd,
+    endpoint: "http://127.0.0.1:8787/ingest",
+    tokenEnv: TOKEN_ENV,
+    deploymentId: "gemini-agent-main",
+  });
+
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(501, {
+      command: "visual-gate",
+      prompt: "private visual gate prompt /Users/example/target.png",
+      response: "private visual gate response /tmp/after.png",
+      metadata: {
+        visual_gate: {
+          phase: "final",
+          verdict: "block",
+          review_posture: "comparison_review",
+          risk_level: "high",
+          risk_reasons: ["design_implementation"],
+          smoke_status: "pass",
+          smoke_check_counts: { pass: 3 },
+          artifact_review_used: true,
+          artifact_review_mode: "comparison",
+          artifact_review_depth: "quick",
+          fallback_used: false,
+          issue_category_counts: {
+            target_actual_drift: 1,
+            api_key: 4,
+            customer_acme: 2,
+          },
+          private_path: "/Users/example/after.png",
+          prompt: "unsafe prompt field",
+          response: "unsafe response field",
+        },
+      },
+    }),
+  });
+  await appendTelemetryEvent({
+    cwd,
+    event: telemetryEvent(502, {
+      command: "visual-gate",
+      metadata: {
+        visual_gate: {
+          phase: "pre_gemini",
+          verdict: "pass",
+          review_posture: "smoke_only",
+          issue_category_counts: { ignored_private_category: 7 },
+        },
+      },
+    }),
+  });
+
+  const summary = await runTelemetrySummary({ cwd, scope: "local" });
+  const serialized = JSON.stringify(summary.visual_gate);
+
+  assert.deepEqual(summary.visual_gate, {
+    event_count: 1,
+    verdict_counts: [{ verdict: "block", event_count: 1 }],
+    review_postures: [{ review_posture: "comparison_review", event_count: 1 }],
+    issue_categories: [{ category: "target_actual_drift", event_count: 1 }],
+  });
+  assert.doesNotMatch(serialized, /evt_000501|evt_000502|\/Users|\/tmp|after\.png|target\.png|prompt|response/);
+  assert.doesNotMatch(serialized, /api_key|customer_acme|ignored_private_category|pre_gemini|pass|smoke_only/);
 });
 
 test("runTelemetrySummary aggregates safe structured response diagnostics", async () => {

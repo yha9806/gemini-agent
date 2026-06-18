@@ -266,6 +266,7 @@ export const DesignLoopReviewZodSchema = z.object({
   summary: StringList,
   next_actions: StringList,
   artifact_review: z.record(z.string(), z.unknown()).nullable().default(null),
+  visual_gate: z.record(z.string(), z.unknown()).nullable().default(null),
 });
 
 function normalizeWith(schema, value, label) {

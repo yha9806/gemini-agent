@@ -452,6 +452,33 @@ test("workflow subcommands expose focused help", async () => {
   }
 });
 
+test("advertised workflow commands validate inputs instead of falling through to unknown command", async () => {
+  await assert.rejects(
+    () => execBin(["visual", "gate", "--kind", "ui", "--json"], {
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /--actual-screenshot is required/);
+      assert.doesNotMatch(error.stderr, /Unknown command|Gemini API key/);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    () => execBin(["design", "draft", "--stdin"], {
+      input: "",
+      env: { PATH: process.env.PATH, HOME: CLI_TEST_HOME, USERPROFILE: CLI_TEST_HOME },
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Context input is empty\.|design draft input is empty/);
+      assert.doesNotMatch(error.stderr, /Unknown design command|Gemini API key/);
+      return true;
+    },
+  );
+});
+
 test("design brief help documents stdin and file input", async () => {
   const { stdout } = await execBin(["--help-all"]);
   assert.match(stdout, /gemini-agent design brief \[--stdin\|--file <path>\] \[--write-artifact\]/);
