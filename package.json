@@ -24,6 +24,8 @@
   "files": [
     "bin/",
     "src/",
+    "docs/telemetry.md",
+    "docs/assets/",
     "README.md",
     "LICENSE"
   ],
