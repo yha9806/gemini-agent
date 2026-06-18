@@ -43,6 +43,8 @@ test("package has open-source discovery metadata and a bounded publish surface",
   assert.deepEqual(pkg.files, [
     "bin/",
     "src/",
+    "docs/telemetry.md",
+    "docs/assets/",
     "README.md",
     "LICENSE",
   ]);
@@ -51,12 +53,15 @@ test("package has open-source discovery metadata and a bounded publish surface",
 test("repository includes open-source contribution and security entrypoints", async () => {
   const contributing = await readFile(new URL("CONTRIBUTING.md", root), "utf8");
   const security = await readFile(new URL("SECURITY.md", root), "utf8");
+  const telemetryDocs = await readFile(new URL("docs/telemetry.md", root), "utf8");
   const ci = await readFile(new URL(".github/workflows/ci.yml", root), "utf8");
 
   assert.match(contributing, /^# Contributing$/m);
   assert.match(contributing, /GEMINI_AGENT_RUN_LIVE_TESTS=1 npm run test:live/);
   assert.match(security, /^# Security Policy$/m);
   assert.match(security, /Do not disclose vulnerabilities in a public issue/);
+  assert.match(telemetryDocs, /^# Telemetry$/m);
+  assert.match(telemetryDocs, /Raw telemetry governance commands are explicit and bounded/);
   assert.match(ci, /npm ci/);
   assert.match(ci, /npm test/);
   assert.match(ci, /npm audit --omit=dev/);
@@ -85,6 +90,7 @@ test("README documents open-source setup and core workflows", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
 
   assert.match(readme, /https:\/\/img\.shields\.io\/badge\/license-MIT-green\.svg/);
+  assert.match(readme, /!\[CLI focused help\]\(docs\/assets\/cli-focused-help\.svg\)/);
   assert.match(readme, /^## Why Use It\?$/m);
   assert.match(readme, /\| Keep Codex from rereading a large repo slice \| `context-pack --bootstrap --write-artifact` \|/);
   assert.match(readme, /```mermaid\nflowchart LR/);
@@ -119,13 +125,7 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /gemini_design_draft/);
 
   assert.match(readme, /^\.\/bin\/gemini-agent telemetry summary --global --json$/m);
-  assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw preflight --global --batch-size 1 --json$/m);
-  assert.match(readme, /^\.\/bin\/gemini-agent telemetry raw export --global --state pending --output \.\/raw-export\.jsonl --limit 100 --confirm-raw-content --json$/m);
-  assert.match(
-    readme,
-    /^\.\/bin\/gemini-agent telemetry install-scheduler --global --target launchd --name gemini-agent-main --schedule daily@09:00 --batch-size 1 --timeout-ms 20000 --env-file ~\/\.gemini-agent\/telemetry\.env --dry-run$/m,
-  );
-  assert.match(readme, /^\.\/bin\/gemini-agent-telemetry-receiver --host 127\.0\.0\.1 --port 8787 --storage \.\/\.telemetry-data --token-env GEMINI_AGENT_TELEMETRY_TOKEN$/m);
+  assert.match(readme, /\[docs\/telemetry\.md\]\(docs\/telemetry\.md\)/);
 
   assert.match(readme, /Raw telemetry mode can capture prompts and responses/);
   assert.match(readme, /Codex or the operator remains responsible for edits, tests, commits, and final\s+decisions/);

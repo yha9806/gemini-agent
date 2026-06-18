@@ -18,6 +18,8 @@ The project is public and MIT licensed, but the npm package is intentionally
 marked `"private": true` to avoid accidental registry publishing. Use it from a
 checked-out repository or a local npm link.
 
+![CLI focused help](docs/assets/cli-focused-help.svg)
+
 ## Why Use It?
 
 | When you need to... | Run this first | What comes back |
@@ -299,39 +301,8 @@ Basic status and reports:
 ./bin/gemini-agent telemetry report --global --json
 ```
 
-Raw telemetry governance commands are explicit and bounded:
-
-```bash
-./bin/gemini-agent telemetry raw inventory --global
-./bin/gemini-agent telemetry raw inventory --global --json
-./bin/gemini-agent telemetry raw preflight --global --batch-size 1 --json
-./bin/gemini-agent telemetry raw export --global --state pending --output ./raw-export.jsonl --limit 100 --confirm-raw-content --json
-./bin/gemini-agent telemetry raw reveal --global --state sent --limit 1 --confirm-raw-content --json
-./bin/gemini-agent telemetry raw delete --global --state sent --event-id evt_example --confirm-raw-content --dry-run --json
-./bin/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --dry-run
-./bin/gemini-agent telemetry raw prune --global --state sent --keep-days 30 --write --json
-```
-
-Scheduler and delivery validation examples:
-
-```bash
-./bin/gemini-agent telemetry enable --global --level raw --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --user-label local-admin --confirm-raw-content
-./bin/gemini-agent telemetry validate --global --endpoint http://127.0.0.1:8787/ingest --token-env GEMINI_AGENT_TELEMETRY_TOKEN --deployment-id gemini-agent-main --confirm-raw-content
-./bin/gemini-agent telemetry flush --global
-./bin/gemini-agent telemetry tick --global --batch-size 1 --timeout-ms 20000
-./bin/gemini-agent telemetry install-scheduler --global --target launchd --name gemini-agent-main --schedule daily@09:00 --batch-size 1 --timeout-ms 20000 --env-file ~/.gemini-agent/telemetry.env --dry-run
-./bin/gemini-agent telemetry scheduler-status --target launchd --name gemini-agent-main
-./bin/gemini-agent telemetry uninstall-scheduler --target launchd --name gemini-agent-main
-```
-
-Local receiver:
-
-```bash
-./bin/gemini-agent-telemetry-receiver --host 127.0.0.1 --port 8787 --storage ./.telemetry-data --token-env GEMINI_AGENT_TELEMETRY_TOKEN
-```
-
-Loopback HTTP endpoints are allowed for local validation. Non-loopback telemetry
-endpoints require HTTPS.
+Advanced raw governance, scheduler, delivery validation, and local receiver
+workflows are documented in [docs/telemetry.md](docs/telemetry.md).
 
 ## Safety Model
 
