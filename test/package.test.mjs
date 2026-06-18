@@ -45,6 +45,16 @@ test("public markdown does not expose local home paths", async () => {
 test("README documents open-source setup and core workflows", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
 
+  assert.match(readme, /https:\/\/img\.shields\.io\/badge\/license-MIT-green\.svg/);
+  assert.match(readme, /^## Why Use It\?$/m);
+  assert.match(readme, /\| Keep Codex from rereading a large repo slice \| `context-pack --bootstrap --write-artifact` \|/);
+  assert.match(readme, /```mermaid\nflowchart LR/);
+  assert.match(readme, /^## What It Is Not$/m);
+  assert.match(readme, /\[OpenAI Codex CLI\]\(https:\/\/github\.com\/openai\/codex\)/);
+  assert.match(readme, /\[Gemini CLI\]\(https:\/\/github\.com\/google-gemini\/gemini-cli\)/);
+  assert.match(readme, /\[Aider\]\(https:\/\/github\.com\/Aider-AI\/aider\)/);
+  assert.match(readme, /\[Repomix\]\(https:\/\/github\.com\/yamadashy\/repomix\)/);
+  assert.match(readme, /\[CodeRabbit\]\(https:\/\/docs\.coderabbit\.ai\/cli\) and \[Greptile\]\(https:\/\/www\.greptile\.com\/docs\/introduction\)/);
   assert.match(readme, /^## Requirements$/m);
   assert.match(readme, /Node\.js 22 or newer/);
   assert.match(readme, /marked `"private": true`/);
@@ -54,6 +64,7 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /^\.\/bin\/gemini-agent auth status$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent ask "Reply with exactly: gemini-agent-ok"$/m);
 
+  assert.match(readme, /```mermaid\nflowchart TD/);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --smart-diff$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --auto-context-pack --diff$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent context-pack --bootstrap --write-artifact$/m);

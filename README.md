@@ -1,5 +1,10 @@
 # gemini-agent
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+![Node.js >=22](https://img.shields.io/badge/node-%3E%3D22-339933)
+![Interfaces: CLI + MCP](https://img.shields.io/badge/interfaces-CLI%20%2B%20MCP-blue)
+![Telemetry: opt-in](https://img.shields.io/badge/telemetry-opt--in-lightgrey)
+
 Local-first Gemini tools for Codex and other agentic coding workflows.
 
 `gemini-agent` lets a coding agent ask Gemini for the parts where a second
@@ -12,6 +17,41 @@ final release decisions.
 The project is public and MIT licensed, but the npm package is intentionally
 marked `"private": true` to avoid accidental registry publishing. Use it from a
 checked-out repository or a local npm link.
+
+## Why Use It?
+
+| When you need to... | Run this first | What comes back |
+| --- | --- | --- |
+| Keep Codex from rereading a large repo slice | `context-pack --bootstrap --write-artifact` | A reusable `.gemini-agent/context/latest.json` summary |
+| Get a second opinion before committing | `diff-review --smart-diff` | Structured risks, missing tests, unsafe claims, and suggested changes |
+| Check whether a UI screenshot looks shippable | `visual gate --actual-screenshot after.png --kind ui --json` | A pass, caution, or block result with safe visual notes |
+| Turn a design brief into implementation guidance | `design draft --stdin --target-stack html` | A design run with candidates, prototype, and Codex handoff artifacts |
+| Understand opt-in usage and reliability | `telemetry report --global --json` | Aggregate health, economics, latency, context reuse, and quality signals |
+
+```mermaid
+flowchart LR
+  operator["Human or Codex"] --> agent["gemini-agent\nCLI or MCP"]
+  agent --> gemini["Gemini API\nreview, vision, design"]
+  agent --> context["Context packs\n.gemini-agent/context"]
+  agent --> artifacts["Local artifacts\nreviews, design, telemetry"]
+  context --> agent
+  artifacts --> operator
+  operator --> execution["Edits, tests, commits,\ndeploys, final decisions"]
+```
+
+## What It Is Not
+
+`gemini-agent` is not another autonomous coding agent. It is a local
+coprocessor that gives Codex or another operator compact context, review
+judgment, multimodal inspection, and design handoff artifacts.
+
+| Adjacent product | Best known for | How `gemini-agent` is different |
+| --- | --- | --- |
+| [OpenAI Codex CLI](https://github.com/openai/codex) | A local terminal coding agent that can read, edit, and run code | `gemini-agent` does not edit source; it reviews, summarizes, and produces local artifacts for Codex |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Direct Gemini access from the terminal with built-in tools and MCP support | `gemini-agent` narrows Gemini usage to review gates, context packs, visual checks, and design workflows |
+| [Aider](https://github.com/Aider-AI/aider) | AI pair programming inside a git repository | `gemini-agent` is a second-opinion and artifact pipeline, not a pair-programming editor |
+| [Repomix](https://github.com/yamadashy/repomix) | Packing repositories into AI-friendly files | `gemini-agent` creates reusable Gemini-generated context packs and feeds them into review gates |
+| [CodeRabbit](https://docs.coderabbit.ai/cli) and [Greptile](https://www.greptile.com/docs/introduction) | Context-aware code review for local changes or pull requests | `gemini-agent` is local-first, manual or MCP-triggered, and keeps final execution authority with Codex or the user |
 
 ## Requirements
 
@@ -83,6 +123,22 @@ If the command says the key is missing, set `GEMINI_API_KEY` or run
 `./bin/gemini-agent auth set`.
 
 ## Common Workflows
+
+```mermaid
+flowchart TD
+  start["What do you need?"]
+  start --> contextNeed["Large source, logs, notes, or diff context"]
+  start --> reviewNeed["Second opinion on a plan, patch, or diff"]
+  start --> visualNeed["Screenshot, UI, diagram, or design judgment"]
+  start --> designNeed["Design brief to implementation handoff"]
+  start --> telemetryNeed["Usage, cost, reliability, or raw-governance report"]
+
+  contextNeed --> contextCmd["context-pack --bootstrap --write-artifact"]
+  reviewNeed --> reviewCmd["diff-review --smart-diff\nplan-critique --stdin\npatch-precheck --diff"]
+  visualNeed --> visualCmd["artifact-review --file design.png --kind ui\nvisual gate --actual-screenshot after.png --json"]
+  designNeed --> designCmd["design draft --stdin --variants 2 --target-stack html"]
+  telemetryNeed --> telemetryCmd["telemetry summary/economics/priorities/report --global"]
+```
 
 ### Review The Current Diff
 
