@@ -91,7 +91,16 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /Codex or the operator remains responsible for edits, tests, commits, and final\s+decisions/);
   assert.match(readme, /without printing raw prompts, raw responses,\s+local paths, event ids, batch ids,\s+media file names, or image bytes/);
   assert.match(readme, /^npm test$/m);
+  assert.match(readme, /^GEMINI_AGENT_RUN_LIVE_TESTS=1 npm run test:live$/m);
   assert.match(readme, /MIT\. See \[LICENSE\]\(LICENSE\)/);
+});
+
+test("live Gemini tests require explicit opt-in", async () => {
+  const paletteMaskTest = await readFile(new URL("palette-mask.test.mjs", import.meta.url), "utf8");
+
+  assert.match(paletteMaskTest, /GEMINI_AGENT_RUN_LIVE_TESTS/);
+  assert.doesNotMatch(paletteMaskTest, /^const liveKey = await resolveApiKey\(\);$/m);
+  assert.match(paletteMaskTest, /skip: runLiveTests && liveKey\.ok\s+\? false\s+: /);
 });
 
 test("wrappers fail clearly before Gemini integration is implemented", async () => {

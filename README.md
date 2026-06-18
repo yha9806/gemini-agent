@@ -355,11 +355,12 @@ npm test
 Optional live smoke test:
 
 ```bash
-npm run test:live
+GEMINI_AGENT_RUN_LIVE_TESTS=1 npm run test:live
 ```
 
 The live test calls Gemini and requires credentials. Normal `npm test` uses
-Node's built-in test runner and should not require a Gemini API key.
+Node's built-in test runner, keeps live Gemini smoke tests skipped, and should
+not require a Gemini API key.
 
 Before contributing, run the focused command you changed plus `npm test`. Keep
 `.gemini-agent/`, `node_modules/`, generated screenshots, raw exports, and local
