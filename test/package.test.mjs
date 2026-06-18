@@ -61,6 +61,8 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /^git clone https:\/\/github\.com\/yha9806\/gemini-agent\.git$/m);
   assert.match(readme, /^npm install$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent --help$/m);
+  assert.match(readme, /^\.\/bin\/gemini-agent --help-all$/m);
+  assert.match(readme, /Default help is intentionally short/);
   assert.match(readme, /^\.\/bin\/gemini-agent auth status$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent ask "Reply with exactly: gemini-agent-ok"$/m);
 

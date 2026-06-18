@@ -73,7 +73,13 @@ git clone https://github.com/yha9806/gemini-agent.git
 cd gemini-agent
 npm install
 ./bin/gemini-agent --help
+./bin/gemini-agent --help-all
 ```
+
+Default help is intentionally short: it shows the setup commands and the
+workflow entrypoints most users need first. Use `--help-all` when you want the
+complete operator surface, including advanced design steps and telemetry
+governance commands.
 
 Use the local binary directly:
 
