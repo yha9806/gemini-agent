@@ -506,6 +506,43 @@ test("help-all shows the complete operator command surface", async () => {
   assert.match(stdout, /gemini-agent palette-split <image\.png>/);
 });
 
+test("workflow subcommands expose focused help", async () => {
+  const cases = [
+    {
+      args: ["diff-review", "--help"],
+      includes: [/Usage: gemini-agent diff-review/, /--smart-diff/, /--auto-context-pack/],
+    },
+    {
+      args: ["context-pack", "--help"],
+      includes: [/Usage: gemini-agent context-pack/, /--bootstrap/, /--doctor/],
+    },
+    {
+      args: ["artifact-review", "--help"],
+      includes: [/Usage: gemini-agent artifact-review/, /--review-depth quick\|standard/],
+    },
+    {
+      args: ["visual", "gate", "--help"],
+      includes: [/Usage: gemini-agent visual gate/, /--actual-screenshot <path>/],
+    },
+    {
+      args: ["design", "draft", "--help"],
+      includes: [/Usage: gemini-agent design draft/, /--target-stack html\|react\|tailwind\|auto/],
+    },
+    {
+      args: ["telemetry", "summary", "--help"],
+      includes: [/Usage: gemini-agent telemetry summary/, /--global/, /--json/],
+    },
+  ];
+
+  for (const entry of cases) {
+    const { stdout } = await execBin(entry.args);
+    for (const pattern of entry.includes) {
+      assert.match(stdout, pattern, entry.args.join(" "));
+    }
+    assert.doesNotMatch(stdout, /Unknown command|Unknown telemetry argument/);
+  }
+});
+
 test("design brief help documents stdin and file input", async () => {
   const { stdout } = await execBin(["--help-all"]);
   assert.match(stdout, /gemini-agent design brief \[--stdin\|--file <path>\] \[--write-artifact\]/);

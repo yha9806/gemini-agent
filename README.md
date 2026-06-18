@@ -81,6 +81,14 @@ workflow entrypoints most users need first. Use `--help-all` when you want the
 complete operator surface, including advanced design steps and telemetry
 governance commands.
 
+Focused help is available on common workflow commands:
+
+```bash
+./bin/gemini-agent diff-review --help
+./bin/gemini-agent context-pack --help
+./bin/gemini-agent visual gate --help
+```
+
 Use the local binary directly:
 
 ```bash

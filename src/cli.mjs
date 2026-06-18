@@ -281,6 +281,101 @@ function printFullUsage() {
   ].join("\n"));
 }
 
+function printHelpLines(lines) {
+  output.write([...lines, ""].join("\n"));
+}
+
+function argsRequestHelp(args) {
+  return args.includes("--help") || args.includes("-h");
+}
+
+function printFocusedHelp(argv) {
+  if (!argsRequestHelp(argv)) return false;
+  const [command, subcommand] = argv;
+
+  if (command === "diff-review") {
+    printHelpLines([
+      "Usage: gemini-agent diff-review (--smart-diff | --diff | --stdin | --file <path> ... | --context-pack <path> | --auto-context-pack | <text>) [--max-input-bytes <n>]",
+      "",
+      "Reviews the current patch or supplied input for risks, missing tests, unsafe claims, and suggested changes.",
+      "",
+      "Common:",
+      "  gemini-agent diff-review --smart-diff",
+      "  gemini-agent diff-review --auto-context-pack --diff",
+      "  gemini-agent diff-review --file patch.diff",
+    ]);
+    return true;
+  }
+
+  if (command === "context-pack") {
+    printHelpLines([
+      "Usage: gemini-agent context-pack [--bootstrap | --stdin | --file <path> ... | --diff | <text>] [--write-artifact]",
+      "       gemini-agent context-pack --doctor [--json] [--max-age-hours <n>]",
+      "",
+      "Creates or checks compact reusable project context under .gemini-agent/context/.",
+      "",
+      "Common:",
+      "  gemini-agent context-pack --bootstrap --write-artifact",
+      "  gemini-agent context-pack --doctor --json",
+    ]);
+    return true;
+  }
+
+  if (command === "artifact-review") {
+    printHelpLines([
+      "Usage: gemini-agent artifact-review --file <path> [--file <path> ...] [--kind image|ui|design|architecture|research] [--review-mode single|comparison] [--review-depth quick|standard] [--telemetry-purpose production|validation] [--write-artifact]",
+      "",
+      "Reviews screenshots, diagrams, images, and other artifacts without editing source files.",
+      "",
+      "Common:",
+      "  gemini-agent artifact-review --file design.png --kind ui",
+      "  gemini-agent artifact-review --file before.png --file after.png --kind ui --review-mode comparison",
+    ]);
+    return true;
+  }
+
+  if (command === "visual" && subcommand === "gate") {
+    printHelpLines([
+      "Usage: gemini-agent visual gate --actual-screenshot <path> [--target-screenshot <path>] [--kind ui|design|image] [--risk <hint>] [--smoke-only] [--json]",
+      "",
+      "Runs local screenshot smoke checks plus optional Gemini visual review and returns pass, caution, or block.",
+      "",
+      "Common:",
+      "  gemini-agent visual gate --actual-screenshot after.png --kind ui --json",
+      "  gemini-agent visual gate --target-screenshot target.png --actual-screenshot after.png --kind ui --risk design-implementation --json",
+    ]);
+    return true;
+  }
+
+  if (command === "design" && subcommand === "draft") {
+    printHelpLines([
+      "Usage: gemini-agent design draft [--stdin|--file <path>|text] [--reference <path> ...] [--target <name: description> ...] [--variants <n>] [--quality fast|pro] [--target-stack html|react|tailwind|auto] [--skip-generate] [--skip-perceive] [--skip-prototype] [--skip-handoff] [--json]",
+      "",
+      "Turns a design brief into local design artifacts, candidate guidance, a prototype, and Codex handoff notes.",
+      "",
+      "Common:",
+      "  gemini-agent design draft --stdin --variants 2 --quality fast --target-stack html",
+      "  gemini-agent design draft --file brief.md --skip-generate --skip-prototype",
+    ]);
+    return true;
+  }
+
+  if (command === "telemetry" && subcommand === "summary") {
+    printHelpLines([
+      "Usage: gemini-agent telemetry summary [--global] [--json]",
+      "",
+      "Summarizes local or global opt-in telemetry without printing raw prompts, responses, paths, event ids, or media names.",
+      "",
+      "Common:",
+      "  gemini-agent telemetry summary --global",
+      "  gemini-agent telemetry summary --global --json",
+    ]);
+    return true;
+  }
+
+  return false;
+}
+
 async function readStdin() {
   const chunks = [];
   for await (const chunk of input) chunks.push(Buffer.from(chunk));
@@ -3667,6 +3762,9 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (command === "--help-all") {
     printFullUsage();
+    return;
+  }
+  if (printFocusedHelp(argv)) {
     return;
   }
   if (command === "auth") {

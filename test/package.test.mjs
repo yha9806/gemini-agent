@@ -102,6 +102,7 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /^\.\/bin\/gemini-agent --help$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent --help-all$/m);
   assert.match(readme, /Default help is intentionally short/);
+  assert.match(readme, /Focused help is available on common workflow commands/);
   assert.match(readme, /^\.\/bin\/gemini-agent auth status$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent ask "Reply with exactly: gemini-agent-ok"$/m);
 
