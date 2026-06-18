@@ -9,6 +9,7 @@ import {
   loadTelemetryState,
   telemetryQueueDirs,
 } from "./telemetry-queue.mjs";
+import { VISUAL_GATE_ISSUE_CATEGORIES as VISUAL_GATE_ISSUE_CATEGORY_VALUES } from "./visual-gate-schemas.mjs";
 
 const QUEUE_STATES = ["pending", "inflight", "sent", "failed", "quarantine"];
 const DEFAULT_QUEUE_STATE = Object.freeze({
@@ -183,6 +184,15 @@ function zeroContextLoop() {
   };
 }
 
+function zeroVisualGate() {
+  return {
+    event_count: 0,
+    verdict_counts: [],
+    review_postures: [],
+    issue_categories: [],
+  };
+}
+
 function zeroLatency() {
   return {
     event_count: 0,
@@ -344,6 +354,15 @@ const BACKFILL_MANIFEST_SOURCES = new Set([
 const CONTEXT_PACK_MODES = new Set(["auto", "explicit", "none"]);
 const FRESH_INPUT_MODES = new Set(["none", "stdin", "file", "diff", "smart-diff", "text", "mixed"]);
 const ARTIFACT_REVIEW_DEPTHS = new Set(["quick", "standard"]);
+const VISUAL_GATE_VERDICTS = new Set(["pass", "caution", "block"]);
+const VISUAL_GATE_REVIEW_POSTURES = new Set([
+  "smoke_only",
+  "quick_review",
+  "comparison_review",
+  "standard_fallback",
+  "blocked_before_gemini",
+]);
+const VISUAL_GATE_ISSUE_CATEGORIES = new Set(VISUAL_GATE_ISSUE_CATEGORY_VALUES);
 
 function safeMultimodalCommand(value) {
   const command = canonicalCommand(value);
@@ -448,6 +467,70 @@ function topSimpleCounts(map, keyName, limit) {
       [keyName]: key,
       event_count: count,
     }));
+}
+
+function addCount(map, key, count) {
+  map.set(key, (map.get(key) ?? 0) + count);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function safeVisualGateVerdict(value) {
+  const verdict = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return VISUAL_GATE_VERDICTS.has(verdict) ? verdict : null;
+}
+
+function safeVisualGateReviewPosture(value) {
+  const posture = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return VISUAL_GATE_REVIEW_POSTURES.has(posture) ? posture : null;
+}
+
+function safeVisualGateIssueCategory(value) {
+  const category = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return VISUAL_GATE_ISSUE_CATEGORIES.has(category) ? category : null;
+}
+
+function createVisualGateAggregate() {
+  return {
+    event_count: 0,
+    verdicts: new Map(),
+    reviewPostures: new Map(),
+    issueCategories: new Map(),
+  };
+}
+
+function addVisualGateEvent(aggregate, metadata) {
+  const visualGate = metadata?.visual_gate;
+  if (!isPlainObject(visualGate)) return;
+  if (visualGate.phase !== "final") return;
+
+  aggregate.event_count += 1;
+  const verdict = safeVisualGateVerdict(visualGate.verdict);
+  if (verdict) updateSimpleCount(aggregate.verdicts, verdict);
+  const reviewPosture = safeVisualGateReviewPosture(visualGate.review_posture);
+  if (reviewPosture) updateSimpleCount(aggregate.reviewPostures, reviewPosture);
+
+  const issueCategoryCounts = visualGate.issue_category_counts;
+  if (!isPlainObject(issueCategoryCounts)) return;
+  for (const [rawCategory, rawCount] of Object.entries(issueCategoryCounts)) {
+    const category = safeVisualGateIssueCategory(rawCategory);
+    if (!category || !Number.isFinite(rawCount) || rawCount <= 0) continue;
+    const count = Math.floor(rawCount);
+    if (count <= 0) continue;
+    addCount(aggregate.issueCategories, category, count);
+  }
+}
+
+function buildVisualGateSummary(aggregate, topLimit) {
+  if (aggregate.event_count === 0) return zeroVisualGate();
+  return {
+    event_count: aggregate.event_count,
+    verdict_counts: topSimpleCounts(aggregate.verdicts, "verdict", topLimit),
+    review_postures: topSimpleCounts(aggregate.reviewPostures, "review_posture", topLimit),
+    issue_categories: topSimpleCounts(aggregate.issueCategories, "category", topLimit),
+  };
 }
 
 function safeStructuredResponseFinishReason(value) {
@@ -1393,6 +1476,7 @@ function createAccumulator(invalidSampleLimit) {
     latencyStages: createLatencyStagesAggregate(),
     structuredResponse: createStructuredResponseAggregate(),
     productionStructuredResponse: createStructuredResponseAggregate(),
+    visualGate: createVisualGateAggregate(),
     telemetryPurpose: zeroTelemetryPurpose(),
     invalidSamples: [],
   };
@@ -1439,6 +1523,7 @@ function addEvent(accumulator, state, event) {
   addLatency(accumulator.latency, event.command, event.latency_ms);
   addLatencyStages(accumulator.latencyStages, event.command, event.metadata);
   addStructuredResponse(accumulator.structuredResponse, event.command, event.metadata);
+  addVisualGateEvent(accumulator.visualGate, event.metadata);
   if (!validation) {
     if (isScheduledStructuredRetryAttempt(event)) {
       addStructuredResponseRetryOnly(accumulator.productionStructuredResponse, event.command, event.metadata);
@@ -2199,6 +2284,7 @@ export async function runTelemetrySummary({
   }, topLimit);
   const latency = buildLatencySummary(accumulator.latency, topLimit);
   const latencyStages = buildLatencyStagesSummary(accumulator.latencyStages, topLimit);
+  const visualGate = buildVisualGateSummary(accumulator.visualGate, topLimit);
   const structuredResponse = buildStructuredResponseSummary(
     accumulator.structuredResponse,
     topLimit,
@@ -2252,6 +2338,7 @@ export async function runTelemetrySummary({
     artifact_review_validation_depths: artifactReviewValidationDepths,
     latency,
     latency_stages: latencyStages,
+    visual_gate: visualGate,
     structured_response: structuredResponse,
     production_structured_response: productionStructuredResponse,
     context_loop: contextLoop,

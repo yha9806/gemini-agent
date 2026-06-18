@@ -251,7 +251,7 @@ test("backups symlink is rejected", async (t) => {
 });
 
 test("active policy names commands, recursion guard, priorities, and runtime model", () => {
-  for (const name of ["context-pack", "artifact-review", "plan-critique", "patch-precheck", "diff-review", "research-brief"]) {
+  for (const name of ["context-pack", "artifact-review", "visual gate", "design draft", "plan-critique", "patch-precheck", "diff-review", "research-brief"]) {
     assert.match(ACTIVE_POLICY_BLOCK, new RegExp(name));
   }
   assert.match(ACTIVE_POLICY_BLOCK, /recursion guard/i);
@@ -259,6 +259,15 @@ test("active policy names commands, recursion guard, priorities, and runtime mod
   assert.match(ACTIVE_POLICY_BLOCK, /gemini-3\.5-flash/);
   assert.match(ACTIVE_POLICY_BLOCK, /external Gemini API calls/i);
   assert.match(ACTIVE_POLICY_BLOCK, /sensitive\/customer\/credential content/i);
+});
+
+test("active policy names design draft routing and Codex execution boundary", () => {
+  assert.match(ACTIVE_POLICY_BLOCK, /design draft/);
+  assert.match(ACTIVE_POLICY_BLOCK, /UI, visual, product-page, prototype, layout, or design-system/);
+  assert.match(ACTIVE_POLICY_BLOCK, /high-risk visual/);
+  assert.match(ACTIVE_POLICY_BLOCK, /screenshot evidence/i);
+  assert.match(ACTIVE_POLICY_BLOCK, /Do not claim visual completion/i);
+  assert.match(ACTIVE_POLICY_BLOCK, /Codex remains the execution authority/);
 });
 
 test("active policy tells Codex how to safely reuse context packs for gates", () => {

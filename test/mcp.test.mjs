@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -50,6 +50,21 @@ const fakeArtifactReview = JSON.stringify({
   },
 });
 
+const fakeDesignBrief = JSON.stringify({
+  kind: "design_brief",
+  run_id: "20260614T120000000Z-fakeid",
+  goal: "Improve dashboard",
+  target_user: "Operator",
+  screens: [],
+  visual_direction: ["quiet"],
+  design_system: { tokens: [] },
+  accessibility: [],
+  responsive_requirements: [],
+  acceptance_criteria: [],
+  implementation_risks: [],
+  metadata: {},
+});
+
 test("mcp server exposes auth and diff review tools", async () => {
   const transport = new StdioClientTransport({
     command: "node",
@@ -79,6 +94,83 @@ test("mcp server exposes auth and diff review tools", async () => {
     assert.deepEqual(parsed.notes, ["mcp fake ok"]);
   } finally {
     await client.close();
+  }
+});
+
+test("mcp server exposes design draft tool and latest design resource", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-mcp-design-"));
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [new URL("../bin/gemini-agent-mcp", import.meta.url).pathname],
+    cwd: dir,
+    env: {
+      ...process.env,
+      GEMINI_API_KEY: "fake-key",
+      GEMINI_AGENT_FAKE_RESPONSE: fakeDesignBrief,
+      GEMINI_AGENT_ALLOW_FAKE_RESPONSE: "1",
+    },
+  });
+  const client = new Client({ name: "gemini-agent-test", version: "0.1.0" });
+  await client.connect(transport);
+  try {
+    const tools = await client.listTools();
+    assert.ok(tools.tools.some((tool) => tool.name === "gemini_design_draft"));
+    const result = await client.callTool({
+      name: "gemini_design_draft",
+      arguments: {
+        input: "Design a dashboard",
+        cwd: dir,
+        skip_generate: true,
+        skip_prototype: true,
+        skip_handoff: true,
+      },
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.equal(parsed.status, "success");
+    assert.match(parsed.run_dir, /\.gemini-agent\/design\//);
+    assert.match(await readFile(join(parsed.run_dir, "draft-summary.json"), "utf8"), /design_draft_summary/);
+    const resources = await client.listResources();
+    assert.ok(resources.resources.some((resource) => resource.uri === "gemini-agent://design/latest"));
+    const latest = await client.readResource({ uri: "gemini-agent://design/latest" });
+    assert.match(latest.contents[0].text, /design_draft_summary/);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mcp design draft rejects symlink reference escapes before credentials", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gemini-agent-mcp-design-"));
+  const outside = await mkdtemp(join(tmpdir(), "gemini-agent-mcp-design-outside-"));
+  await writeFile(join(outside, "secret.png"), "secret");
+  await symlink(join(outside, "secret.png"), join(dir, "linked.png"));
+  const transport = new StdioClientTransport({
+    command: "node",
+    args: [new URL("../bin/gemini-agent-mcp", import.meta.url).pathname],
+    cwd: dir,
+    env: { ...process.env, GEMINI_API_KEY: "" },
+  });
+  const client = new Client({ name: "gemini-agent-test", version: "0.1.0" });
+  await client.connect(transport);
+  try {
+    const result = await client.callTool({
+      name: "gemini_design_draft",
+      arguments: {
+        input: "Design with reference",
+        cwd: dir,
+        references: ["linked.png"],
+        skip_generate: true,
+        skip_prototype: true,
+        skip_handoff: true,
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Reference path must stay inside cwd/);
+    assert.doesNotMatch(result.content[0].text, /Gemini API key/);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 
