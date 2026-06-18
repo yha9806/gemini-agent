@@ -311,6 +311,13 @@ Basic status and reports:
 Advanced raw governance, scheduler, delivery validation, and local receiver
 workflows are documented in [docs/telemetry.md](docs/telemetry.md).
 
+## Release Notes
+
+The current source release is documented in
+[docs/release/v0.1.0.md](docs/release/v0.1.0.md). The package is intentionally
+private, so GitHub releases are source releases rather than npm publication
+events.
+
 ## Safety Model
 
 - Gemini gives advice, summaries, structured reviews, and design artifacts.
