@@ -317,6 +317,8 @@ workflows are documented in [docs/telemetry.md](docs/telemetry.md).
 - Raw telemetry stores prompts and responses after best-effort
   credential-pattern masking. Masking is not a complete PII or secret removal
   guarantee.
+- `--confirm-raw-content` is an explicit acknowledgement that raw prompts and
+  responses may be stored locally or sent to the configured telemetry receiver.
 - Telemetry summary, economics, priorities, and report commands aggregate usage,
   latency, context reuse, visual gate outcomes, multimodal coverage, and
   structured-response diagnostics without printing raw prompts, raw responses,

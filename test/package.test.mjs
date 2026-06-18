@@ -128,6 +128,7 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /\[docs\/telemetry\.md\]\(docs\/telemetry\.md\)/);
 
   assert.match(readme, /Raw telemetry mode can capture prompts and responses/);
+  assert.match(readme, /`--confirm-raw-content` is an explicit acknowledgement/);
   assert.match(readme, /Codex or the operator remains responsible for edits, tests, commits, and final\s+decisions/);
   assert.match(readme, /without printing raw prompts, raw responses,\s+local paths, event ids, batch ids,\s+media file names, or image bytes/);
   assert.match(readme, /^npm test$/m);
