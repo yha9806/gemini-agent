@@ -3,8 +3,30 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Global Gemini review gate for Codex",
+  "description": "Local-first Gemini coprocessor for Codex and agentic coding workflows",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yha9806/gemini-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yha9806/gemini-agent/issues"
+  },
+  "homepage": "https://github.com/yha9806/gemini-agent#readme",
+  "keywords": [
+    "gemini",
+    "codex",
+    "cli",
+    "mcp",
+    "code-review",
+    "context-pack"
+  ],
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "gemini-agent": "./bin/gemini-agent",
     "gemini-agent-mcp": "./bin/gemini-agent-mcp",

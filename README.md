@@ -366,6 +366,10 @@ Before contributing, run the focused command you changed plus `npm test`. Keep
 `.gemini-agent/`, `node_modules/`, generated screenshots, raw exports, and local
 telemetry stores out of commits unless a test fixture explicitly requires them.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for pull request expectations and
+[SECURITY.md](SECURITY.md) for vulnerability reporting and data-handling
+guidance.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

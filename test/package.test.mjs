@@ -24,6 +24,45 @@ test("package exposes executables", async () => {
   await access(new URL("src/telemetry-receiver-cli.mjs", root), constants.R_OK);
 });
 
+test("package has open-source discovery metadata and a bounded publish surface", async () => {
+  const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
+
+  assert.equal(pkg.private, true);
+  assert.equal(pkg.description, "Local-first Gemini coprocessor for Codex and agentic coding workflows");
+  assert.deepEqual(pkg.repository, {
+    type: "git",
+    url: "git+https://github.com/yha9806/gemini-agent.git",
+  });
+  assert.deepEqual(pkg.bugs, {
+    url: "https://github.com/yha9806/gemini-agent/issues",
+  });
+  assert.equal(pkg.homepage, "https://github.com/yha9806/gemini-agent#readme");
+  for (const keyword of ["gemini", "codex", "cli", "mcp", "code-review", "context-pack"]) {
+    assert.ok(pkg.keywords.includes(keyword), `missing keyword: ${keyword}`);
+  }
+  assert.deepEqual(pkg.files, [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE",
+  ]);
+});
+
+test("repository includes open-source contribution and security entrypoints", async () => {
+  const contributing = await readFile(new URL("CONTRIBUTING.md", root), "utf8");
+  const security = await readFile(new URL("SECURITY.md", root), "utf8");
+  const ci = await readFile(new URL(".github/workflows/ci.yml", root), "utf8");
+
+  assert.match(contributing, /^# Contributing$/m);
+  assert.match(contributing, /GEMINI_AGENT_RUN_LIVE_TESTS=1 npm run test:live/);
+  assert.match(security, /^# Security Policy$/m);
+  assert.match(security, /Do not disclose vulnerabilities in a public issue/);
+  assert.match(ci, /npm ci/);
+  assert.match(ci, /npm test/);
+  assert.match(ci, /npm audit --omit=dev/);
+  assert.match(ci, /npm pack --dry-run/);
+});
+
 test("git ignores installed dependencies", async () => {
   const gitignore = await readFile(new URL(".gitignore", root), "utf8");
   assert.match(gitignore, /^node_modules\/$/m);
@@ -92,6 +131,8 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /without printing raw prompts, raw responses,\s+local paths, event ids, batch ids,\s+media file names, or image bytes/);
   assert.match(readme, /^npm test$/m);
   assert.match(readme, /^GEMINI_AGENT_RUN_LIVE_TESTS=1 npm run test:live$/m);
+  assert.match(readme, /\[CONTRIBUTING\.md\]\(CONTRIBUTING\.md\)/);
+  assert.match(readme, /\[SECURITY\.md\]\(SECURITY\.md\)/);
   assert.match(readme, /MIT\. See \[LICENSE\]\(LICENSE\)/);
 });
 
