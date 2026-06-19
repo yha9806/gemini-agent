@@ -28,5 +28,5 @@ screenshots, or customer data in public issues or pull requests.
 
 ## Supported Versions
 
-Security fixes are handled on the default branch until tagged releases are
-introduced.
+Security fixes are handled on the default branch and documented in follow-up
+release notes or patch tags when they affect a published source release.

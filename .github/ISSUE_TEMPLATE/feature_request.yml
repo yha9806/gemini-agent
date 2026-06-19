@@ -1,0 +1,56 @@
+name: Feature request
+description: Suggest a focused workflow, command, or documentation improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for focused improvements. For vulnerabilities, use the security reporting path instead of a public issue.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI workflow
+        - MCP tool or resource
+        - context packing
+        - review gate
+        - visual or design workflow
+        - telemetry
+        - documentation
+        - release or packaging
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user workflow is hard, unclear, slow, or unsafe today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should change?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional, but useful for keeping the command surface small.
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and data handling
+      description: Note whether the feature sends code, diffs, prompts, screenshots, telemetry, or other data to Gemini or another service.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This request keeps Codex or the operator responsible for edits, tests, commits, deployments, and final decisions.
+          required: true
