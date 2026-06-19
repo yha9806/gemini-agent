@@ -55,17 +55,29 @@ test("repository includes open-source contribution and security entrypoints", as
   const security = await readFile(new URL("SECURITY.md", root), "utf8");
   const telemetryDocs = await readFile(new URL("docs/telemetry.md", root), "utf8");
   const releaseNotes = await readFile(new URL("docs/release/v0.1.0.md", root), "utf8");
+  const postReleaseChecklist = await readFile(new URL("docs/release/post-release-checklist.md", root), "utf8");
+  const bugTemplate = await readFile(new URL(".github/ISSUE_TEMPLATE/bug_report.yml", root), "utf8");
+  const featureTemplate = await readFile(new URL(".github/ISSUE_TEMPLATE/feature_request.yml", root), "utf8");
+  const issueConfig = await readFile(new URL(".github/ISSUE_TEMPLATE/config.yml", root), "utf8");
   const ci = await readFile(new URL(".github/workflows/ci.yml", root), "utf8");
 
   assert.match(contributing, /^# Contributing$/m);
   assert.match(contributing, /GEMINI_AGENT_RUN_LIVE_TESTS=1 npm run test:live/);
   assert.match(security, /^# Security Policy$/m);
   assert.match(security, /Do not disclose vulnerabilities in a public issue/);
+  assert.match(security, /published source release/);
   assert.match(telemetryDocs, /^# Telemetry$/m);
   assert.match(telemetryDocs, /Raw telemetry governance commands are explicit and bounded/);
   assert.match(releaseNotes, /^# gemini-agent v0\.1\.0 Release Notes$/m);
   assert.match(releaseNotes, /first open-source source release/);
   assert.match(releaseNotes, /npm pack --dry-run/);
+  assert.match(postReleaseChecklist, /^# Post-Release Checklist$/m);
+  assert.match(postReleaseChecklist, /Confirm the release tag points at the intended `main` commit/);
+  assert.match(bugTemplate, /^name: Bug report$/m);
+  assert.match(bugTemplate, /I removed secrets, raw telemetry, private screenshots, customer data, and unredacted prompts\/responses/);
+  assert.match(featureTemplate, /^name: Feature request$/m);
+  assert.match(featureTemplate, /keeping the command surface small/);
+  assert.match(issueConfig, /Security vulnerability/);
   assert.match(ci, /npm ci/);
   assert.match(ci, /npm test/);
   assert.match(ci, /npm audit --omit=dev/);
@@ -135,6 +147,7 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /\[docs\/telemetry\.md\]\(docs\/telemetry\.md\)/);
   assert.match(readme, /^## Release Notes$/m);
   assert.match(readme, /\[docs\/release\/v0\.1\.0\.md\]\(docs\/release\/v0\.1\.0\.md\)/);
+  assert.match(readme, /\[docs\/release\/post-release-checklist\.md\]\(docs\/release\/post-release-checklist\.md\)/);
 
   assert.match(readme, /Raw telemetry mode can capture prompts and responses/);
   assert.match(readme, /`--confirm-raw-content` is an explicit acknowledgement/);

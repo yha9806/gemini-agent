@@ -316,7 +316,9 @@ workflows are documented in [docs/telemetry.md](docs/telemetry.md).
 The current source release is documented in
 [docs/release/v0.1.0.md](docs/release/v0.1.0.md). The package is intentionally
 private, so GitHub releases are source releases rather than npm publication
-events.
+events. Maintainers can use
+[docs/release/post-release-checklist.md](docs/release/post-release-checklist.md)
+after publishing a GitHub release.
 
 ## Safety Model
 
