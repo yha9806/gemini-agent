@@ -45,6 +45,8 @@ test("package has open-source discovery metadata and a bounded publish surface",
     "src/",
     "docs/telemetry.md",
     "docs/assets/",
+    "docs/release/",
+    "examples/",
     "README.md",
     "LICENSE",
   ]);
@@ -93,6 +95,7 @@ test("public markdown does not expose local home paths", async () => {
   const files = [
     fileURLToPath(new URL("README.md", root)),
     ...await markdownFiles(fileURLToPath(new URL("docs", root))),
+    ...await markdownFiles(fileURLToPath(new URL("examples", root))),
   ];
 
   for (const file of files) {
@@ -130,6 +133,10 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /^\.\/bin\/gemini-agent auth status$/m);
   assert.match(readme, /^\.\/bin\/gemini-agent ask "Reply with exactly: gemini-agent-ok"$/m);
   assert.match(readme, /\| `diff-review --smart-diff` \| It returns structured review JSON, bootstrapping a context pack first if needed\. \|/);
+  assert.match(readme, /^## Examples$/m);
+  assert.match(readme, /\[Quick diff review\]\(examples\/quick-diff-review\/README\.md\)/);
+  assert.match(readme, /\[Visual gate\]\(examples\/visual-gate\/README\.md\)/);
+  assert.match(readme, /\[MCP config\]\(examples\/mcp-config\/README\.md\)/);
 
   assert.match(readme, /```mermaid\nflowchart TD/);
   assert.match(readme, /^\.\/bin\/gemini-agent diff-review --smart-diff$/m);
