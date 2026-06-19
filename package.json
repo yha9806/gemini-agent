@@ -26,6 +26,8 @@
     "src/",
     "docs/telemetry.md",
     "docs/assets/",
+    "docs/release/",
+    "examples/",
     "README.md",
     "LICENSE"
   ],

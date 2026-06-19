@@ -145,6 +145,17 @@ What each command proves:
 If the command says the key is missing, set `GEMINI_API_KEY` or run
 `./bin/gemini-agent auth set`.
 
+## Examples
+
+Copyable source examples live under `examples/`:
+
+- [Quick diff review](examples/quick-diff-review/README.md): review local git
+  changes with `diff-review --smart-diff`.
+- [Visual gate](examples/visual-gate/README.md): run screenshot smoke checks
+  and target-vs-actual review.
+- [MCP config](examples/mcp-config/README.md): connect `gemini-agent-mcp` to
+  Codex or another MCP client.
+
 ## Common Workflows
 
 ```mermaid
