@@ -34,6 +34,52 @@ Fastest useful command after setup:
 ./bin/gemini-agent diff-review --smart-diff
 ```
 
+## First Run
+
+Requires Node.js 22 or newer and a Gemini API key. This path installs the repo,
+verifies credentials, proves Gemini access, and runs the first review gate:
+
+```bash
+git clone https://github.com/yha9806/gemini-agent.git
+cd gemini-agent
+npm install
+export GEMINI_API_KEY="..."
+./bin/gemini-agent auth status
+./bin/gemini-agent ask "Reply with exactly: gemini-agent-ok"
+./bin/gemini-agent diff-review --smart-diff
+```
+
+On macOS, you can store the key in Keychain instead of exporting it:
+
+```bash
+./bin/gemini-agent auth set
+./bin/gemini-agent auth status
+```
+
+`auth status` reports only whether a key is available and where it came from.
+It never prints the key. If `diff-review --smart-diff` has no context pack yet,
+it bootstraps one before returning structured review JSON.
+
+Copyable source examples live under `examples/`:
+
+- [Quick diff review](examples/quick-diff-review/README.md): review local git
+  changes with `diff-review --smart-diff`.
+- [Visual gate](examples/visual-gate/README.md): run screenshot smoke checks
+  and target-vs-actual review.
+- [MCP config](examples/mcp-config/README.md): connect `gemini-agent-mcp` to
+  Codex or another MCP client.
+
+Default help is intentionally short. Use `--help-all` for the complete operator
+surface, and focused help for workflow-specific details:
+
+```bash
+./bin/gemini-agent --help
+./bin/gemini-agent --help-all
+./bin/gemini-agent diff-review --help
+./bin/gemini-agent context-pack --help
+./bin/gemini-agent visual gate --help
+```
+
 ## Why Use It?
 
 | When you need to... | Run this first | What comes back |
@@ -72,94 +118,6 @@ judgment, multimodal inspection, and design handoff artifacts.
 
 Runtime text and review calls default to `gemini-3.5-flash`. Image and design
 generation use the explicit image model variables above.
-
-## Install
-
-```bash
-git clone https://github.com/yha9806/gemini-agent.git
-cd gemini-agent
-npm install
-./bin/gemini-agent --help
-./bin/gemini-agent --help-all
-```
-
-Default help is intentionally short: it shows the setup commands and the
-workflow entrypoints most users need first. Use `--help-all` when you want the
-complete operator surface, including advanced design steps and telemetry
-governance commands.
-
-Focused help is available on common workflow commands:
-
-```bash
-./bin/gemini-agent diff-review --help
-./bin/gemini-agent context-pack --help
-./bin/gemini-agent visual gate --help
-```
-
-Use the local binary directly:
-
-```bash
-./bin/gemini-agent auth status
-```
-
-Or link it into your shell while developing:
-
-```bash
-npm link
-gemini-agent auth status
-```
-
-## Configure Credentials
-
-Use an environment variable in any shell:
-
-```bash
-export GEMINI_API_KEY="..."
-./bin/gemini-agent auth status
-```
-
-On macOS, store the key in Keychain instead:
-
-```bash
-./bin/gemini-agent auth set
-./bin/gemini-agent auth status
-```
-
-`auth status` reports only whether a key is available and where it came from.
-It never prints the key.
-
-## 90-Second Quick Start
-
-Use this path after `npm install`. It proves credentials, Gemini access, and the
-main review workflow without making you learn the full command surface first.
-
-```bash
-./bin/gemini-agent auth status
-./bin/gemini-agent ask "Reply with exactly: gemini-agent-ok"
-./bin/gemini-agent diff-review --smart-diff
-```
-
-What each command proves:
-
-| Command | You know it worked when... |
-| --- | --- |
-| `auth status` | It reports whether a Gemini key is available without printing the key. |
-| `ask` | The output is `gemini-agent-ok`. |
-| `diff-review --smart-diff` | It returns structured review JSON, bootstrapping a context pack first if needed. |
-
-If the command says the key is missing, set `GEMINI_API_KEY` or run
-`./bin/gemini-agent auth set`.
-
-## Examples
-
-Copyable source examples live under `examples/`:
-
-- [Quick diff review](examples/quick-diff-review/README.md): review local git
-  changes with `diff-review --smart-diff`.
-- [Visual gate](examples/visual-gate/README.md): run screenshot smoke checks
-  and target-vs-actual review.
-- [MCP config](examples/mcp-config/README.md): connect `gemini-agent-mcp` to
-  Codex or another MCP client.
 
 ## Common Workflows
 
