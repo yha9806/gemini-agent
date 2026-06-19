@@ -5,20 +5,34 @@
 ![Interfaces: CLI + MCP](https://img.shields.io/badge/interfaces-CLI%20%2B%20MCP-blue)
 ![Telemetry: opt-in](https://img.shields.io/badge/telemetry-opt--in-lightgrey)
 
-Local-first Gemini tools for Codex and other agentic coding workflows.
+Local-first Gemini coprocessor for Codex and agentic coding workflows.
 
-`gemini-agent` lets a coding agent ask Gemini for the parts where a second
-model is useful: compacting large context, reviewing diffs, critiquing plans,
-checking screenshots and UI artifacts, drafting design handoff artifacts, and
-analyzing opt-in telemetry. Codex, or the human operator, remains the execution
-authority for editing files, running tests, committing, deploying, and making
-final release decisions.
+Use `gemini-agent` when Codex is doing the work, but you want Gemini to provide
+bounded judgment before you spend more context or commit a change: compact large
+repo slices, review diffs, critique plans, check screenshots and UI artifacts,
+draft design handoff artifacts, and analyze opt-in telemetry. Codex, or the
+human operator, remains the execution authority for editing files, running
+tests, committing, deploying, and making final release decisions.
 
 The project is public and MIT licensed, but the npm package is intentionally
 marked `"private": true` to avoid accidental registry publishing. Use it from a
 checked-out repository or a local npm link.
 
 ![CLI focused help](docs/assets/cli-focused-help.svg)
+
+## 30-Second Fit Check
+
+| Use it when... | Reach for something else when... |
+| --- | --- |
+| You want a second model to review plans, patches, diffs, screenshots, or design artifacts before Codex acts. | You want an autonomous coding agent that directly edits files for you. |
+| You need reusable context packs instead of repeatedly pasting large source, logs, notes, or diffs into a model. | You only need one-off Gemini chat from a terminal. |
+| You want local-first artifacts and explicit human/Codex ownership of final release decisions. | You want a hosted PR review bot to comment automatically on every pull request. |
+
+Fastest useful command after setup:
+
+```bash
+./bin/gemini-agent diff-review --smart-diff
+```
 
 ## Why Use It?
 
