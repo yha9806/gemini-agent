@@ -58,6 +58,7 @@ test("repository includes open-source contribution and security entrypoints", as
   const telemetryDocs = await readFile(new URL("docs/telemetry.md", root), "utf8");
   const releaseNotes = await readFile(new URL("docs/release/v0.1.0.md", root), "utf8");
   const postReleaseChecklist = await readFile(new URL("docs/release/post-release-checklist.md", root), "utf8");
+  const workflowOverview = await readFile(new URL("docs/assets/workflow-overview.svg", root), "utf8");
   const bugTemplate = await readFile(new URL(".github/ISSUE_TEMPLATE/bug_report.yml", root), "utf8");
   const featureTemplate = await readFile(new URL(".github/ISSUE_TEMPLATE/feature_request.yml", root), "utf8");
   const issueConfig = await readFile(new URL(".github/ISSUE_TEMPLATE/config.yml", root), "utf8");
@@ -75,6 +76,8 @@ test("repository includes open-source contribution and security entrypoints", as
   assert.match(releaseNotes, /npm pack --dry-run/);
   assert.match(postReleaseChecklist, /^# Post-Release Checklist$/m);
   assert.match(postReleaseChecklist, /Confirm the release tag points at the intended `main` commit/);
+  assert.match(workflowOverview, /<title id="title">gemini-agent workflow overview<\/title>/);
+  assert.match(workflowOverview, /Execution stays local/);
   assert.match(bugTemplate, /^name: Bug report$/m);
   assert.match(bugTemplate, /I removed secrets, raw telemetry, private screenshots, customer data, and unredacted prompts\/responses/);
   assert.match(featureTemplate, /^name: Feature request$/m);
@@ -116,7 +119,7 @@ test("README documents open-source setup and core workflows", async () => {
   assert.match(readme, /Fastest useful command after setup/);
   assert.match(readme, /^## Why Use It\?$/m);
   assert.match(readme, /\| Keep Codex from rereading a large repo slice \| `context-pack --bootstrap --write-artifact` \|/);
-  assert.match(readme, /```mermaid\nflowchart LR/);
+  assert.match(readme, /!\[Workflow overview\]\(docs\/assets\/workflow-overview\.svg\)/);
   assert.match(readme, /^## What It Is Not$/m);
   assert.match(readme, /\[OpenAI Codex CLI\]\(https:\/\/github\.com\/openai\/codex\)/);
   assert.match(readme, /\[Gemini CLI\]\(https:\/\/github\.com\/google-gemini\/gemini-cli\)/);

@@ -44,16 +44,7 @@ Fastest useful command after setup:
 | Turn a design brief into implementation guidance | `design draft --stdin --target-stack html` | A design run with candidates, prototype, and Codex handoff artifacts |
 | Understand opt-in usage and reliability | `telemetry report --global --json` | Aggregate health, economics, latency, context reuse, and quality signals |
 
-```mermaid
-flowchart LR
-  operator["Human or Codex"] --> agent["gemini-agent\nCLI or MCP"]
-  agent --> gemini["Gemini API\nreview, vision, design"]
-  agent --> context["Context packs\n.gemini-agent/context"]
-  agent --> artifacts["Local artifacts\nreviews, design, telemetry"]
-  context --> agent
-  artifacts --> operator
-  operator --> execution["Edits, tests, commits,\ndeploys, final decisions"]
-```
+![Workflow overview](docs/assets/workflow-overview.svg)
 
 ## What It Is Not
 
