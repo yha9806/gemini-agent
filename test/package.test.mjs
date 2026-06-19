@@ -110,6 +110,10 @@ test("README documents open-source setup and core workflows", async () => {
 
   assert.match(readme, /https:\/\/img\.shields\.io\/badge\/license-MIT-green\.svg/);
   assert.match(readme, /!\[CLI focused help\]\(docs\/assets\/cli-focused-help\.svg\)/);
+  assert.match(readme, /^## 30-Second Fit Check$/m);
+  assert.match(readme, /\| Use it when\.\.\. \| Reach for something else when\.\.\. \|/);
+  assert.match(readme, /You want a second model to review plans, patches, diffs, screenshots, or design artifacts before Codex acts/);
+  assert.match(readme, /Fastest useful command after setup/);
   assert.match(readme, /^## Why Use It\?$/m);
   assert.match(readme, /\| Keep Codex from rereading a large repo slice \| `context-pack --bootstrap --write-artifact` \|/);
   assert.match(readme, /```mermaid\nflowchart LR/);
